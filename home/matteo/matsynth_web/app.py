@@ -140,7 +140,6 @@ def select_prog(chan, bank, prog):
     # 2. Usa l'ID corretto nel comando select
     comando = f"select {chan} {sf_id} {bank} {prog}"
     send_fluid(comando)
-    print(f"Cambio patch: {comando}")
     return "OK"
 
 @app.route('/set_effect/<type>/<val>')
@@ -156,6 +155,12 @@ def set_effect(type, val):
 @app.route('/cc/<int:chan>/<int:cc>/<int:val>')
 def control(chan, cc, val):
     send_fluid(f"cc {chan} {cc} {val}")
+    return "OK"
+
+@app.route('/reset_channel/<int:chan>')
+def reset_channel(chan):
+    """Reset di tutti i controller MIDI del canale (più veloce di singoli CC)"""
+    send_fluid(f"reset {chan}")
     return "OK"
 
 @app.route('/refresh_status')
