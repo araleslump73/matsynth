@@ -363,7 +363,7 @@
             await fetch(`/select_prog/${chan}/${bank}/${prog}`);
             
             // Reset veloce del canale tramite comando FluidSynth
-            await fetch(`/reset_channel/${chan}`);
+            // await fetch(`/reset_channel/${chan}`);
             
             // Resetta gli slider UI ai valori di default
             resetUISliders();
@@ -373,15 +373,20 @@
             // Reset solo l'interfaccia grafica, il comando reset di FluidSynth ha già fatto il lavoro
             const attackSlider = document.querySelector('input[oninput*="updateCC(73"]');
             if (attackSlider) attackSlider.value = 64;
+            updateCC(73, 64);
             
             const releaseSlider = document.querySelector('input[oninput*="updateCC(72"]');
             if (releaseSlider) releaseSlider.value = 64;
-            
+            updateCC(72, 64);
+
             const cutoffSlider = document.querySelector('input[oninput*="updateCC(74"]');
-            if (cutoffSlider) cutoffSlider.value = 127;
-            
+            if (cutoffSlider) cutoffSlider.value = 64;
+            updateCC(74, 64);
+
             const resoSlider = document.querySelector('input[oninput*="updateCC(71"]');
-            if (resoSlider) resoSlider.value = 0;
+            if (resoSlider) resoSlider.value = 64;
+            UpdateCC(71, 64);
+         
         }
 
         function updateCC(cc, val) {
