@@ -207,6 +207,102 @@
             align-items: center;
             gap: 8px;
         }
+
+        /* Nuovi stili per slider verticali */
+        .vertical-slider-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            height: 250px; 
+            justify-content: flex-end;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            padding: 10px 0;
+            border: 1px solid rgba(0, 255, 136, 0.1);
+        }
+
+        .vertical-range-container {
+            height: 150px;
+            width: 40px; /* Larghezza fissa per il contenitore */
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 10px 0;
+            position: relative;
+        }
+
+        /* 
+           Approccio robusto per slider verticali:
+           Usiamo uno slider orizzontale standard e lo ruotiamo di -90 gradi.
+           Questo garantisce che il 'bottone' (thumb) sia perfettamente centrato sulla traccia.
+        */
+        input[type=range].vertical-slider {
+            width: 150px; /* La lunghezza visiva verticale diventa la width qui */
+            height: 40px; /* L'area cliccabile laterale */
+            transform: rotate(-90deg);
+            transform-origin: center;
+            margin: 0;
+            position: absolute; /* Per centrarlo nel container */
+            background: transparent;
+            cursor: pointer;
+        }
+        
+        .val-badge {
+            font-family: 'Orbitron', sans-serif;
+            color: #fff;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 2px 0; /* Ridotto padding orizzontale */
+            border-radius: 4px;
+            font-size: 0.8rem;
+            margin-bottom: 5px;
+            width: 40px;
+            text-align: center;
+            white-space: nowrap; /* Evita a capo */
+            overflow: hidden;
+            display: block; /* Assicura blocco per width */
+        }
+        
+        /* Stile traccia personalizzata per slider ruotato */
+        input[type=range].vertical-slider {
+            -webkit-appearance: none;
+            width: 150px;
+            height: 6px; /* Spessore della traccia */
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 3px;
+            outline: none;
+            transform: rotate(-90deg);
+            transform-origin: center;
+            position: absolute;
+            cursor: pointer;
+            touch-action: none; /* CRUCIALE: Previene scroll e zoom su touch */
+        }
+
+        /* Thumb (il bottone) */
+        input[type=range].vertical-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            background: #fff; /* Bianco per contrasto o colore tema */
+            border: 2px solid #00ff88; /* Bordo verde */
+            border-radius: 50%;
+            cursor: pointer;
+            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+            z-index: 2;
+            position: relative;
+        }
+        
+        .slider-label-vert {
+            font-size: 0.7rem;
+            text-align: center;
+            margin-top: auto;
+            color: #00ff88;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            line-height: 1.1;
+        }
     </style>
 </head>
 <body class="container py-4">
@@ -258,22 +354,53 @@
                 Canale target per controlli: <span id="target-ch-display" class="text-white badge bg-warning">1</span>
             </label>
         </div>
-        <div class="row">
-            <div class="col-6 mb-3">
-                <label class="slider-label icon-label"><i class="fas fa-arrow-up"></i> ATTACK (CC 73)</label>
-                <input type="range" class="form-range" min="0" max="127" value="64" oninput="updateCC(73, this.value)">
+        <div class="row g-2"> <!-- g-2 riduce lo spazio tra colonne -->
+            <!-- ATTACK -->
+            <div class="col-3">
+                <div class="vertical-slider-group">
+                    <span id="val-73" class="val-badge">64</span>
+                    <div class="vertical-range-container">
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
+                               oninput="updateCC(73, this.value); document.getElementById('val-73').innerText=this.value">
+                    </div>
+                    <label class="slider-label-vert"><i class="fas fa-arrow-up d-block mb-1"></i>&nbsp;ATK</label>
+                </div>
             </div>
-            <div class="col-6 mb-3">
-                <label class="slider-label icon-label"><i class="fas fa-arrow-down"></i> RELEASE (CC 72)</label>
-                <input type="range" class="form-range" min="0" max="127" value="64" oninput="updateCC(72, this.value)">
+
+            <!-- RELEASE -->
+            <div class="col-3">
+                <div class="vertical-slider-group">
+                    <span id="val-72" class="val-badge">64</span>
+                    <div class="vertical-range-container">
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
+                               oninput="updateCC(72, this.value); document.getElementById('val-72').innerText=this.value">
+                    </div>
+                    <label class="slider-label-vert"><i class="fas fa-arrow-down d-block mb-1"></i>&nbsp;REL</label>
+                </div>
             </div>
-            <div class="col-6">
-                <label class="slider-label icon-label"><i class="fas fa-filter"></i> CUTOFF (CC 74)</label>
-                <input type="range" class="form-range" min="0" max="127" value="127" oninput="updateCC(74, this.value)">
+
+            <!-- CUTOFF -->
+            <div class="col-3">
+                <div class="vertical-slider-group">
+                    <span id="val-74" class="val-badge">127</span>
+                    <div class="vertical-range-container">
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="127" 
+                               oninput="updateCC(74, this.value); document.getElementById('val-74').innerText=this.value">
+                    </div>
+                    <label class="slider-label-vert"><i class="fas fa-filter d-block mb-1"></i>&nbsp;CUT</label>
+                </div>
             </div>
-            <div class="col-6">
-                <label class="slider-label icon-label"><i class="fas fa-wave-square"></i> RESO (CC 71)</label>
-                <input type="range" class="form-range" min="0" max="127" value="0" oninput="updateCC(71, this.value)">
+
+            <!-- RESONANCE -->
+            <div class="col-3">
+                <div class="vertical-slider-group">
+                    <span id="val-71" class="val-badge">0</span>
+                    <div class="vertical-range-container">
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="0" 
+                               oninput="updateCC(71, this.value); document.getElementById('val-71').innerText=this.value">
+                    </div>
+                    <label class="slider-label-vert"><i class="fas fa-wave-square d-block mb-1"></i>&nbsp;RES</label>
+                </div>
             </div>
         </div>
     </div>
@@ -369,24 +496,39 @@
             resetUISliders();
         }
         
+        // NOTA: Con slider verticali nativi (-webkit-appearance: slider-vertical), 
+        // non possiamo modificare il background gradient facilmente come con quelli orizzontali.
+        // La funzione updateSliderBackground viene rimossa perché non ha effetto su slider nativi verticali.
+        
         function resetUISliders() {
-            // Reset solo l'interfaccia grafica, il comando reset di FluidSynth ha già fatto il lavoro
+            // Reset solo l'interfaccia grafica
             const attackSlider = document.querySelector('input[oninput*="updateCC(73"]');
-            if (attackSlider) attackSlider.value = 64;
+            if (attackSlider) { 
+                attackSlider.value = 64; 
+                document.getElementById('val-73').innerText = "64";
+            }
             updateCC(73, 64);
             
             const releaseSlider = document.querySelector('input[oninput*="updateCC(72"]');
-            if (releaseSlider) releaseSlider.value = 64;
+            if (releaseSlider) { 
+                releaseSlider.value = 64; 
+                document.getElementById('val-72').innerText = "64";
+            }
             updateCC(72, 64);
 
             const cutoffSlider = document.querySelector('input[oninput*="updateCC(74"]');
-            if (cutoffSlider) cutoffSlider.value = 64;
+            if (cutoffSlider) { 
+                cutoffSlider.value = 64; 
+                document.getElementById('val-74').innerText = "64";
+            }
             updateCC(74, 64);
 
             const resoSlider = document.querySelector('input[oninput*="updateCC(71"]');
-            if (resoSlider) resoSlider.value = 64;
-            UpdateCC(71, 64);
-         
+            if (resoSlider) { 
+                resoSlider.value = 64; 
+                document.getElementById('val-71').innerText = "64";
+            }
+            updateCC(71, 64);
         }
 
         function updateCC(cc, val) {
@@ -533,6 +675,11 @@ async function changeSF2(filename) {
 fetchSF2List();
 
 
+
+        // Event listener puliti
+        window.addEventListener('load', () => {
+             // Nessuna azione speciale necessaria per slider nativi
+        });
 
         window.onload = setupMixer;
     </script>
