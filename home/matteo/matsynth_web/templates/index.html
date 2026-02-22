@@ -81,7 +81,9 @@
             color: white; 
             border: 1px solid rgba(0, 255, 136, 0.3);
             font-size: 0.85rem;
-            border-radius: 8px;
+            border-radius: 6px; /* Match channel row radius */
+            padding-top: 4px; /* Compact padding */
+            padding-bottom: 4px; 
             transition: all 0.3s ease;
         }
         
@@ -109,19 +111,20 @@
         
         /* Stili Mixer */
         .mixer-container { 
-            max-height: 450px; 
+            max-height: 260px; /* Ridotto per mostrare circa 4 canali */
             overflow-y: auto; 
             padding-right: 5px;
         }
         
         .channel-row { 
             background: linear-gradient(90deg, rgba(37, 37, 55, 0.6), rgba(30, 30, 46, 0.8));
-            border-radius: 10px; 
-            padding: 10px; 
-            margin-bottom: 8px; 
+            border-radius: 6px; /* Raggio più piccolo per look compatto */
+            padding: 5px 10px; /* Padding verticale ridotto */
+            margin-bottom: 4px; /* Margine ridotto */
             border-left: 4px solid #00ff88;
             transition: all 0.3s ease;
             cursor: pointer;
+            align-items: center; /* Centratura verticale */
         }
         
         .channel-row:hover {
@@ -348,10 +351,10 @@
     </div>
 
     <div class="card p-3">
-        <div class="mb-3">
-            <label class="slider-label icon-label">
+        <div class="mb-2 text-center">
+            <label class="slider-label icon-label" style="font-size: 1rem; color: #ffc107;">
                 <i class="fas fa-crosshairs"></i>
-                Canale target per controlli: <span id="target-ch-display" class="text-white badge bg-warning">1</span>
+                CONTROLLI CANALE: <span id="target-ch-display" class="badge bg-warning text-dark ms-2" style="font-size: 1.2rem;">1</span>
             </label>
         </div>
         <div class="row g-2"> <!-- g-2 riduce lo spazio tra colonne -->
