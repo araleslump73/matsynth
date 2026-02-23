@@ -330,7 +330,7 @@ input[type=range].vertical-slider::-webkit-slider-thumb {
 
 /* Settings Page Specific Styles */
 .settings-page .logo-title {
-    font-size: 2rem;
+    font-size: 1.5rem;
     /* Simpler style without gradient */
     color: #00ff88;
     background: none;

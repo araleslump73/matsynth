@@ -28,22 +28,6 @@
         </div>
     </div>
 
-<div class="card p-4 volume-card">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <label class="icon-label mb-0" style="color: #00ff88; font-size: 1.1rem; font-weight: 600;">
-            <i class="fas fa-volume-up"></i> MASTER VOLUME
-        </label>
-        <span id="gain-value" class="badge-custom">1.0</span>
-    </div>
-    <input type="range" class="form-range" min="0" max="3" step="0.1" value="1" 
-           oninput="updateGain(this.value)">
-    <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
-        <span><i class="fas fa-volume-mute"></i> MUTE</span>
-        <span><i class="fas fa-volume-down"></i> NORMAL</span>
-        <span><i class="fas fa-volume-up"></i> BOOST</span>
-    </div>
-</div>
-
     <div class="card">
         <div class="card-header-custom">
             <i class="fas fa-sliders-h"></i>
@@ -116,6 +100,22 @@
         </div>
     </div>
 
+<div class="card p-4 volume-card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <label class="icon-label mb-0" style="color: #00ff88; font-size: 1.1rem; font-weight: 600;">
+            <i class="fas fa-volume-up"></i> MASTER VOLUME
+        </label>
+        <span id="gain-value" class="badge-custom">1.0</span>
+    </div>
+    <input type="range" class="form-range" min="0" max="3" step="0.1" value="1" 
+           oninput="updateGain(this.value)">
+    <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
+        <span><i class="fas fa-volume-mute"></i> MUTE</span>
+        <span><i class="fas fa-volume-down"></i> NORMAL</span>
+        <span><i class="fas fa-volume-up"></i> BOOST</span>
+    </div>
+</div>
+
     <div class="card p-3">
         <label class="slider-label icon-label mb-2"><i class="fas fa-water"></i> MASTER REVERB</label>
         <input type="range" class="form-range mb-3" min="0" max="1" step="0.05" onchange="setEff('reverb.level', this.value)">
@@ -149,7 +149,7 @@
                     row.onclick = () => setControlChannel(i); // Click the row to assign sliders
                     
                     row.innerHTML = `
-                        <div class="col-2 chan-label">CH${i+1}</div>
+                        <div class="col-2 chan-label">${i+1}</div>
                         <div class="col-10">
                             <select id="select-ch-${i}" class="form-select" onchange="changeInst(${i}, this.value)">
                                 <option value="">Loading...</option>
