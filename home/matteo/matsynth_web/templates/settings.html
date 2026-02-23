@@ -1,144 +1,165 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MatSynth - Impostazioni</title>
+    <title>MatSynth - Settings</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
     <style>
-        body { background: #121212; color: #e0e0e0; font-family: sans-serif; font-size: 0.9rem; }
-        .card { background: #1e1e1e; border: 1px solid #333; margin-bottom: 15px; }
-        .form-select { background-color: #2a2a2a; color: white; border: 1px solid #444; font-size: 0.85rem; }
-        .section-title { font-size: 0.85rem; margin-bottom: 10px; text-transform: uppercase; font-weight: bold; letter-spacing: 1px; }
+        /* Page-specific adjustments */
+        .logo-title {
+            font-size: 2rem;
+        }
+        .form-select {
+            padding: 10px;
+            border-radius: 8px;
+        }
+        .btn-custom {
+            padding: 15px;
+            font-size: 1rem;
+        }
     </style>
 </head>
-<body class="container py-3">
+<body class="container py-4">
 
-    <div class="d-flex justify-content-between align-items-center mb-4 border-bottom border-secondary pb-2">
-        <h3 class="text-white mb-0">⚙️ IMPOSTAZIONI</h3>
-        <a href="/" class="btn btn-outline-light btn-sm fw-bold">🔙 MIXER</a>
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="logo-title"><i class="fas fa-cog"></i> SETTINGS</h1>
+        <a href="/" class="btn btn-back">
+            <i class="fas fa-arrow-left"></i> Back to Mixer
+        </a>
     </div>
 
-    <div class="card p-3 border-info" style="border-width: 2px;">
-        <div class="section-title text-info">🌐 Stato di Rete (IP)</div>
+    <div class="card p-4" style="border: 2px solid rgba(0, 212, 255, 0.4);">
+        <div class="section-title" style="color: #00d4ff;">
+            <i class="fas fa-network-wired"></i> Network Status (IP)
+        </div>
         <div id="network-info" class="text-muted" style="font-size: 0.85rem;">
-            <p class="mb-0">Ricerca reti in corso...</p>
+            <p class="mb-0"><i class="fas fa-spinner fa-spin"></i> Searching networks...</p>
         </div>
     </div>
 
-    <div class="card p-3 border-success">
-        <div class="section-title text-success">🎧 Uscita Audio (ALSA)</div>
-        <p class="text-muted small mb-2">Seleziona la scheda audio su cui far uscire il suono di FluidSynth.</p>
+    <div class="card p-4" style="border: 2px solid rgba(0, 255, 136, 0.4);">
+        <div class="section-title" style="color: #00ff88;">
+            <i class="fas fa-headphones"></i> Audio Output (ALSA)
+        </div>
+        <p class="text-muted small mb-3">Select the audio device for FluidSynth output.</p>
         <select id="audio-select" class="form-select mb-2">
-            <option value="">Ricerca schede audio in corso...</option>
+            <option value=""><i class="fas fa-spinner fa-spin"></i> Searching audio devices...</option>
         </select>
     </div>
 
-    <div class="card p-3 border-warning">
-        <div class="section-title text-warning">🎹 Ingresso MIDI</div>
-        <p class="text-muted small mb-2">Seleziona la tastiera o il controller collegato via USB.</p>
+    <div class="card p-4" style="border: 2px solid rgba(255, 193, 7, 0.4);">
+        <div class="section-title" style="color: #ffc107;">
+            <i class="fas fa-piano-keyboard"></i> MIDI Input
+        </div>
+        <p class="text-muted small mb-3">Select the keyboard or controller connected via USB.</p>
         <select id="midi-select" class="form-select mb-2">
-            <option value="">Ricerca dispositivi MIDI in corso...</option>
+            <option value=""><i class="fas fa-spinner fa-spin"></i> Searching MIDI devices...</option>
         </select>
     </div>
 
     <div class="d-grid gap-2 mt-4">
-        <button id="btn-save" class="btn btn-danger fw-bold py-3" onclick="saveAndRestart()">
-            💾 SALVA E RIAVVIA MATSYNTH
+        <button id="btn-save" class="btn btn-custom" onclick="saveAndRestart()">
+            <i class="fas fa-save"></i> SAVE & RESTART MATSYNTH
         </button>
-        <small class="text-center text-muted mt-1">Il riavvio richiederà circa 5 secondi.</small>
+        <small class="text-center text-muted mt-2" style="font-size: 0.8rem;">
+            <i class="fas fa-info-circle"></i> Restart will take approximately 5 seconds.
+        </small>
     </div>
 
     <script>
-        // Questa funzione viene chiamata all'apertura della pagina
+        // This function is called when the page loads
         async function loadSettings() {
             try {
-                // 1. CHIEDE AL SERVER GLI INDIRIZZI IP
+                // 1. REQUEST IP ADDRESSES FROM SERVER
                 const resNet = await fetch('/api/network');
                 const netData = await resNet.json();
                 
-                let netHtml = `<strong class="text-white">Hostname:</strong> ${netData.hostname}.local<br><br>`;
-                netHtml += `<strong class="text-white">Indirizzi disponibili:</strong><br>`;
+                let netHtml = `<strong class="text-white">Hostname:</strong> <span class="text-light">${netData.hostname}.local</span><br><br>`;
+                netHtml += `<strong class="text-white">Available addresses:</strong><br>`;
                 if (netData.ips.length === 0) {
-                    netHtml += `- Nessuna rete trovata (Solo USB locale)<br>`;
+                    netHtml += `<span class="text-muted"><i class="fas fa-exclamation-triangle"></i> No network found (USB local only)</span><br>`;
                 } else {
                     netData.ips.forEach(ip => {
-                        // Evidenzia visivamente se è un IP locale classico (192.168...)
+                        // Visually highlight if it's a classic local IP (192.168...)
                         let badgeClass = ip.startsWith('192.168') ? 'bg-info text-dark' : 'bg-secondary';
-                        netHtml += `<span class="badge ${badgeClass} fs-6 mt-1 mb-1">${ip}</span><br>`;
+                        netHtml += `<span class="badge badge-ip ${badgeClass} mt-2 mb-1">${ip}</span><br>`;
                     });
                 }
                 document.getElementById('network-info').innerHTML = netHtml;
 
-                // 2. CHIEDE AL SERVER LE SCHEDE AUDIO
+                // 2. REQUEST AUDIO DEVICES FROM SERVER
                 const resAudio = await fetch('/api/audio_devices');
                 const audioData = await resAudio.json();
                 const audioSelect = document.getElementById('audio-select');
-                audioSelect.innerHTML = ''; // Svuota il menu
+                audioSelect.innerHTML = ''; // Clear the menu
                 
                 audioData.devices.forEach(dev => {
                     let opt = document.createElement('option');
-                    opt.value = dev.id;         // Es: "hw:1,0"
-                    opt.innerHTML = dev.name;   // Es: "USB Audio DAC"
+                    opt.value = dev.id;         // e.g., "hw:1,0"
+                    opt.innerHTML = dev.name;   // e.g., "USB Audio DAC"
                     if (dev.id === audioData.current) opt.selected = true;
                     audioSelect.appendChild(opt);
                 });
 
-                // 3. CHIEDE AL SERVER LE TASTIERE MIDI
+                // 3. REQUEST MIDI DEVICES FROM SERVER
                 const resMidi = await fetch('/api/midi_devices');
                 const midiData = await resMidi.json();
                 const midiSelect = document.getElementById('midi-select');
-                midiSelect.innerHTML = ''; // Svuota il menu
+                midiSelect.innerHTML = ''; // Clear the menu
                 
                 midiData.devices.forEach(dev => {
                     let opt = document.createElement('option');
-                    opt.value = dev.id;         // Es: "24:0"
-                    opt.innerHTML = dev.name;   // Es: "Fantom-08 MIDI 1"
+                    opt.value = dev.id;         // e.g., "24:0"
+                    opt.innerHTML = dev.name;   // e.g., "Fantom-08 MIDI 1"
                     if (dev.id === midiData.current) opt.selected = true;
                     midiSelect.appendChild(opt);
                 });
 
             } catch (e) {
-                console.error("Errore di comunicazione col Raspberry:", e);
-                document.getElementById('network-info').innerHTML = "<span class='text-danger'>Errore di connessione al server.</span>";
+                console.error("Raspberry communication error:", e);
+                document.getElementById('network-info').innerHTML = "<span class='text-danger'><i class='fas fa-times-circle'></i> Server connection error.</span>";
             }
         }
 
-        // Funzione per salvare le scelte e riavviare FluidSynth
+        // Function to save choices and restart FluidSynth
         async function saveAndRestart() {
             const btn = document.getElementById('btn-save');
-            btn.innerText = "⏳ SALVATAGGIO IN CORSO...";
-            btn.classList.replace('btn-danger', 'btn-warning');
+            btn.innerHTML = "<i class='fas fa-spinner fa-spin'></i> SAVING...";
+            btn.style.opacity = "0.7";
             btn.disabled = true;
 
             const audioDev = document.getElementById('audio-select').value;
             const midiDev = document.getElementById('midi-select').value;
 
             try {
-                // Invia i dati al file Python
+                // Send data to Python script
                 await fetch('/api/save_hardware', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ audio: audioDev, midi: midiDev })
                 });
                 
-                btn.innerText = "🔄 RIAVVIO DEL MOTORE AUDIO...";
-                btn.classList.replace('btn-warning', 'btn-success');
+                btn.innerHTML = "<i class='fas fa-sync fa-spin'></i> RESTARTING AUDIO ENGINE...";
+                btn.style.background = "linear-gradient(135deg, #ffc107, #ff9800)";
                 
-                // Attende 5 secondi affinché FluidSynth si spenga e si riaccenda, poi torna alla Home
+                // Wait 5 seconds for FluidSynth to shut down and restart, then return to Home
                 setTimeout(() => {
                     window.location.href = "/";
                 }, 5000);
 
             } catch (e) {
-                alert("Errore durante il salvataggio! Controlla la connessione.");
-                btn.innerText = "💾 SALVA E RIAVVIA MATSYNTH";
-                btn.classList.replace('btn-warning', 'btn-danger');
+                alert("Error during save! Check the connection.");
+                btn.innerHTML = "<i class='fas fa-save'></i> SAVE & RESTART MATSYNTH";
+                btn.style.opacity = "1";
+                btn.style.background = "linear-gradient(135deg, #00ff88, #00d4ff)";
                 btn.disabled = false;
             }
         }
 
-        // Carica i dati appena la pagina è pronta
+        // Load data as soon as the page is ready
         window.onload = loadSettings;
     </script>
 </body>
