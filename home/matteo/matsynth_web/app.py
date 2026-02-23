@@ -93,6 +93,10 @@ def index():
     files = [f for f in os.listdir(SF2_DIR) if f.endswith(('.sf2', '.sf3'))] if os.path.exists(SF2_DIR) else []
     return render_template('index.html', files=files)
 
+@app.route('/settings')
+def settings():
+    return render_template('settings.html')
+
 @app.route('/list_sf2')
 def list_sf2():
     if not os.path.exists(SF2_DIR): return jsonify([])
