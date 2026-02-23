@@ -4,6 +4,7 @@ import os
 import json
 import time
 import subprocess
+import threading
 
 app = Flask(__name__)
 
@@ -106,6 +107,7 @@ def list_sf2():
 
 @app.route('/load_sf2/<filename>')
 def load_sf2(filename):
+    global sf_id
     path = os.path.join(SF2_DIR, filename)
     
     # 1. Troviamo TUTTI gli ID caricati attualmente
@@ -139,10 +141,7 @@ def get_instruments():
 
 @app.route('/select_prog/<int:chan>/<int:bank>/<int:prog>')
 def select_prog(chan, bank, prog):
-    # 1. Ottieni l'ID dinamico se non gia esistente
-    sf_id = get_active_sf_id()
-    
-    # 2. Usa l'ID corretto nel comando select
+    # Usa l'ID già caricato in memoria (molto più veloce!)
     comando = f"select {chan} {sf_id} {bank} {prog}"
     send_fluid(comando)
     return "OK"
@@ -254,16 +253,21 @@ def api_midi():
 
 @app.route('/api/save_hardware', methods=['POST'])
 def save_hardware():
-    """Salva le impostazioni e 'uccide' FluidSynth per farlo ripartire"""
+    """Salva le impostazioni e riavvia il servizio MatSynth"""
     data = request.json
     if 'audio' in data and data['audio']: 
         save_state('audio_device', data['audio'])
     if 'midi' in data and data['midi']: 
         save_state('midi_device', data['midi'])
     
-    # Killa il processo di FluidSynth. 
-    # Affinché si riavvii da solo, startfluid.sh dovrà avere un "loop" infinito.
-    os.system("pkill fluidsynth")
+    # Riavvia il servizio systemd in un thread separato dopo 1 secondo
+    # per permettere alla risposta HTTP di arrivare al browser
+    def delayed_restart():
+        time.sleep(1)
+        os.system("sudo systemctl restart matsynth.service")
+    
+    restart_thread = threading.Thread(target=delayed_restart, daemon=True)
+    restart_thread.start()
     
     return jsonify({"status": "ok"})
 
@@ -271,4 +275,7 @@ def save_hardware():
 if __name__ == '__main__':
     time.sleep(2)
     restore_settings()
+    # Inizializza l'ID del soundfont all'avvio
+    sf_id = get_active_sf_id()
+    print(f"Soundfont ID caricato: {sf_id}")
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=False)
