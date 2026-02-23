@@ -327,3 +327,22 @@ input[type=range].vertical-slider::-webkit-slider-thumb {
     justify-content: center;
     line-height: 1.1;
 }
+
+/* Settings Page Specific Styles */
+.settings-page .logo-title {
+    font-size: 2rem;
+    /* Simpler style without gradient */
+    color: #00ff88;
+    background: none;
+    -webkit-text-fill-color: #00ff88;
+}
+
+.settings-page .form-select {
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.settings-page .btn-custom {
+    padding: 15px;
+    font-size: 1rem;
+}
