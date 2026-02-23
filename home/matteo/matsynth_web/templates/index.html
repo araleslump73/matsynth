@@ -1,312 +1,12 @@
 <!DOCTYPE html>
-<html lang="it">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MatSynth Multitimbrico</title>
+    <title>MatSynth Multitimbric</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Roboto:wght@300;400;500&display=swap');
-        
-        body { 
-            background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%);
-            color: #e0e0e0; 
-            font-family: 'Roboto', sans-serif; 
-            font-size: 0.9rem;
-            min-height: 100vh;
-        }
-        
-        .logo-title {
-            font-family: 'Orbitron', sans-serif;
-            font-weight: 900;
-            font-size: 2.5rem;
-            background: linear-gradient(45deg, #00ff88, #00d4ff, #ff00e5);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            text-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
-            letter-spacing: 3px;
-            margin-bottom: 0;
-        }
-        
-        .subtitle {
-            font-size: 0.9rem;
-            color: #00ff88;
-            font-weight: 300;
-            letter-spacing: 2px;
-            text-transform: uppercase;
-        }
-        
-        .card { 
-            background: rgba(30, 30, 46, 0.8);
-            border: 1px solid rgba(0, 255, 136, 0.2);
-            margin-bottom: 20px;
-            border-radius: 12px;
-            box-shadow: 0 8px 32px 0 rgba(0, 255, 136, 0.1);
-            backdrop-filter: blur(10px);
-            transition: all 0.3s ease;
-        }
-        
-        .card:hover {
-            border-color: rgba(0, 255, 136, 0.4);
-            box-shadow: 0 12px 40px 0 rgba(0, 255, 136, 0.2);
-            transform: translateY(-2px);
-        }
-        
-        .card-header-custom {
-            background: linear-gradient(135deg, rgba(0, 255, 136, 0.1), rgba(0, 212, 255, 0.1));
-            border-bottom: 1px solid rgba(0, 255, 136, 0.3);
-            padding: 15px;
-            border-radius: 12px 12px 0 0;
-            font-weight: 500;
-            font-size: 1rem;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .slider-label { 
-            font-size: 0.75rem; 
-            color: #00ff88; 
-            margin-bottom: 5px; 
-            display: block; 
-            text-transform: uppercase;
-            font-weight: 500;
-            letter-spacing: 1px;
-        }
-        
-        .form-select { 
-            background-color: rgba(42, 42, 60, 0.8);
-            color: white; 
-            border: 1px solid rgba(0, 255, 136, 0.3);
-            font-size: 0.85rem;
-            border-radius: 6px; /* Match channel row radius */
-            padding-top: 4px; /* Compact padding */
-            padding-bottom: 4px; 
-            transition: all 0.3s ease;
-        }
-        
-        .form-select:focus {
-            border-color: #00ff88;
-            box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
-            background-color: rgba(42, 42, 60, 0.95);
-        }
-        
-        .form-range {
-            height: 6px;
-        }
-        
-        .form-range::-webkit-slider-thumb {
-            background: linear-gradient(135deg, #00ff88, #00d4ff);
-            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
-            width: 18px;
-            height: 18px;
-        }
-        
-        .form-range::-webkit-slider-runnable-track {
-            background: rgba(0, 255, 136, 0.2);
-            border-radius: 5px;
-        }
-        
-        /* Stili Mixer */
-        .mixer-container { 
-            max-height: 260px; /* Ridotto per mostrare circa 4 canali */
-            overflow-y: auto; 
-            padding-right: 5px;
-        }
-        
-        .channel-row { 
-            background: linear-gradient(90deg, rgba(37, 37, 55, 0.6), rgba(30, 30, 46, 0.8));
-            border-radius: 6px; /* Raggio più piccolo per look compatto */
-            padding: 5px 10px; /* Padding verticale ridotto */
-            margin-bottom: 4px; /* Margine ridotto */
-            border-left: 4px solid #00ff88;
-            transition: all 0.3s ease;
-            cursor: pointer;
-            align-items: center; /* Centratura verticale */
-        }
-        
-        .channel-row:hover {
-            background: linear-gradient(90deg, rgba(50, 50, 70, 0.7), rgba(40, 40, 60, 0.9));
-            border-left-width: 6px;
-            transform: translateX(3px);
-        }
-        
-        .channel-row.active {
-            border-left-color: #ffc107;
-            background: linear-gradient(90deg, rgba(255, 193, 7, 0.15), rgba(40, 40, 60, 0.9));
-            box-shadow: 0 4px 15px rgba(255, 193, 7, 0.2);
-        }
-        
-        .chan-label { 
-            font-weight: bold; 
-            color: #ffc107; 
-            line-height: 31px;
-            font-family: 'Orbitron', sans-serif;
-            font-size: 0.95rem;
-        }
-        
-        .btn-custom {
-            background: linear-gradient(135deg, #00ff88, #00d4ff);
-            border: none;
-            color: #0a0a0a;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            padding: 12px;
-            border-radius: 10px;
-            transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
-        }
-        
-        .btn-custom:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(0, 255, 136, 0.5);
-            background: linear-gradient(135deg, #00d4ff, #00ff88);
-        }
-        
-        .btn-custom:active {
-            transform: translateY(0);
-        }
-        
-        .btn-custom:disabled {
-            background: linear-gradient(135deg, #555, #777);
-            box-shadow: none;
-        }
-        
-        .badge-custom {
-            background: linear-gradient(135deg, #00ff88, #00d4ff);
-            color: #0a0a0a;
-            font-weight: 700;
-            padding: 8px 15px;
-            font-size: 1rem;
-            border-radius: 8px;
-            font-family: 'Orbitron', sans-serif;
-        }
-        
-        .volume-card {
-            background: linear-gradient(135deg, rgba(0, 255, 136, 0.1), rgba(0, 212, 255, 0.05));
-            border: 2px solid rgba(0, 255, 136, 0.4);
-            box-shadow: 0 8px 32px rgba(0, 255, 136, 0.2);
-        }
-        
-        /* Personalizzazione scrollbar */
-        .mixer-container::-webkit-scrollbar { width: 10px; }
-        .mixer-container::-webkit-scrollbar-track { 
-            background: rgba(26, 26, 46, 0.5); 
-            border-radius: 10px;
-        }
-        .mixer-container::-webkit-scrollbar-thumb { 
-            background: linear-gradient(135deg, #00ff88, #00d4ff);
-            border-radius: 10px;
-        }
-        .mixer-container::-webkit-scrollbar-thumb:hover {
-            background: linear-gradient(135deg, #00d4ff, #ff00e5);
-        }
-        
-        .icon-label {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        /* Nuovi stili per slider verticali */
-        .vertical-slider-group {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            height: 250px; 
-            justify-content: flex-end;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 10px;
-            padding: 10px 0;
-            border: 1px solid rgba(0, 255, 136, 0.1);
-        }
-
-        .vertical-range-container {
-            height: 150px;
-            width: 40px; /* Larghezza fissa per il contenitore */
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin: 10px 0;
-            position: relative;
-        }
-
-        /* 
-           Approccio robusto per slider verticali:
-           Usiamo uno slider orizzontale standard e lo ruotiamo di -90 gradi.
-           Questo garantisce che il 'bottone' (thumb) sia perfettamente centrato sulla traccia.
-        */
-        input[type=range].vertical-slider {
-            width: 150px; /* La lunghezza visiva verticale diventa la width qui */
-            height: 40px; /* L'area cliccabile laterale */
-            transform: rotate(-90deg);
-            transform-origin: center;
-            margin: 0;
-            position: absolute; /* Per centrarlo nel container */
-            background: transparent;
-            cursor: pointer;
-        }
-        
-        .val-badge {
-            font-family: 'Orbitron', sans-serif;
-            color: #fff;
-            background: rgba(255, 255, 255, 0.1);
-            padding: 2px 0; /* Ridotto padding orizzontale */
-            border-radius: 4px;
-            font-size: 0.8rem;
-            margin-bottom: 5px;
-            width: 40px;
-            text-align: center;
-            white-space: nowrap; /* Evita a capo */
-            overflow: hidden;
-            display: block; /* Assicura blocco per width */
-        }
-        
-        /* Stile traccia personalizzata per slider ruotato */
-        input[type=range].vertical-slider {
-            -webkit-appearance: none;
-            width: 150px;
-            height: 6px; /* Spessore della traccia */
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 3px;
-            outline: none;
-            transform: rotate(-90deg);
-            transform-origin: center;
-            position: absolute;
-            cursor: pointer;
-            touch-action: none; /* CRUCIALE: Previene scroll e zoom su touch */
-        }
-
-        /* Thumb (il bottone) */
-        input[type=range].vertical-slider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            appearance: none;
-            width: 18px;
-            height: 18px;
-            background: #fff; /* Bianco per contrasto o colore tema */
-            border: 2px solid #00ff88; /* Bordo verde */
-            border-radius: 50%;
-            cursor: pointer;
-            box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
-            z-index: 2;
-            position: relative;
-        }
-        
-        .slider-label-vert {
-            font-size: 0.7rem;
-            text-align: center;
-            margin-top: auto;
-            color: #00ff88;
-            height: 40px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            line-height: 1.1;
-        }
-    </style>
+    <link rel="stylesheet" href="/static/style.css">
 </head>
 <body class="container py-4">
     <div class="text-center mb-4">
@@ -314,27 +14,19 @@
         <p class="subtitle"><i class="fas fa-music"></i> Multitimbric Synthesizer Controller</p>
     </div>
 
-    <div class="d-grid mb-4">
-        <button class="btn btn-custom" onclick="syncWithSynth()">
-            <i class="fas fa-sync-alt"></i> Refresh
-        </button>
+    <!-- Settings and Refresh buttons in two columns -->
+    <div class="row g-2 mb-4">
+        <div class="col-6">
+            <a href="/settings" class="btn btn-outline-info fw-bold w-100" style="padding: 8px;">
+                <i class="fas fa-cog"></i> Settings
+            </a>
+        </div>
+        <div class="col-6">
+            <button class="btn btn-custom w-100" onclick="syncWithSynth()" style="padding: 8px;">
+                <i class="fas fa-sync-alt"></i> Refresh
+            </button>
+        </div>
     </div>
-
-<div class="card p-4 volume-card">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <label class="icon-label mb-0" style="color: #00ff88; font-size: 1.1rem; font-weight: 600;">
-            <i class="fas fa-volume-up"></i> MASTER VOLUME
-        </label>
-        <span id="gain-value" class="badge-custom">1.0</span>
-    </div>
-    <input type="range" class="form-range" min="0" max="3" step="0.1" value="1" 
-           oninput="updateGain(this.value)">
-    <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
-        <span><i class="fas fa-volume-mute"></i> MUTE</span>
-        <span><i class="fas fa-volume-down"></i> NORMAL</span>
-        <span><i class="fas fa-volume-up"></i> BOOST</span>
-    </div>
-</div>
 
     <div class="card">
         <div class="card-header-custom">
@@ -344,7 +36,7 @@
         <div class="p-3">
             <div id="mixer" class="mixer-container">
                 <div class="text-center p-3 text-muted">
-                    <i class="fas fa-spinner fa-spin"></i> Inizializzazione mixer...
+                    <i class="fas fa-spinner fa-spin"></i> Initializing mixer...
                 </div>
             </div>
         </div>
@@ -354,10 +46,10 @@
         <div class="mb-2 text-center">
             <label class="slider-label icon-label" style="font-size: 1rem; color: #ffc107;">
                 <i class="fas fa-crosshairs"></i>
-                CONTROLLI CANALE: <span id="target-ch-display" class="badge bg-warning text-dark ms-2" style="font-size: 1.2rem;">1</span>
+                CHANNEL CONTROLS: <span id="target-ch-display" class="badge bg-warning text-dark ms-2" style="font-size: 1.2rem;">1</span>
             </label>
         </div>
-        <div class="row g-2"> <!-- g-2 riduce lo spazio tra colonne -->
+        <div class="row g-2"> <!-- g-2 reduces space between columns -->
             <!-- ATTACK -->
             <div class="col-3">
                 <div class="vertical-slider-group">
@@ -408,25 +100,41 @@
         </div>
     </div>
 
+<div class="card p-4 volume-card">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <label class="icon-label mb-0" style="color: #00ff88; font-size: 1.1rem; font-weight: 600;">
+            <i class="fas fa-volume-up"></i> MASTER VOLUME
+        </label>
+        <span id="gain-value" class="badge-custom">1.0</span>
+    </div>
+    <input type="range" class="form-range" min="0" max="3" step="0.1" value="1" 
+           oninput="updateGain(this.value)">
+    <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
+        <span><i class="fas fa-volume-mute"></i> MUTE</span>
+        <span><i class="fas fa-volume-down"></i> NORMAL</span>
+        <span><i class="fas fa-volume-up"></i> BOOST</span>
+    </div>
+</div>
+
     <div class="card p-3">
-        <label class="slider-label icon-label mb-2"><i class="fas fa-water"></i> RIVERBERO MASTER</label>
+        <label class="slider-label icon-label mb-2"><i class="fas fa-water"></i> MASTER REVERB</label>
         <input type="range" class="form-range mb-3" min="0" max="1" step="0.05" onchange="setEff('reverb.level', this.value)">
-        <label class="slider-label icon-label mb-2"><i class="fas fa-broadcast-tower"></i> CHORUS MASTER</label>
+        <label class="slider-label icon-label mb-2"><i class="fas fa-broadcast-tower"></i> MASTER CHORUS</label>
         <input type="range" class="form-range" min="0" max="1" step="0.05" onchange="setEff('chorus.level', this.value)">
     </div>
 
     <div class="card p-3 border-info">
         <label class="icon-label" style="color: #00d4ff; font-weight: 600;">
-            <i class="fas fa-folder-open"></i> SELEZIONA SOUNDFONT
+            <i class="fas fa-folder-open"></i> SELECT SOUNDFONT
         </label>
         <select id="sf2-select" class="form-select" onchange="changeSF2(this.value)">
         </select>
     </div>
     <script>
         let instrumentData = [];
-        let activeControlChannel = 0; // Il canale su cui agiscono gli slider CC
+        let activeControlChannel = 0; // The channel on which CC sliders act
 
-        // Inizializzazione Mixer
+        // Mixer Initialization
         async function setupMixer() {
             try {
                 const res = await fetch('/get_instruments');
@@ -438,13 +146,13 @@
                 for (let i = 0; i < 16; i++) {
                     const row = document.createElement('div');
                     row.className = 'row channel-row mx-0';
-                    row.onclick = () => setControlChannel(i); // Clicca la riga per assegnare gli slider
+                    row.onclick = () => setControlChannel(i); // Click the row to assign sliders
                     
                     row.innerHTML = `
-                        <div class="col-2 chan-label">CH${i+1}</div>
+                        <div class="col-2 chan-label">${i+1}</div>
                         <div class="col-10">
                             <select id="select-ch-${i}" class="form-select" onchange="changeInst(${i}, this.value)">
-                                <option value="">Caricamento...</option>
+                                <option value="">Loading...</option>
                             </select>
                         </div>
                     `;
@@ -453,11 +161,11 @@
                 }
                 
                 syncWithSynth();
-            } catch(e) { console.error("Errore Setup:", e); }
+            } catch(e) { console.error("Setup Error:", e); }
         }
 
         function populateDropdown(dropdown) {
-            dropdown.innerHTML = '<option value="">-- Seleziona Suono --</option>';
+            dropdown.innerHTML = '<option value="">-- Select Sound --</option>';
             instrumentData.forEach(inst => {
                 if (!inst.includes('-')) return;
                 const parts = inst.split('-');
@@ -471,11 +179,11 @@
             });
         }
 
-        // Cambio Canale per Slider
+        // Change Channel for Sliders
         function setControlChannel(chan) {
             activeControlChannel = chan;
             document.getElementById('target-ch-display').innerText = chan + 1;
-            // Evidenzia visivamente la riga attiva
+            // Visually highlight the active row
             document.querySelectorAll('.channel-row').forEach((r, idx) => {
                 if (idx === chan) {
                     r.classList.add('active');
@@ -485,26 +193,26 @@
             });
         }
 
-        // Azioni
+        // Actions
         async function changeInst(chan, val) {
             if (!val) return;
             const [bank, prog] = val.split(',');
             setControlChannel(chan);
             await fetch(`/select_prog/${chan}/${bank}/${prog}`);
             
-            // Reset veloce del canale tramite comando FluidSynth
+            // Quick channel reset via FluidSynth command
             // await fetch(`/reset_channel/${chan}`);
             
-            // Resetta gli slider UI ai valori di default
+            // Reset UI sliders to default values
             resetUISliders();
         }
         
-        // NOTA: Con slider verticali nativi (-webkit-appearance: slider-vertical), 
-        // non possiamo modificare il background gradient facilmente come con quelli orizzontali.
-        // La funzione updateSliderBackground viene rimossa perché non ha effetto su slider nativi verticali.
+        // NOTE: With native vertical sliders (-webkit-appearance: slider-vertical), 
+        // we cannot easily modify the background gradient as with horizontal ones.
+        // The updateSliderBackground function is removed because it has no effect on native vertical sliders.
         
         function resetUISliders() {
-            // Reset solo l'interfaccia grafica
+            // Reset only the UI
             const attackSlider = document.querySelector('input[oninput*="updateCC(73"]');
             if (attackSlider) { 
                 attackSlider.value = 64; 
@@ -543,12 +251,12 @@
         }
 
 function updateGain(val) {
-    // Aggiorna il numeretto visibile accanto all'etichetta
+    // Update the visible number next to the label
     document.getElementById('gain-value').innerText = parseFloat(val).toFixed(1);
     
-    // Invia il comando al server
-    // Nota: 'gain' non ha bisogno di prefissi particolari perché la rotta 
-    // in app.py aggiunge già 'synth.'
+    // Send command to server
+    // Note: 'gain' doesn't need special prefixes because the route 
+    // in app.py already adds 'synth.'
     setEff('gain', val);
 }
 
@@ -556,7 +264,7 @@ function updateGain(val) {
 async function syncWithSynth() {
     const btn = document.querySelector('button[onclick="syncWithSynth()"]');
     const originalHTML = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> SINCRONIZZANDO...';
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> SYNCING...';
     btn.disabled = true;
 
     try {
@@ -565,8 +273,8 @@ async function syncWithSynth() {
         const lines = data.raw.split('\n');
 
         lines.forEach(line => {
-            // Estrae il numero del canale e il nome dello strumento
-            // Esempio: "chan 0, Grand Piano" -> ch: 0, name: "Grand Piano"
+            // Extract the channel number and instrument name
+            // Example: "chan 0, Grand Piano" -> ch: 0, name: "Grand Piano"
             const parts = line.split(',');
             if (parts.length >= 2) {
                 const chan = parts[0].replace('chan', '').trim();
@@ -574,7 +282,7 @@ async function syncWithSynth() {
 
                 const dropdown = document.getElementById(`select-ch-${chan}`);
                 if (dropdown) {
-                    // Cerchiamo tra le opzioni quella che contiene il nome dello strumento
+                    // Search among options for the one containing the instrument name
                     for (let option of dropdown.options) {
                         if (option.text.includes(instrumentName)) {
                             dropdown.value = option.value;
@@ -585,16 +293,16 @@ async function syncWithSynth() {
             }
         });
     } catch (e) {
-        console.error("Errore Sync:", e);
+        console.error("Sync Error:", e);
     } finally {
-        btn.innerHTML = '<i class="fas fa-sync-alt"></i> AGGIORNA STATO DA TASTIERA';
+        btn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
         btn.disabled = false;
     }
 }
 
 async function fetchSF2List() {
     try {
-        // 1. Scarica la lista dei file
+        // 1. Download the list of files
         const resList = await fetch('/list_sf2');
         const files = await resList.json();
 
@@ -608,27 +316,27 @@ async function fetchSF2List() {
             select.appendChild(opt);
         });
 
-        // 2. Scarica lo STATO ATTUALE (Font, Gain, Effetti)
+        // 2. Download the CURRENT STATE (Font, Gain, Effects)
         const resState = await fetch('/get_state');
         const state = await resState.json();
 
-        console.log("Stato ricevuto dal server:", state); // Utile per debug
+        console.log("State received from server:", state); // Useful for debug
 
-        // Imposta il Font corretto nel menu
+        // Set the correct Font in the menu
         if (state.font) {
             select.value = state.font;
         }
 
-// Aggiorna il Gain (Volume)
+// Update the Gain (Volume)
         if (state.gain) {
             const val = parseFloat(state.gain);
 
-            // 1. Aggiorna il numeretto verde
+            // 1. Update the green number
             const badge = document.getElementById('gain-value');
             if (badge) badge.innerText = val.toFixed(1);
             
-            // 2. Aggiorna la posizione dello Slider fisico
-            // Cerchiamo l'input specifico che chiama la funzione "updateGain"
+            // 2. Update the physical Slider position
+            // Find the specific input that calls the "updateGain" function
             const slider = document.querySelector('input[oninput*="updateGain"]');
             
             if (slider) {
@@ -637,8 +345,8 @@ async function fetchSF2List() {
         }
 
 
-        // (Opzionale) Se vuoi sincronizzare anche gli slider degli effetti all'avvio:
-        // Assicurati di dare id="reverb-slider" e id="chorus-slider" nel tuo HTML
+        // (Optional) If you want to also sync effect sliders on startup:
+        // Make sure to give id="reverb-slider" and id="chorus-slider" in your HTML
         /*
         if (state['reverb.level']) {
             document.querySelector('input[onchange*="reverb.level"]').value = state['reverb.level'];
@@ -649,7 +357,7 @@ async function fetchSF2List() {
         */
 
     } catch (e) {
-        console.error("Errore sincronizzazione stato iniziale:", e);
+        console.error("Initial state sync error:", e);
     }
 }
 
@@ -657,31 +365,31 @@ async function fetchSF2List() {
 
 async function changeSF2(filename) {
     const select = document.getElementById('sf2-select');
-    // Disabilita il select per evitare doppi click
+    // Disable the select to avoid double clicks
     select.disabled = true;
     
-    // Feedback visivo forte
+    // Strong visual feedback
     document.body.style.opacity = "0.3";
     document.body.style.cursor = "wait";
     
-    // Lancia il comando
+    // Launch the command
     await fetch(`/load_sf2/${filename}`);
     
-    // ATTESA CRUCIALE: 4 secondi per permettere al Pi Zero di caricare il file in RAM
+    // CRUCIAL WAIT: 5 seconds to allow the Pi Zero to load the file into RAM
     setTimeout(() => {
         location.reload();
     }, 5000); 
 }
 
 
-// Chiama la funzione al caricamento
+// Call the function on load
 fetchSF2List();
 
 
 
-        // Event listener puliti
+        // Clean event listeners
         window.addEventListener('load', () => {
-             // Nessuna azione speciale necessaria per slider nativi
+             // No special action needed for native sliders
         });
 
         window.onload = setupMixer;

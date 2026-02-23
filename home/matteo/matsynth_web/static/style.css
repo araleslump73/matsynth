@@ -1,0 +1,348 @@
+@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Roboto:wght@300;400;500&display=swap');
+
+/* Base Styles */
+body { 
+    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%);
+    color: #e0e0e0; 
+    font-family: 'Roboto', sans-serif; 
+    font-size: 0.9rem;
+    min-height: 100vh;
+}
+
+/* Typography */
+.logo-title {
+    font-family: 'Orbitron', sans-serif;
+    font-weight: 900;
+    font-size: 2.5rem;
+    background: linear-gradient(45deg, #00ff88, #00d4ff, #ff00e5);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    text-shadow: 0 0 20px rgba(0, 255, 136, 0.3);
+    letter-spacing: 3px;
+    margin-bottom: 0;
+}
+
+.logo-title-small {
+    font-size: 2rem;
+}
+
+.subtitle {
+    font-size: 0.9rem;
+    color: #00ff88;
+    font-weight: 300;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+}
+
+/* Cards */
+.card { 
+    background: rgba(30, 30, 46, 0.8);
+    border: 1px solid rgba(0, 255, 136, 0.2);
+    margin-bottom: 20px;
+    border-radius: 12px;
+    box-shadow: 0 8px 32px 0 rgba(0, 255, 136, 0.1);
+    backdrop-filter: blur(10px);
+    transition: all 0.3s ease;
+}
+
+.card:hover {
+    border-color: rgba(0, 255, 136, 0.4);
+    box-shadow: 0 12px 40px 0 rgba(0, 255, 136, 0.2);
+    transform: translateY(-2px);
+}
+
+.card-header-custom {
+    background: linear-gradient(135deg, rgba(0, 255, 136, 0.1), rgba(0, 212, 255, 0.1));
+    border-bottom: 1px solid rgba(0, 255, 136, 0.3);
+    padding: 15px;
+    border-radius: 12px 12px 0 0;
+    font-weight: 500;
+    font-size: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.volume-card {
+    background: linear-gradient(135deg, rgba(0, 255, 136, 0.1), rgba(0, 212, 255, 0.05));
+    border: 2px solid rgba(0, 255, 136, 0.4);
+    box-shadow: 0 8px 32px rgba(0, 255, 136, 0.2);
+}
+
+/* Form Elements */
+.slider-label { 
+    font-size: 0.75rem; 
+    color: #00ff88; 
+    margin-bottom: 5px; 
+    display: block; 
+    text-transform: uppercase;
+    font-weight: 500;
+    letter-spacing: 1px;
+}
+
+.section-title { 
+    font-size: 0.9rem; 
+    margin-bottom: 10px; 
+    text-transform: uppercase; 
+    font-weight: 600; 
+    letter-spacing: 1px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.form-select { 
+    background-color: rgba(42, 42, 60, 0.8);
+    color: white; 
+    border: 1px solid rgba(0, 255, 136, 0.3);
+    font-size: 0.85rem;
+    border-radius: 6px;
+    padding-top: 4px;
+    padding-bottom: 4px; 
+    transition: all 0.3s ease;
+}
+
+.form-select:focus {
+    border-color: #00ff88;
+    box-shadow: 0 0 15px rgba(0, 255, 136, 0.3);
+    background-color: rgba(42, 42, 60, 0.95);
+}
+
+.form-range {
+    height: 6px;
+}
+
+.form-range::-webkit-slider-thumb {
+    background: linear-gradient(135deg, #00ff88, #00d4ff);
+    box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+    width: 18px;
+    height: 18px;
+}
+
+.form-range::-webkit-slider-runnable-track {
+    background: rgba(0, 255, 136, 0.2);
+    border-radius: 5px;
+}
+
+/* Buttons */
+.btn-custom {
+    background: linear-gradient(135deg, #00ff88, #00d4ff);
+    border: none;
+    color: #0a0a0a;
+    font-weight: 600;
+    letter-spacing: 1px;
+    padding: 12px;
+    border-radius: 10px;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
+}
+
+.btn-custom:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(0, 255, 136, 0.5);
+    background: linear-gradient(135deg, #00d4ff, #00ff88);
+}
+
+.btn-custom:active {
+    transform: translateY(0);
+}
+
+.btn-custom:disabled {
+    background: linear-gradient(135deg, #555, #777);
+    box-shadow: none;
+    transform: none;
+}
+
+.btn-back {
+    background: rgba(0, 255, 136, 0.1);
+    border: 2px solid rgba(0, 255, 136, 0.3);
+    color: #00ff88;
+    font-weight: 600;
+    padding: 8px 20px;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+}
+
+.btn-back:hover {
+    background: rgba(0, 255, 136, 0.2);
+    border-color: #00ff88;
+    color: #00ff88;
+    transform: translateY(-2px);
+}
+
+/* Badges */
+.badge-custom {
+    background: linear-gradient(135deg, #00ff88, #00d4ff);
+    color: #0a0a0a;
+    font-weight: 700;
+    padding: 8px 15px;
+    font-size: 1rem;
+    border-radius: 8px;
+    font-family: 'Orbitron', sans-serif;
+}
+
+.badge-ip {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.9rem;
+    padding: 8px 15px;
+    border-radius: 6px;
+    font-weight: 600;
+}
+
+/* Mixer Styles */
+.mixer-container { 
+    max-height: 260px;
+    overflow-y: auto; 
+    padding-right: 5px;
+}
+
+.channel-row { 
+    background: linear-gradient(90deg, rgba(37, 37, 55, 0.6), rgba(30, 30, 46, 0.8));
+    border-radius: 6px;
+    padding: 5px 10px;
+    margin-bottom: 4px;
+    border-left: 4px solid #00ff88;
+    transition: all 0.3s ease;
+    cursor: pointer;
+    align-items: center;
+}
+
+.channel-row:hover {
+    background: linear-gradient(90deg, rgba(50, 50, 70, 0.7), rgba(40, 40, 60, 0.9));
+    border-left-width: 6px;
+    transform: translateX(3px);
+}
+
+.channel-row.active {
+    border-left-color: #ffc107;
+    background: linear-gradient(90deg, rgba(255, 193, 7, 0.15), rgba(40, 40, 60, 0.9));
+    box-shadow: 0 4px 15px rgba(255, 193, 7, 0.2);
+}
+
+.chan-label { 
+    font-weight: bold; 
+    color: #ffc107; 
+    line-height: 31px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.95rem;
+}
+
+/* Scrollbar customization */
+.mixer-container::-webkit-scrollbar { width: 10px; }
+.mixer-container::-webkit-scrollbar-track { 
+    background: rgba(26, 26, 46, 0.5); 
+    border-radius: 10px;
+}
+.mixer-container::-webkit-scrollbar-thumb { 
+    background: linear-gradient(135deg, #00ff88, #00d4ff);
+    border-radius: 10px;
+}
+.mixer-container::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(135deg, #00d4ff, #ff00e5);
+}
+
+/* Utility Classes */
+.icon-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* Vertical Sliders */
+.vertical-slider-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    height: 250px; 
+    justify-content: flex-end;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 10px;
+    padding: 10px 0;
+    border: 1px solid rgba(0, 255, 136, 0.1);
+}
+
+.vertical-range-container {
+    height: 150px;
+    width: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 10px 0;
+    position: relative;
+}
+
+input[type=range].vertical-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 150px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 3px;
+    outline: none;
+    transform: rotate(-90deg);
+    transform-origin: center;
+    position: absolute;
+    cursor: pointer;
+    touch-action: none;
+}
+
+input[type=range].vertical-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 18px;
+    height: 18px;
+    background: #fff;
+    border: 2px solid #00ff88;
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+    z-index: 2;
+    position: relative;
+}
+
+.val-badge {
+    font-family: 'Orbitron', sans-serif;
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+    padding: 2px 0;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    margin-bottom: 5px;
+    width: 40px;
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    display: block;
+}
+
+.slider-label-vert {
+    font-size: 0.7rem;
+    text-align: center;
+    margin-top: auto;
+    color: #00ff88;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1.1;
+}
+
+/* Settings Page Specific Styles */
+.settings-page .logo-title {
+    font-size: 1.5rem;
+    /* Simpler style without gradient */
+    color: #00ff88;
+    background: none;
+    -webkit-text-fill-color: #00ff88;
+}
+
+.settings-page .form-select {
+    padding: 10px;
+    border-radius: 8px;
+}
+
+.settings-page .btn-custom {
+    padding: 15px;
+    font-size: 1rem;
+}

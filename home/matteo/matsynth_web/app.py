@@ -3,6 +3,8 @@ import socket
 import os
 import json
 import time
+import subprocess
+import threading
 
 app = Flask(__name__)
 
@@ -93,6 +95,10 @@ def index():
     files = [f for f in os.listdir(SF2_DIR) if f.endswith(('.sf2', '.sf3'))] if os.path.exists(SF2_DIR) else []
     return render_template('index.html', files=files)
 
+@app.route('/settings')
+def settings():
+    return render_template('settings.html')
+
 @app.route('/list_sf2')
 def list_sf2():
     if not os.path.exists(SF2_DIR): return jsonify([])
@@ -101,6 +107,7 @@ def list_sf2():
 
 @app.route('/load_sf2/<filename>')
 def load_sf2(filename):
+    global sf_id
     path = os.path.join(SF2_DIR, filename)
     
     # 1. Troviamo TUTTI gli ID caricati attualmente
@@ -134,10 +141,7 @@ def get_instruments():
 
 @app.route('/select_prog/<int:chan>/<int:bank>/<int:prog>')
 def select_prog(chan, bank, prog):
-    # 1. Ottieni l'ID dinamico se non gia esistente
-    sf_id = get_active_sf_id()
-    
-    # 2. Usa l'ID corretto nel comando select
+    # Usa l'ID già caricato in memoria (molto più veloce!)
     comando = f"select {chan} {sf_id} {bank} {prog}"
     send_fluid(comando)
     return "OK"
@@ -174,7 +178,104 @@ def get_state():
     return jsonify(get_last_state())
 
 
+
+# rotte per settings
+# ==========================================
+# ROTTE PER LE IMPOSTAZIONI HARDWARE E RETE
+# ==========================================
+
+@app.route('/settings')
+def settings_page():
+    return render_template('settings.html')
+
+@app.route('/api/network')
+def api_network():
+    """Legge l'indirizzo IP e l'hostname del Raspberry"""
+    try:
+        # Esegue 'hostname -I' e divide gli IP in una lista
+        ips_raw = subprocess.check_output(['hostname', '-I']).decode('utf-8').strip()
+        ips = ips_raw.split() if ips_raw else []
+        hostname = subprocess.check_output(['hostname']).decode('utf-8').strip()
+    except Exception:
+        ips = []
+        hostname = "matsynth"
+    return jsonify({"ips": ips, "hostname": hostname})
+
+@app.route('/api/audio_devices')
+def api_audio():
+    """Scansiona le schede audio fisicamente collegate"""
+    devices = []
+    try:
+        # Lancia 'aplay -l' per vedere i dispositivi di riproduzione
+        out = subprocess.check_output(['aplay', '-l']).decode('utf-8')
+        for line in out.split('\n'):
+            if line.startswith('card'):
+                # Estrae il numero della scheda e il nome
+                # Esempio: "card 1: Fantom08 [Fantom-08], device 0: USB Audio [USB Audio]"
+                parts = line.split(':')
+                card_num = parts[0].replace('card', '').strip()
+                name = parts[1].split(',')[0].strip()
+                
+                # Formato compatibile con FluidSynth (es. hw:1)
+                dev_id = f"hw:{card_num}" 
+                devices.append({"id": dev_id, "name": f"Scheda {card_num}: {name}"})
+    except Exception as e:
+        print(f"Errore lettura audio: {e}")
+
+    state = get_last_state()
+    # Se non c'è una scheda salvata, mettiamo un default vuoto
+    current = state.get('audio_device', '') 
+    return jsonify({"devices": devices, "current": current})
+
+@app.route('/api/midi_devices')
+def api_midi():
+    """Scansiona le tastiere MIDI collegate"""
+    devices = []
+    try:
+        # Lancia 'aconnect -i' per vedere le tastiere
+        out = subprocess.check_output(['aconnect', '-i']).decode('utf-8')
+        for line in out.split('\n'):
+            if line.startswith('client'):
+                # Estrae il numero client e il nome
+                # Esempio: "client 20: 'Fantom-08' [type=kernel,card=1]"
+                client_num = line.split(':')[0].replace('client', '').strip()
+                name = line.split("'")[1] if "'" in line else line
+                
+                # Ignoriamo i dispositivi di sistema interni di Linux
+                if "System" not in name and "Midi Through" not in name:
+                    devices.append({"id": client_num, "name": name})
+    except Exception as e:
+        print(f"Errore lettura midi: {e}")
+
+    state = get_last_state()
+    current = state.get('midi_device', '')
+    return jsonify({"devices": devices, "current": current})
+
+@app.route('/api/save_hardware', methods=['POST'])
+def save_hardware():
+    """Salva le impostazioni e riavvia il servizio MatSynth"""
+    data = request.json
+    if 'audio' in data and data['audio']: 
+        save_state('audio_device', data['audio'])
+    if 'midi' in data and data['midi']: 
+        save_state('midi_device', data['midi'])
+    
+    # Riavvia il servizio systemd in un thread separato dopo 1 secondo
+    # per permettere alla risposta HTTP di arrivare al browser
+    def delayed_restart():
+        time.sleep(1)
+        os.system("sudo systemctl restart matsynth.service")
+    
+    restart_thread = threading.Thread(target=delayed_restart, daemon=True)
+    restart_thread.start()
+    
+    return jsonify({"status": "ok"})
+
+
 if __name__ == '__main__':
     time.sleep(2)
     restore_settings()
+    # Inizializza l'ID del soundfont all'avvio
+    sf_id = get_active_sf_id()
+    print(f"Soundfont ID caricato: {sf_id}")
     app.run(host='0.0.0.0', port=5000, debug=False, threaded=False)
