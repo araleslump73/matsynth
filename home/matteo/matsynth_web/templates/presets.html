@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatSynth - Presets</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="container py-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="logo-title logo-title-small"><i class="fas fa-save"></i> PRESETS</h1>
+        <a href="/" class="btn btn-back">
+            <i class="fas fa-arrow-left"></i> To Mixer
+        </a>
+    </div>
+
+    <!-- Save Current Configuration -->
+    <div class="card p-4 mb-4" style="border: 2px solid rgba(0, 255, 136, 0.4);">
+        <div class="section-title" style="color: #00ff88;">
+            <i class="fas fa-plus-circle"></i> Save Current Configuration
+        </div>
+        <p class="text-muted small mb-3">
+            Saves all 16 MIDI channels (instruments and CC settings) and global effects.<br>
+            <strong>Note:</strong> The soundfont must be loaded manually before applying a preset.
+        </p>
+        <div class="row g-2">
+            <div class="col-md-8">
+                <input type="text" id="preset-name-input" class="form-control" 
+                       placeholder="Enter preset name..." 
+                       style="background: rgba(42, 42, 60, 0.8); color: white; border: 1px solid rgba(0, 255, 136, 0.3);">
+            </div>
+            <div class="col-md-4">
+                <button class="btn btn-custom w-100" onclick="saveCurrentPreset()">
+                    <i class="fas fa-save"></i> SAVE
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Presets List -->
+    <div class="card p-4" style="border: 2px solid rgba(0, 212, 255, 0.4);">
+        <div class="section-title" style="color: #00d4ff;">
+            <i class="fas fa-folder-open"></i> Saved Presets
+        </div>
+        <div class="alert alert-warning" style="background: rgba(255, 193, 7, 0.1); border: 1px solid rgba(255, 193, 7, 0.3); color: #ffc107; padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 0.85rem;">
+            <i class="fas fa-info-circle"></i> <strong>Important:</strong> Load the correct soundfont in the main page before applying a preset.
+        </div>
+        
+        <!-- Search Box -->
+        <div class="mb-3">
+            <input type="text" id="preset-search-input" class="form-control" 
+                   placeholder="🔍 Search presets..." 
+                   oninput="filterPresets()"
+                   style="background: rgba(42, 42, 60, 0.8); color: white; border: 1px solid rgba(0, 212, 255, 0.3);">
+        </div>
+        
+        <p class="text-muted small mb-3">
+            Click a preset to load it, or use the action buttons to rename/delete.
+        </p>
+        
+        <div id="presets-container" class="presets-list">
+            <div class="text-center p-4 text-muted">
+                <i class="fas fa-spinner fa-spin"></i> Loading presets...
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for Rename -->
+    <div id="rename-modal" class="modal-overlay" style="display:none;" onclick="closeRenameModal(event)">
+        <div class="modal-content" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="fas fa-edit"></i> Rename Preset</h5>
+                <button class="btn-close-modal" onclick="closeRenameModal()">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <input type="text" id="rename-input" class="form-control mb-3" 
+                       placeholder="New preset name..."
+                       style="background: rgba(42, 42, 60, 0.8); color: white; border: 1px solid rgba(0, 212, 255, 0.3);">
+                <div class="d-flex gap-2">
+                    <button class="btn btn-custom flex-grow-1" onclick="confirmRename()">
+                        <i class="fas fa-check"></i> Confirm
+                    </button>
+                    <button class="btn btn-back flex-grow-1" onclick="closeRenameModal()">
+                        <i class="fas fa-times"></i> Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentPresets = [];
+        let renameTarget = null;
+
+        // Filter presets based on search input
+        function filterPresets() {
+            const searchTerm = document.getElementById('preset-search-input').value.toLowerCase();
+            const container = document.getElementById('presets-container');
+            const presetCards = container.querySelectorAll('.preset-card');
+            
+            let visibleCount = 0;
+            presetCards.forEach(card => {
+                const presetName = card.querySelector('.preset-name').textContent.toLowerCase();
+                if (presetName.includes(searchTerm)) {
+                    card.style.display = 'flex';
+                    visibleCount++;
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+            
+            // Show "no results" message if no presets match
+            if (visibleCount === 0 && presetCards.length > 0) {
+                if (!document.getElementById('no-results-msg')) {
+                    const noResultsMsg = document.createElement('div');
+                    noResultsMsg.id = 'no-results-msg';
+                    noResultsMsg.className = 'text-center p-4 text-muted';
+                    noResultsMsg.innerHTML = '<i class="fas fa-search"></i> No presets found';
+                    container.appendChild(noResultsMsg);
+                }
+            } else {
+                const noResultsMsg = document.getElementById('no-results-msg');
+                if (noResultsMsg) noResultsMsg.remove();
+            }
+        }
+
+        // Load and display all saved presets
+        async function loadPresetsList() {
+            try {
+                const res = await fetch('/api/presets/list');
+                currentPresets = await res.json();
+                
+                const container = document.getElementById('presets-container');
+                
+                if (currentPresets.length === 0) {
+                    container.innerHTML = `
+                        <div class="text-center p-4 text-muted">
+                            <i class="fas fa-info-circle"></i> No presets saved yet. Create your first one above!
+                        </div>
+                    `;
+                    return;
+                }
+                
+                container.innerHTML = '';
+                
+                currentPresets.forEach(preset => {
+                    const presetCard = document.createElement('div');
+                    presetCard.className = 'preset-card';
+                    presetCard.innerHTML = `
+                        <div class="preset-info" onclick="loadPreset('${preset.filename}')">
+                            <div class="preset-name">
+                                <i class="fas fa-music"></i> ${preset.name}
+                            </div>
+                            <div class="preset-details">
+                                <span class="preset-font"><i class="fas fa-file-audio"></i> ${preset.font}</span>
+                                <span class="preset-date"><i class="fas fa-calendar"></i> ${preset.created}</span>
+                            </div>
+                        </div>
+                        <div class="preset-actions">
+                            <button class="btn-preset-action btn-rename" 
+                                    onclick="event.stopPropagation(); openRenameModal('${preset.filename}', '${preset.name}')"
+                                    title="Rename">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <button class="btn-preset-action btn-delete" 
+                                    onclick="event.stopPropagation(); deletePreset('${preset.filename}', '${preset.name}')"
+                                    title="Delete">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </div>
+                    `;
+                    container.appendChild(presetCard);
+                });
+                
+            } catch (e) {
+                console.error("Error loading presets:", e);
+                document.getElementById('presets-container').innerHTML = `
+                    <div class="text-center p-4 text-danger">
+                        <i class="fas fa-exclamation-triangle"></i> Error loading presets
+                    </div>
+                `;
+            }
+        }
+
+        // Save current MIDI configuration as a new preset
+        async function saveCurrentPreset() {
+            const nameInput = document.getElementById('preset-name-input');
+            const presetName = nameInput.value.trim();
+            
+            if (!presetName) {
+                alert('Please enter a preset name!');
+                return;
+            }
+            
+            try {
+                const btn = event.target;
+                const originalHTML = btn.innerHTML;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> CAPTURING...';
+                btn.disabled = true;
+                
+                // Capture current configuration from FluidSynth
+                const captureRes = await fetch('/api/capture_current_config');
+                const captureResult = await captureRes.json();
+                
+                if (captureResult.status !== 'ok') {
+                    alert('Error capturing configuration: ' + captureResult.message);
+                    btn.innerHTML = originalHTML;
+                    btn.disabled = false;
+                    return;
+                }
+                
+                const config = captureResult.config;
+                
+                // Prepare preset data
+                const presetData = {
+                    name: presetName,
+                    font: config.font,
+                    gain: config.gain,
+                    reverb_level: config.reverb_level,
+                    chorus_level: config.chorus_level,
+                    channels: config.channels
+                };
+                
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> SAVING...';
+                
+                const res = await fetch('/api/presets/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(presetData)
+                });
+                
+                const result = await res.json();
+                
+                if (result.status === 'ok') {
+                    nameInput.value = '';
+                    await loadPresetsList();
+                    
+                    // Success feedback
+                    const savedName = result.saved_name || presetName;
+                    const wasRenamed = savedName !== presetName;
+                    
+                    btn.innerHTML = '<i class="fas fa-check"></i> SAVED!';
+                    btn.style.background = 'linear-gradient(135deg, #00ff88, #00d4ff)';
+                    
+                    // Show a warning if the preset was renamed
+                    if (wasRenamed) {
+                        alert(`Preset salvato come "${savedName}" (nome già esistente)`);
+                    }
+                    
+                    setTimeout(() => {
+                        btn.innerHTML = originalHTML;
+                        btn.disabled = false;
+                        btn.style.background = '';
+                    }, 2000);
+                } else {
+                    alert('Error saving preset: ' + result.message);
+                    btn.innerHTML = originalHTML;
+                    btn.disabled = false;
+                }
+            } catch (e) {
+                console.error("Error saving preset:", e);
+                alert('Error saving preset!');
+                if (event.target) {
+                    event.target.innerHTML = '<i class="fas fa-save"></i> SAVE';
+                    event.target.disabled = false;
+                }
+            }
+        }
+
+        // Load and apply a preset
+        async function loadPreset(filename) {
+            try {
+                // Show loading overlay
+                document.body.style.opacity = "0.5";
+                document.body.style.cursor = "wait";
+                
+                // Load preset data
+                const loadRes = await fetch(`/api/presets/load/${filename}`);
+                const loadResult = await loadRes.json();
+                
+                if (loadResult.status !== 'ok') {
+                    alert('Error loading preset: ' + loadResult.message);
+                    document.body.style.opacity = "1";
+                    document.body.style.cursor = "default";
+                    return;
+                }
+                
+                // Apply preset to FluidSynth
+                const applyRes = await fetch('/api/presets/apply', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset: loadResult.data })
+                });
+                
+                const applyResult = await applyRes.json();
+                
+                if (applyResult.status === 'ok') {
+                    // Wait a brief moment for FluidSynth to process, then reload page
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 800);
+                } else {
+                    alert('Error applying preset: ' + applyResult.message);
+                    document.body.style.opacity = "1";
+                    document.body.style.cursor = "default";
+                }
+                
+            } catch (e) {
+                console.error("Error loading preset:", e);
+                alert('Error loading preset!');
+                document.body.style.opacity = "1";
+                document.body.style.cursor = "default";
+            }
+        }
+
+        // Delete a preset
+        async function deletePreset(filename, name) {
+            if (!confirm(`Delete preset "${name}"? This action cannot be undone.`)) {
+                return;
+            }
+            
+            try {
+                const res = await fetch(`/api/presets/delete/${filename}`, {
+                    method: 'DELETE'
+                });
+                
+                const result = await res.json();
+                
+                if (result.status === 'ok') {
+                    await loadPresetsList();
+                } else {
+                    alert('Error deleting preset: ' + result.message);
+                }
+            } catch (e) {
+                console.error("Error deleting preset:", e);
+                alert('Error deleting preset!');
+            }
+        }
+
+        // Open rename modal
+        function openRenameModal(filename, currentName) {
+            renameTarget = filename;
+            document.getElementById('rename-input').value = currentName;
+            document.getElementById('rename-modal').style.display = 'flex';
+        }
+
+        // Close rename modal
+        function closeRenameModal(event) {
+            if (event && event.target !== event.currentTarget) return;
+            document.getElementById('rename-modal').style.display = 'none';
+            renameTarget = null;
+        }
+
+        // Confirm rename
+        async function confirmRename() {
+            const newName = document.getElementById('rename-input').value.trim();
+            
+            if (!newName) {
+                alert('Please enter a new name!');
+                return;
+            }
+            
+            if (!renameTarget) return;
+            
+            try {
+                const res = await fetch('/api/presets/rename', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        old_filename: renameTarget,
+                        new_name: newName
+                    })
+                });
+                
+                const result = await res.json();
+                
+                if (result.status === 'ok') {
+                    closeRenameModal();
+                    await loadPresetsList();
+                } else {
+                    alert('Error renaming preset: ' + result.message);
+                }
+            } catch (e) {
+                console.error("Error renaming preset:", e);
+                alert('Error renaming preset!');
+            }
+        }
+
+        // Load presets on page load
+        window.onload = loadPresetsList;
+    </script>
+</body>
+</html>
