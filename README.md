@@ -90,6 +90,11 @@ sudo apt-get install alsa-utils jq  # Per gestione audio e parsing JSON
 
 ## 📦 Installazione
 
+### Nota sui Percorsi
+Il repository contiene una struttura di directory `home/matteo/` che riflette dove i file saranno installati sul sistema. Quando clonato in `/home/matteo/matsynth`, i percorsi completi saranno:
+- Script avvio: `/home/matteo/matsynth/home/matteo/startfluid.sh`
+- Applicazione: `/home/matteo/matsynth/home/matteo/matsynth_web/app.py`
+
 ### 1. Clonare il Repository
 ```bash
 cd /home/matteo
@@ -117,7 +122,7 @@ sudo cp *.sf3 /usr/share/sounds/sf2/
 
 ### 5. Rendere Eseguibile lo Script di Avvio
 ```bash
-chmod +x home/matteo/startfluid.sh
+chmod +x /home/matteo/matsynth/home/matteo/startfluid.sh
 ```
 
 ## ⚙️ Configurazione
@@ -221,8 +226,7 @@ sudo systemctl status matsynth.service
 ### Avvio Manuale
 
 ```bash
-cd /home/matteo/matsynth
-./home/matteo/startfluid.sh
+/home/matteo/matsynth/home/matteo/startfluid.sh
 ```
 
 L'applicazione web sarà disponibile su:
@@ -616,7 +620,7 @@ chmod +x /home/matteo/matsynth/home/matteo/startfluid.sh
 # Verificare percorsi nel service file
 sudo systemctl cat matsynth.service
 
-# Eseguire manualmente per vedere errori
+# Eseguire manualmente per vedere errori (assicurarsi che i percorsi corrispondano alla propria installazione)
 /home/matteo/matsynth/home/matteo/startfluid.sh
 ```
 
