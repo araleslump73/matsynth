@@ -13,7 +13,12 @@ SF2_DIR = "/usr/share/sounds/sf2/"
 FLUID_HOST = "127.0.0.1"
 FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
+PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
 sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
+
+# Crea la directory dei preset se non esiste
+if not os.path.exists(PRESETS_DIR):
+    os.makedirs(PRESETS_DIR)
 
 def save_state(key, value):
     try:
@@ -144,6 +149,22 @@ def select_prog(chan, bank, prog):
     # Usa l'ID già caricato in memoria (molto più veloce!)
     comando = f"select {chan} {sf_id} {bank} {prog}"
     send_fluid(comando)
+    
+    # Salva lo stato del canale per il preset
+    state = get_last_state()
+    if 'channels' not in state:
+        state['channels'] = {}
+    
+    state['channels'][str(chan)] = {
+        'bank': bank,
+        'program': prog
+    }
+    
+    print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
+    
+    with open(STATE_FILE, 'w') as f:
+        json.dump(state, f)
+    
     return "OK"
 
 @app.route('/set_effect/<type>/<val>')
@@ -159,6 +180,30 @@ def set_effect(type, val):
 @app.route('/cc/<int:chan>/<int:cc>/<int:val>')
 def control(chan, cc, val):
     send_fluid(f"cc {chan} {cc} {val}")
+    
+    # Salva i CC importanti per i preset
+    # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=76
+    if cc in [7, 71, 72, 73, 74, 76]:
+        state = get_last_state()
+        if 'channels' not in state:
+            state['channels'] = {}
+        if str(chan) not in state['channels']:
+            state['channels'][str(chan)] = {}
+        
+        # Mappa i CC ai nomi
+        cc_names = {
+            7: 'volume',
+            71: 'resonance',
+            72: 'release',
+            73: 'attack',
+            74: 'cutoff',
+            76: 'decay'
+        }
+        state['channels'][str(chan)][cc_names[cc]] = val
+        
+        with open(STATE_FILE, 'w') as f:
+            json.dump(state, f)
+    
     return "OK"
 
 @app.route('/reset_channel/<int:chan>')
@@ -177,6 +222,291 @@ def get_state():
     """Restituisce tutto lo stato salvato (font, volumi, ecc)"""
     return jsonify(get_last_state())
 
+@app.route('/api/capture_current_config')
+def api_capture_current_config():
+    """Cattura la configurazione MIDI completa corrente"""
+    try:
+        state = get_last_state()
+        
+        # Ottieni informazioni sui canali da FluidSynth
+        channels_raw = send_fluid("channels")
+        lines = channels_raw.split('\n')
+        
+        # Ottieni i dati dei canali salvati
+        saved_channels = state.get('channels', {})
+        
+        channels = []
+        for i in range(16):
+            # Per ogni canale, cerca la riga corrispondente per il nome dello strumento
+            channel_line = None
+            instrument_name = 'Not Set'
+            for line in lines:
+                if line.strip().startswith(f'chan {i},'):
+                    channel_line = line
+                    break
+            
+            if channel_line and ',' in channel_line:
+                instrument_name = channel_line.split(',')[1].strip()
+            
+            # Usa i dati salvati se disponibili, altrimenti usa default
+            channel_data = saved_channels.get(str(i), {})
+            
+            channels.append({
+                'channel': i,
+                'bank': channel_data.get('bank', 0),
+                'program': channel_data.get('program', 0),
+                'attack': channel_data.get('attack', 64),
+                'release': channel_data.get('release', 64),
+                'decay': channel_data.get('decay', 64),
+                'cutoff': channel_data.get('cutoff', 127),
+                'resonance': channel_data.get('resonance', 0),
+                'volume': channel_data.get('volume', 100),
+                'instrument_name': instrument_name
+            })
+        
+        config = {
+            'font': state.get('font', ''),
+            'gain': state.get('gain', 1.0),
+            'reverb_level': state.get('reverb.level', 0.4),
+            'chorus_level': state.get('chorus.level', 0.4),
+            'channels': channels
+        }
+        
+        return jsonify({'status': 'ok', 'config': config})
+    except Exception as e:
+        print(f"Errore cattura configurazione: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+# ==========================================
+# ROTTE PER LA GESTIONE DEI PRESET MIDI
+# ==========================================
+
+@app.route('/presets')
+def presets_page():
+    """Pagina per la gestione dei preset"""
+    return render_template('presets.html')
+
+@app.route('/api/presets/list')
+def api_presets_list():
+    """Restituisce la lista di tutti i preset salvati"""
+    try:
+        if not os.path.exists(PRESETS_DIR):
+            return jsonify([])
+        
+        presets = []
+        for filename in os.listdir(PRESETS_DIR):
+            if filename.endswith('.json'):
+                preset_path = os.path.join(PRESETS_DIR, filename)
+                try:
+                    with open(preset_path, 'r') as f:
+                        preset_data = json.load(f)
+                        presets.append({
+                            'filename': filename,
+                            'name': preset_data.get('name', filename[:-5]),
+                            'created': preset_data.get('created', 'Unknown'),
+                            'font': preset_data.get('font', 'N/A')
+                        })
+                except:
+                    continue
+        
+        # Ordina per nome
+        presets.sort(key=lambda x: x['name'].lower())
+        return jsonify(presets)
+    except Exception as e:
+        print(f"Errore lettura preset: {e}")
+        return jsonify([])
+
+@app.route('/api/presets/save', methods=['POST'])
+def api_presets_save():
+    """Salva la configurazione corrente come preset"""
+    try:
+        data = request.json
+        preset_name = data.get('name', 'Untitled')
+        
+        # Sanitizza il nome del file
+        safe_filename = "".join(c for c in preset_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_filename = safe_filename.replace(' ', '_')
+        
+        if not safe_filename:
+            safe_filename = f"preset_{int(time.time())}"
+        
+        # Controlla se il file esiste già e rinomina automaticamente
+        base_filename = safe_filename
+        base_preset_name = preset_name
+        counter = 2
+        preset_path = os.path.join(PRESETS_DIR, f"{safe_filename}.json")
+        
+        while os.path.exists(preset_path):
+            safe_filename = f"{base_filename}_{counter}"
+            preset_name = f"{base_preset_name} ({counter})"
+            preset_path = os.path.join(PRESETS_DIR, f"{safe_filename}.json")
+            counter += 1
+        
+        # Crea la struttura del preset
+        preset_data = {
+            'name': preset_name,
+            'created': time.strftime('%Y-%m-%d %H:%M:%S'),
+            'font': data.get('font', ''),
+            'channels': data.get('channels', []),
+            'global_settings': {
+                'gain': data.get('gain', 1.0),
+                'reverb_level': data.get('reverb_level', 0.4),
+                'chorus_level': data.get('chorus_level', 0.4)
+            }
+        }
+        
+        with open(preset_path, 'w') as f:
+            json.dump(preset_data, f, indent=2)
+        
+        return jsonify({
+            'status': 'ok', 
+            'message': f'Preset "{preset_name}" salvato con successo',
+            'saved_name': preset_name,
+            'filename': f"{safe_filename}.json"
+        })
+    except Exception as e:
+        print(f"Errore salvataggio preset: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/presets/load/<filename>')
+def api_presets_load(filename):
+    """Carica un preset e restituisce i dati"""
+    try:
+        preset_path = os.path.join(PRESETS_DIR, filename)
+        
+        if not os.path.exists(preset_path):
+            return jsonify({'status': 'error', 'message': 'Preset non trovato'}), 404
+        
+        with open(preset_path, 'r') as f:
+            preset_data = json.load(f)
+        
+        return jsonify({'status': 'ok', 'data': preset_data})
+    except Exception as e:
+        print(f"Errore caricamento preset: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/presets/delete/<filename>', methods=['DELETE'])
+def api_presets_delete(filename):
+    """Elimina un preset"""
+    try:
+        preset_path = os.path.join(PRESETS_DIR, filename)
+        
+        if not os.path.exists(preset_path):
+            return jsonify({'status': 'error', 'message': 'Preset non trovato'}), 404
+        
+        os.remove(preset_path)
+        return jsonify({'status': 'ok', 'message': 'Preset eliminato con successo'})
+    except Exception as e:
+        print(f"Errore eliminazione preset: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/presets/rename', methods=['POST'])
+def api_presets_rename():
+    """Rinomina un preset esistente"""
+    try:
+        data = request.json
+        old_filename = data.get('old_filename')
+        new_name = data.get('new_name', 'Untitled')
+        
+        old_path = os.path.join(PRESETS_DIR, old_filename)
+        
+        if not os.path.exists(old_path):
+            return jsonify({'status': 'error', 'message': 'Preset non trovato'}), 404
+        
+        # Carica il preset esistente
+        with open(old_path, 'r') as f:
+            preset_data = json.load(f)
+        
+        # Aggiorna il nome
+        preset_data['name'] = new_name
+        
+        # Crea il nuovo filename
+        safe_filename = "".join(c for c in new_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_filename = safe_filename.replace(' ', '_')
+        
+        if not safe_filename:
+            safe_filename = f"preset_{int(time.time())}"
+        
+        new_path = os.path.join(PRESETS_DIR, f"{safe_filename}.json")
+        
+        # Salva con il nuovo nome
+        with open(new_path, 'w') as f:
+            json.dump(preset_data, f, indent=2)
+        
+        # Rimuovi il vecchio file solo se il nome è diverso
+        if old_path != new_path:
+            os.remove(old_path)
+        
+        return jsonify({
+            'status': 'ok', 
+            'message': f'Preset rinominato in "{new_name}"',
+            'new_filename': f"{safe_filename}.json"
+        })
+    except Exception as e:
+        print(f"Errore rinominazione preset: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+@app.route('/api/presets/apply', methods=['POST'])
+def api_presets_apply():
+    """Applica un preset caricato a FluidSynth"""
+    try:
+        data = request.json
+        preset_data = data.get('preset')
+        
+        if not preset_data:
+            return jsonify({'status': 'error', 'message': 'Dati preset mancanti'}), 400
+        
+        # NOTA: Il soundfont NON viene caricato automaticamente per evitare timeout.
+        # L'utente deve caricare manualmente il soundfont desiderato prima di applicare il preset.
+        
+        # Ottieni l'ID del soundfont attualmente caricato
+        global sf_id
+        
+        # 1. Applica le impostazioni globali
+        global_settings = preset_data.get('global_settings', {})
+        gain = global_settings.get('gain', 1.0)
+        reverb = global_settings.get('reverb_level', 0.4)
+        chorus = global_settings.get('chorus_level', 0.4)
+        
+        send_fluid(f"set synth.gain {gain}")
+        send_fluid(f"set synth.reverb.level {reverb}")
+        send_fluid(f"set synth.chorus.level {chorus}")
+        
+        save_state('gain', gain)
+        save_state('reverb.level', reverb)
+        save_state('chorus.level', chorus)
+        
+        # 2. Applica le impostazioni per ogni canale
+        channels = preset_data.get('channels', [])
+        for ch_data in channels:
+            chan = ch_data.get('channel')
+            if chan is None:
+                continue
+            
+            # Seleziona lo strumento
+            bank = ch_data.get('bank')
+            prog = ch_data.get('program')
+            if bank is not None and prog is not None:
+                send_fluid(f"select {chan} {sf_id} {bank} {prog}")
+            
+            # Applica i CC
+            if 'volume' in ch_data:
+                send_fluid(f"cc {chan} 7 {ch_data['volume']}")
+            if 'attack' in ch_data:
+                send_fluid(f"cc {chan} 73 {ch_data['attack']}")
+            if 'release' in ch_data:
+                send_fluid(f"cc {chan} 72 {ch_data['release']}")
+            if 'decay' in ch_data:
+                send_fluid(f"cc {chan} 76 {ch_data['decay']}")
+            if 'cutoff' in ch_data:
+                send_fluid(f"cc {chan} 74 {ch_data['cutoff']}")
+            if 'resonance' in ch_data:
+                send_fluid(f"cc {chan} 71 {ch_data['resonance']}")
+        
+        return jsonify({'status': 'ok', 'message': 'Preset applicato con successo'})
+    except Exception as e:
+        print(f"Errore applicazione preset: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
 # rotte per settings

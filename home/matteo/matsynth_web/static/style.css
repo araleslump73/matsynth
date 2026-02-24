@@ -346,3 +346,255 @@ input[type=range].vertical-slider::-webkit-slider-thumb {
     padding: 15px;
     font-size: 1rem;
 }
+/* Presets Page Styles */
+.presets-list {
+    max-height: 500px;
+    overflow-y: auto;
+}
+
+.preset-card {
+    background: linear-gradient(90deg, rgba(37, 37, 55, 0.6), rgba(30, 30, 46, 0.8));
+    border-radius: 10px;
+    padding: 15px;
+    margin-bottom: 12px;
+    border-left: 4px solid #00d4ff;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    transition: all 0.3s ease;
+    cursor: pointer;
+}
+
+.preset-card:hover {
+    background: linear-gradient(90deg, rgba(50, 50, 70, 0.7), rgba(40, 40, 60, 0.9));
+    border-left-width: 6px;
+    transform: translateX(3px);
+    box-shadow: 0 4px 15px rgba(0, 212, 255, 0.2);
+}
+
+.preset-info {
+    flex-grow: 1;
+}
+
+.preset-name {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #00d4ff;
+    margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.preset-details {
+    display: flex;
+    gap: 15px;
+    font-size: 0.8rem;
+    color: #a0a0a0;
+}
+
+.preset-font {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.preset-date {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.preset-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.btn-preset-action {
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    font-size: 0.9rem;
+}
+
+.btn-preset-action:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+}
+
+.btn-rename:hover {
+    background: rgba(0, 212, 255, 0.2);
+    border-color: #00d4ff;
+    color: #00d4ff;
+}
+
+.btn-delete:hover {
+    background: rgba(255, 0, 100, 0.2);
+    border-color: #ff0064;
+    color: #ff0064;
+}
+
+/* Mobile optimizations for preset cards */
+@media (max-width: 768px) {
+    .preset-card {
+        padding: 10px;
+        margin-bottom: 8px;
+        flex-direction: column;
+        align-items: flex-start;
+    }
+    
+    .preset-name {
+        font-size: 0.95rem;
+        margin-bottom: 3px;
+        gap: 6px;
+    }
+    
+    .preset-details {
+        gap: 10px;
+        font-size: 0.7rem;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+    }
+    
+    .preset-actions {
+        width: 100%;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 5px;
+    }
+    
+    .btn-preset-action {
+        padding: 6px 10px;
+        font-size: 0.85rem;
+    }
+    
+    .presets-list {
+        max-height: 400px;
+    }
+    
+    /* Compact header on mobile */
+    body.container {
+        padding: 0.5rem !important;
+    }
+    
+    .card {
+        padding: 0.75rem !important;
+    }
+    
+    .section-title {
+        font-size: 1rem;
+        margin-bottom: 0.5rem;
+    }
+    
+    .alert-warning {
+        padding: 8px !important;
+        margin-bottom: 10px !important;
+        font-size: 0.75rem !important;
+    }
+}
+
+/* Modal Styles */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+    backdrop-filter: blur(5px);
+}
+
+.modal-content {
+    background: linear-gradient(135deg, rgba(30, 30, 46, 0.95), rgba(20, 20, 36, 0.95));
+    border: 2px solid rgba(0, 212, 255, 0.5);
+    border-radius: 15px;
+    padding: 0;
+    max-width: 500px;
+    width: 90%;
+    box-shadow: 0 20px 60px rgba(0, 212, 255, 0.3);
+    animation: modalFadeIn 0.3s ease;
+}
+
+@keyframes modalFadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.modal-header {
+    background: linear-gradient(135deg, rgba(0, 212, 255, 0.1), rgba(0, 255, 136, 0.1));
+    border-bottom: 1px solid rgba(0, 212, 255, 0.3);
+    padding: 20px;
+    border-radius: 13px 13px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.2rem;
+    color: #00d4ff;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.btn-close-modal {
+    background: transparent;
+    border: none;
+    color: #fff;
+    font-size: 1.5rem;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-close-modal:hover {
+    color: #ff0064;
+    transform: rotate(90deg);
+}
+
+.modal-body {
+    padding: 20px;
+}
+
+/* Scrollbar for presets list */
+.presets-list::-webkit-scrollbar { 
+    width: 10px; 
+}
+
+.presets-list::-webkit-scrollbar-track { 
+    background: rgba(26, 26, 46, 0.5); 
+    border-radius: 10px;
+}
+
+.presets-list::-webkit-scrollbar-thumb { 
+    background: linear-gradient(135deg, #00d4ff, #00ff88);
+    border-radius: 10px;
+}
+
+.presets-list::-webkit-scrollbar-thumb:hover {
+    background: linear-gradient(135deg, #00ff88, #ff00e5);
+}

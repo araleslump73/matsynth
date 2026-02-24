@@ -15,7 +15,7 @@
     </div>
 
     <!-- Settings and Refresh buttons in two columns -->
-    <div class="row g-2 mb-4">
+    <div class="row g-2 mb-2">
         <div class="col-6">
             <a href="/settings" class="btn btn-outline-info fw-bold w-100" style="padding: 8px;">
                 <i class="fas fa-cog"></i> Settings
@@ -25,6 +25,15 @@
             <button class="btn btn-custom w-100" onclick="syncWithSynth()" style="padding: 8px;">
                 <i class="fas fa-sync-alt"></i> Refresh
             </button>
+        </div>
+    </div>
+
+    <!-- Presets button -->
+    <div class="row g-2 mb-4">
+        <div class="col-12">
+            <a href="/presets" class="btn btn-outline-warning fw-bold w-100" style="padding: 10px; border: 2px solid rgba(255, 193, 7, 0.5);">
+                <i class="fas fa-save"></i> PRESETS
+            </a>
         </div>
     </div>
 
@@ -49,9 +58,24 @@
                 CHANNEL CONTROLS: <span id="target-ch-display" class="badge bg-warning text-dark ms-2" style="font-size: 1.2rem;">1</span>
             </label>
         </div>
+        
+        <!-- VOLUME CONTROL (Horizontal) -->
+        <div class="mb-3 p-3" style="background: rgba(0, 255, 136, 0.08); border-radius: 10px; border: 1px solid rgba(0, 255, 136, 0.2);">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="slider-label icon-label mb-0" style="color: #00ff88; font-size: 0.9rem;">
+                    <i class="fas fa-volume-up"></i> VOLUME (CC7)
+                </label>
+                <span id="val-7" class="badge-custom" style="font-size: 0.9rem; padding: 4px 12px;">100</span>
+            </div>
+            <input type="range" class="form-range" min="0" max="127" value="100" 
+                   oninput="updateCC(7, this.value); document.getElementById('val-7').innerText=this.value"
+                   style="height: 8px;">
+        </div>
+        
+        <!-- VERTICAL SLIDERS ROW -->
         <div class="row g-2"> <!-- g-2 reduces space between columns -->
             <!-- ATTACK -->
-            <div class="col-3">
+            <div class="col">
                 <div class="vertical-slider-group">
                     <span id="val-73" class="val-badge">64</span>
                     <div class="vertical-range-container">
@@ -62,8 +86,20 @@
                 </div>
             </div>
 
+            <!-- DECAY -->
+            <div class="col">
+                <div class="vertical-slider-group">
+                    <span id="val-75" class="val-badge">64</span>
+                    <div class="vertical-range-container">
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
+                               oninput="updateCC(75, this.value); document.getElementById('val-75').innerText=this.value">
+                    </div>
+                    <label class="slider-label-vert"><i class="fas fa-hourglass-half d-block mb-1"></i>&nbsp;DEC</label>
+                </div>
+            </div>
+
             <!-- RELEASE -->
-            <div class="col-3">
+            <div class="col">
                 <div class="vertical-slider-group">
                     <span id="val-72" class="val-badge">64</span>
                     <div class="vertical-range-container">
@@ -75,11 +111,11 @@
             </div>
 
             <!-- CUTOFF -->
-            <div class="col-3">
+            <div class="col">
                 <div class="vertical-slider-group">
-                    <span id="val-74" class="val-badge">127</span>
+                    <span id="val-74" class="val-badge">64</span>
                     <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="127" 
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
                                oninput="updateCC(74, this.value); document.getElementById('val-74').innerText=this.value">
                     </div>
                     <label class="slider-label-vert"><i class="fas fa-filter d-block mb-1"></i>&nbsp;CUT</label>
@@ -87,11 +123,11 @@
             </div>
 
             <!-- RESONANCE -->
-            <div class="col-3">
+            <div class="col">
                 <div class="vertical-slider-group">
-                    <span id="val-71" class="val-badge">0</span>
+                    <span id="val-71" class="val-badge">64</span>
                     <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="0" 
+                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
                                oninput="updateCC(71, this.value); document.getElementById('val-71').innerText=this.value">
                     </div>
                     <label class="slider-label-vert"><i class="fas fa-wave-square d-block mb-1"></i>&nbsp;RES</label>
@@ -212,7 +248,17 @@
         // The updateSliderBackground function is removed because it has no effect on native vertical sliders.
         
         function resetUISliders() {
-            // Reset only the UI
+            // Reset only the UI to default values
+            
+            // Volume (CC7) - default 100
+            const volumeSlider = document.querySelector('input[oninput*="updateCC(7"]');
+            if (volumeSlider) { 
+                volumeSlider.value = 100; 
+                document.getElementById('val-7').innerText = "100";
+            }
+            updateCC(7, 100);
+            
+            // Attack (CC73) - default 64
             const attackSlider = document.querySelector('input[oninput*="updateCC(73"]');
             if (attackSlider) { 
                 attackSlider.value = 64; 
@@ -220,6 +266,15 @@
             }
             updateCC(73, 64);
             
+            // Decay (CC76) - default 64
+            const decaySlider = document.querySelector('input[oninput*="updateCC(76"]');
+            if (decaySlider) { 
+                decaySlider.value = 64; 
+                document.getElementById('val-75').innerText = "64";
+            }
+            updateCC(75, 64);
+            
+            // Release (CC72) - default 64
             const releaseSlider = document.querySelector('input[oninput*="updateCC(72"]');
             if (releaseSlider) { 
                 releaseSlider.value = 64; 
@@ -227,6 +282,7 @@
             }
             updateCC(72, 64);
 
+            // Cutoff (CC74) - default 64
             const cutoffSlider = document.querySelector('input[oninput*="updateCC(74"]');
             if (cutoffSlider) { 
                 cutoffSlider.value = 64; 
@@ -234,12 +290,13 @@
             }
             updateCC(74, 64);
 
+            // Resonance (CC71) - default 0
             const resoSlider = document.querySelector('input[oninput*="updateCC(71"]');
             if (resoSlider) { 
                 resoSlider.value = 64; 
-                document.getElementById('val-71').innerText = "64";
+                document.getElementById('val-71').innerText = "0";
             }
-            updateCC(71, 64);
+            updateCC(71, 0);
         }
 
         function updateCC(cc, val) {

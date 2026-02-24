@@ -49,6 +49,37 @@ python home/matteo/matsynth_web/app.py
 
 L'applicazione sarà disponibile su `http://localhost:5000`
 
+## Deployment su Raspberry Pi
+
+Sono disponibili tre script per trasferire i file sul Raspberry Pi usando SCP:
+
+### Windows PowerShell
+```powershell
+.\deploy.ps1 matteo@matsynth
+```
+
+### Windows Command Prompt (cmd)
+```cmd
+deploy.bat matteo@matsynth
+```
+
+### Linux / Mac / WSL
+```bash
+chmod +x deploy.sh
+./deploy.sh matteo@matsynth
+```
+
+Gli script:
+- Copiano ricorsivamente tutti i file da `home/matteo/matsynth_web` al Raspberry Pi
+- Preservano i permessi e i timestamp dei file
+- Utilizzano la compressione per velocizzare il trasferimento
+- Offrono l'opzione di riavviare automaticamente il servizio `matsynth.service`
+
+**Nota**: Assicurati di avere:
+- SSH configurato e funzionante sul Raspberry Pi
+- Chiavi SSH o password per l'accesso
+- OpenSSH Client installato (su Windows: Settings > Apps > Optional Features)
+
 ## Note
 
 - Per cambiare banco e preset in un solo comando telnet: `select <canale> <sfid> <banco> <preset>`
