@@ -182,8 +182,8 @@ def control(chan, cc, val):
     send_fluid(f"cc {chan} {cc} {val}")
     
     # Salva i CC importanti per i preset
-    # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=76
-    if cc in [7, 71, 72, 73, 74, 76]:
+    # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=75
+    if cc in [7, 71, 72, 73, 74, 75]:
         state = get_last_state()
         if 'channels' not in state:
             state['channels'] = {}
@@ -197,7 +197,7 @@ def control(chan, cc, val):
             72: 'release',
             73: 'attack',
             74: 'cutoff',
-            76: 'decay'
+            75: 'decay'
         }
         state['channels'][str(chan)][cc_names[cc]] = val
         
@@ -258,8 +258,8 @@ def api_capture_current_config():
                 'attack': channel_data.get('attack', 64),
                 'release': channel_data.get('release', 64),
                 'decay': channel_data.get('decay', 64),
-                'cutoff': channel_data.get('cutoff', 127),
-                'resonance': channel_data.get('resonance', 0),
+                'cutoff': channel_data.get('cutoff', 64),
+                'resonance': channel_data.get('resonance', 64),
                 'volume': channel_data.get('volume', 100),
                 'instrument_name': instrument_name
             })

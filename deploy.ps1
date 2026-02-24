@@ -88,7 +88,7 @@ Write-Host "`n🚀 Starting file transfer...`n" -ForegroundColor $InfoColor
 Write-Host "📦 Ensuring destination directory exists..." -ForegroundColor $InfoColor
 ssh $Target "mkdir -p $DestDir" 2>&1 | Out-Null
 
-if (@SshOpts $LASTEXITCODE -ne 0) {
+if ($LASTEXITCODE -ne 0) {
     Write-Host "⚠️  Warning: Could not verify/create remote directory" -ForegroundColor $WarningColor
     Write-Host "   Continuing anyway...`n" -ForegroundColor $WarningColor
 }
@@ -111,7 +111,7 @@ if ($LASTEXITCODE -eq 0) {
     $restartConfirm = Read-Host
     
     if ($restartConfirm -eq "yes" -or $restartConfirm -eq "y") {
-        Writ@SshOpts $Target "sudo systemctl restart matsynth.service"
+        ssh @SshOpts $Target "sudo systemctl restart matsynth.service"
         
         if ($LASTEXITCODE -eq 0) {
             Write-Host "✅ Service restarted successfully!`n" -ForegroundColor $SuccessColor
@@ -121,8 +121,8 @@ if ($LASTEXITCODE -eq 0) {
     }
     
     Write-Host "🔌 Closing SSH connection..." -ForegroundColor $InfoColor
-    ssh @SshOpts -O exit $Target 2>&1 | Out-Null   }
-    }
+    ssh @SshOpts -O exit $Target 2>&1 | Out-Null   
+    {
     
     Write-Host "╔════════════════════════════════════════════════╗" -ForegroundColor $SuccessColor
     Write-Host "║          Deployment completed! 🎉              ║" -ForegroundColor $SuccessColor

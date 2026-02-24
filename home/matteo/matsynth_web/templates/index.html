@@ -266,8 +266,8 @@
             }
             updateCC(73, 64);
             
-            // Decay (CC76) - default 64
-            const decaySlider = document.querySelector('input[oninput*="updateCC(76"]');
+            // Decay (CC75) - default 64
+            const decaySlider = document.querySelector('input[oninput*="updateCC(75"]');
             if (decaySlider) { 
                 decaySlider.value = 64; 
                 document.getElementById('val-75').innerText = "64";
@@ -294,9 +294,9 @@
             const resoSlider = document.querySelector('input[oninput*="updateCC(71"]');
             if (resoSlider) { 
                 resoSlider.value = 64; 
-                document.getElementById('val-71').innerText = "0";
+                document.getElementById('val-71').innerText = "64";
             }
-            updateCC(71, 0);
+            updateCC(71, 64);
         }
 
         function updateCC(cc, val) {
