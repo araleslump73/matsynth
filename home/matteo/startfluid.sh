@@ -61,25 +61,31 @@ else
 fi
 echo "=========================================="
 
-# Avvio FluidSynth con parametri dinamici
+# Avvio FluidSynth con parametri ottimizzati per Raspberry Pi Zero 2W
 fluidsynth -i -s \
   -g "$GAIN" \
   -o shell.prompt="" \
   -o synth.dynamic-sample-loading=1 \
+  -o synth.sample-cache-size=1 \
+  -o synth.lock-memory=0 \
   -a alsa \
   -o audio.alsa.device="$AUDIO_DEVICE" \
-  -o synth.cpu-cores=3 \
+  -o audio.period-size=256 \
+  -o audio.periods=2 \
+  -o synth.cpu-cores=2 \
+  -o synth.polyphony=64 \
+  -o synth.midi-channels=16 \
   -o midi.autoconnect=1 \
   -o synth.reverb.active=yes \
   -o synth.reverb.level="$REVERB" \
-  -o synth.reverb.room-size=0.9 \
+  -o synth.reverb.room-size=0.6 \
   -o synth.chorus.active=yes \
   -o synth.chorus.level="$CHORUS" \
-  -o synth.chorus.nr=2 \
-  -o synth.chorus.speed=0.4 \
-  -o synth.chorus.depth=8.0 \
+  -o synth.chorus.nr=1 \
+  -o synth.chorus.speed=0.3 \
+  -o synth.chorus.depth=5.0 \
   -r 44100 \
-  -z 64 \
+  -z 128 \
   "$SF2_PATH/$LAST_FONT" > /dev/null 2>&1 &
 
 # Attendi che FluidSynth si avvii
