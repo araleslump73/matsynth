@@ -96,6 +96,28 @@ Il repository contiene una struttura di directory `home/matteo/` che riflette do
 - Script avvio: `/home/matteo/matsynth/home/matteo/startfluid.sh`
 - Applicazione: `/home/matteo/matsynth/home/matteo/matsynth_web/app.py`
 
+### Ottimizzazione per Raspberry Pi Zero 2W
+
+**IMPORTANTE**: Se stai installando su Raspberry Pi Zero 2W, esegui prima lo script di ottimizzazione:
+
+```bash
+cd /home/matteo/matsynth
+sudo ./setup_pi_zero_optimizations.sh
+```
+
+Questo script:
+- Configura swap a 512MB (essenziale per soundfont)
+- Imposta CPU governor su "performance"
+- Disabilita servizi non necessari
+- Ottimizza parametri di sistema
+
+Per monitorare le prestazioni in tempo reale:
+```bash
+./monitor_performance.sh
+```
+
+Consulta la [Guida Ottimizzazione Completa](OPTIMIZATION_GUIDE.md) per dettagli.
+
 ### 1. Clonare il Repository
 ```bash
 cd /home/matteo
