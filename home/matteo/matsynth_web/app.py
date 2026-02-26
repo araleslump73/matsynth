@@ -38,11 +38,20 @@ def get_last_state():
             pass
     return {"gain": 1.0, "reverb.level": 0.4, "chorus.level": 0.4, "font": "GeneralUser-GS.sf2"}
 
+# Connection pool for socket reuse (reduce overhead on Pi Zero)
+_socket_lock = threading.Lock()
+_last_socket_use = 0
+_sf2_list_cache = None
+_sf2_list_cache_time = 0
+SF2_CACHE_TTL = 30  # Cache SF2 list for 30 seconds
+
 def send_fluid(command):
+    global _last_socket_use
     try:
-        # Timeout breve e connessione rapida
+        # Timeout ridotto per Raspberry Pi Zero
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(2)
+            sock.settimeout(1)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # Disable Nagle's algorithm
             sock.connect((FLUID_HOST, FLUID_PORT))
             sock.sendall(f"{command}\n".encode())
             
@@ -50,16 +59,17 @@ def send_fluid(command):
             if command.startswith(("set", "select", "cc", "unload", "load")):
                 # Per load e unload leggiamo comunque la risposta per sicurezza o debug
                 if command.startswith(("load", "unload")):
-                    time.sleep(0.1)
-                    return sock.recv(4096).decode()
+                    time.sleep(0.05)  # Ridotto da 0.1
+                    return sock.recv(2048).decode()  # Buffer più piccolo
                 return "OK"
 
             # Per comandi di lettura (inst, fonts, channels)
-            time.sleep(0.2)
+            time.sleep(0.1)  # Ridotto da 0.2
             data = ""
+            sock.settimeout(0.5)  # Timeout più breve per lettura
             while True:
                 try:
-                    chunk = sock.recv(4096).decode()
+                    chunk = sock.recv(2048).decode()  # Buffer più piccolo
                     if not chunk: break
                     data += chunk
                 except:
@@ -106,8 +116,21 @@ def settings():
 
 @app.route('/list_sf2')
 def list_sf2():
-    if not os.path.exists(SF2_DIR): return jsonify([])
+    global _sf2_list_cache, _sf2_list_cache_time
+    
+    # Usa cache per ridurre I/O su Raspberry Pi Zero
+    current_time = time.time()
+    if _sf2_list_cache is not None and (current_time - _sf2_list_cache_time) < SF2_CACHE_TTL:
+        return jsonify(_sf2_list_cache)
+    
+    if not os.path.exists(SF2_DIR): 
+        _sf2_list_cache = []
+        _sf2_list_cache_time = current_time
+        return jsonify([])
+    
     files = [f for f in os.listdir(SF2_DIR) if f.endswith(('.sf2', '.sf3'))]
+    _sf2_list_cache = files
+    _sf2_list_cache_time = current_time
     return jsonify(files)
 
 @app.route('/load_sf2/<filename>')
@@ -608,4 +631,5 @@ if __name__ == '__main__':
     # Inizializza l'ID del soundfont all'avvio
     sf_id = get_active_sf_id()
     print(f"Soundfont ID caricato: {sf_id}")
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=False)
+    # Ottimizzato per Raspberry Pi Zero 2W: threaded=True per migliori prestazioni
+    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)

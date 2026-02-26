@@ -78,6 +78,7 @@
 
 ### Hardware Consigliato
 - **Raspberry Pi 3/4** o superiore (o qualsiasi PC Linux)
+- **Raspberry Pi Zero 2W**: Supportato con ottimizzazioni specifiche (vedi sezione Ottimizzazione)
 - **Scheda audio USB** (opzionale, può usare l'audio integrato)
 - **Tastiera MIDI USB** o controller MIDI
 - **Almeno 512 MB di RAM** disponibile per FluidSynth
@@ -94,6 +95,28 @@ sudo apt-get install alsa-utils jq  # Per gestione audio e parsing JSON
 Il repository contiene una struttura di directory `home/matteo/` che riflette dove i file saranno installati sul sistema. Quando clonato in `/home/matteo/matsynth`, i percorsi completi saranno:
 - Script avvio: `/home/matteo/matsynth/home/matteo/startfluid.sh`
 - Applicazione: `/home/matteo/matsynth/home/matteo/matsynth_web/app.py`
+
+### Ottimizzazione per Raspberry Pi Zero 2W
+
+**IMPORTANTE**: Se stai installando su Raspberry Pi Zero 2W, esegui prima lo script di ottimizzazione:
+
+```bash
+cd /home/matteo/matsynth
+sudo ./setup_pi_zero_optimizations.sh
+```
+
+Questo script:
+- Configura swap a 512MB (essenziale per soundfont)
+- Imposta CPU governor su "performance"
+- Disabilita servizi non necessari
+- Ottimizza parametri di sistema
+
+Per monitorare le prestazioni in tempo reale:
+```bash
+./monitor_performance.sh
+```
+
+Consulta la [Guida Ottimizzazione Completa](OPTIMIZATION_GUIDE.md) per dettagli.
 
 ### 1. Clonare il Repository
 ```bash
@@ -145,40 +168,53 @@ STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 
 ### Configurazione di FluidSynth
 
-Lo script `startfluid.sh` configura automaticamente FluidSynth con parametri ottimali:
+Lo script `startfluid.sh` configura automaticamente FluidSynth con parametri ottimali per Raspberry Pi Zero 2W:
 
 ```bash
 fluidsynth -i -s \
   -g "$GAIN" \
   -o shell.prompt="" \
   -o synth.dynamic-sample-loading=1 \
+  -o synth.sample-cache-size=1 \
+  -o synth.lock-memory=0 \
   -a alsa \
   -o audio.alsa.device="$AUDIO_DEVICE" \
-  -o synth.cpu-cores=3 \
+  -o audio.period-size=256 \
+  -o audio.periods=2 \
+  -o synth.cpu-cores=2 \
+  -o synth.polyphony=64 \
+  -o synth.midi-channels=16 \
   -o midi.autoconnect=1 \
   -o synth.reverb.active=yes \
   -o synth.reverb.level="$REVERB" \
-  -o synth.reverb.room-size=0.9 \
+  -o synth.reverb.room-size=0.6 \
   -o synth.chorus.active=yes \
   -o synth.chorus.level="$CHORUS" \
-  -o synth.chorus.nr=2 \
-  -o synth.chorus.speed=0.4 \
-  -o synth.chorus.depth=8.0 \
+  -o synth.chorus.nr=1 \
+  -o synth.chorus.speed=0.3 \
+  -o synth.chorus.depth=5.0 \
   -r 44100 \
-  -z 64 \
+  -z 128 \
   "$SF2_PATH/$LAST_FONT"
 ```
 
-#### Parametri Chiave:
+#### Parametri Chiave (Ottimizzati per Pi Zero 2W):
 - **`-g $GAIN`**: Gain master (volume)
 - **`-o shell.prompt=""`**: Disabilita il prompt per comunicazione telnet pulita
 - **`-o synth.dynamic-sample-loading=1`**: Caricamento dinamico dei sample per risparmiare RAM
+- **`-o synth.sample-cache-size=1`**: Cache minima per risparmio memoria
+- **`-o synth.lock-memory=0`**: Non blocca memoria (permette swap se necessario)
 - **`-a alsa`**: Driver audio ALSA
 - **`-o audio.alsa.device="$AUDIO_DEVICE"`**: Dispositivo audio specifico
-- **`-o synth.cpu-cores=3`**: Usa 3 core CPU per il rendering
+- **`-o audio.period-size=256`**: Dimensione periodo ottimale per Pi Zero
+- **`-o audio.periods=2`**: 2 periodi per bilanciamento latenza/stabilità
+- **`-o synth.cpu-cores=2`**: Usa 2 core CPU (lascia 2 per OS/Flask)
+- **`-o synth.polyphony=64`**: Limite 64 voci simultanee (previene overload)
 - **`-o midi.autoconnect=1`**: Connessione automatica dispositivi MIDI
+- **`-o synth.reverb.room-size=0.6`**: Reverb leggero (era 0.9)
+- **`-o synth.chorus.nr=1`**: 1 oscillatore chorus (era 2, risparmia CPU)
 - **`-r 44100`**: Sample rate 44.1 kHz
-- **`-z 64`**: Buffer size 64 sample
+- **`-z 128`**: Buffer size 128 sample (~3ms latenza)
 
 ### Configurazione come Servizio systemd
 
@@ -626,12 +662,113 @@ sudo systemctl cat matsynth.service
 
 ## 💡 Best Practices
 
+### Ottimizzazione per Raspberry Pi Zero 2W
+
+Il Raspberry Pi Zero 2W ha risorse limitate (512MB RAM, CPU quad-core 1GHz). MatSynth è stato ottimizzato per funzionare efficientemente su questo hardware:
+
+#### Ottimizzazioni Applicate
+
+**FluidSynth** (`startfluid.sh`):
+- **CPU cores ridotti a 2**: Lascia risorse per il sistema operativo e Flask
+- **Buffer aumentato a 128**: Riduce il carico CPU (latenza ~3ms a 44.1kHz)
+- **Polyphony limitata a 64 voci**: Previene picchi di memoria e CPU
+- **Cache campioni ottimizzata**: `sample-cache-size=1` per memoria minima
+- **Reverb/Chorus ridotti**: Parametri più leggeri (room-size 0.6, chorus nr=1)
+- **Period size 256**: Bilanciamento ottimale latenza/CPU per Pi Zero
+
+**Flask Application** (`app.py`):
+- **Socket timeout ridotto a 1s**: Risposta più veloce
+- **Buffer ridotti a 2KB**: Meno memoria per comunicazione
+- **Threaded mode abilitato**: Migliore gestione richieste concorrenti
+- **Caching lista SF2**: Riduce accessi al filesystem (cache 30s)
+- **TCP_NODELAY attivo**: Comunicazione più reattiva con FluidSynth
+
+#### Configurazione Sistema per Pi Zero 2W
+
+1. **Swap File** (raccomandato per evitare out-of-memory):
+```bash
+# Aumenta swap a 512MB (se non già fatto)
+sudo dphys-swapfile swapoff
+sudo nano /etc/dphys-swapfile
+# Imposta: CONF_SWAPSIZE=512
+sudo dphys-swapfile setup
+sudo dphys-swapfile swapon
+```
+
+2. **CPU Governor** (prestazioni massime):
+```bash
+# Imposta performance governor per latenza minima
+sudo apt-get install cpufrequtils
+echo 'GOVERNOR="performance"' | sudo tee /etc/default/cpufrequtils
+sudo systemctl restart cpufrequtils
+```
+
+3. **Overclocking Moderato** (opzionale, aumenta calore):
+```bash
+sudo nano /boot/config.txt
+# Aggiungi (overclock moderato e sicuro):
+arm_freq=1200
+over_voltage=2
+gpu_mem=16
+```
+
+4. **Disabilita Servizi Non Necessari**:
+```bash
+# Libera risorse disabilitando servizi inutili
+sudo systemctl disable bluetooth
+sudo systemctl disable hciuart
+sudo systemctl disable avahi-daemon
+```
+
+5. **Usa Soundfont SF3 Compressi**:
+```bash
+# SF3 usano ~10x meno RAM di SF2
+# Esempio: GeneralUser GS (SF2: ~200MB, SF3: ~30MB)
+# Scarica SF3 da: https://github.com/FluidSynth/fluidsynth/wiki/SoundFont
+```
+
+#### Monitoraggio Risorse
+
+Verifica utilizzo risorse durante l'uso:
+
+```bash
+# CPU e Memoria in tempo reale
+htop
+
+# Solo FluidSynth e Python
+watch -n 1 'ps aux | grep -E "fluidsynth|python3" | grep -v grep'
+
+# Temperatura (importante su Pi Zero senza ventola)
+vcgencmd measure_temp
+
+# Memoria disponibile
+free -h
+```
+
+#### Limiti e Raccomandazioni
+
+**Soundfont consigliati per Pi Zero 2W**:
+- ✅ **SF3 fino a 50MB**: Funzionamento ottimale
+- ✅ **SF2 fino a 30MB**: Accettabile con swap
+- ⚠️ **SF2 50-100MB**: Possibile ma lento al caricamento
+- ❌ **SF2 > 100MB**: Sconsigliato (rischio crash)
+
+**Polifonia effettiva**:
+- Limitata a **64 voci simultanee** (configurazione ottimizzata)
+- Per piano/organo: sufficiente per uso normale
+- Per orchestrali densi: può troncare note su accordi complessi
+
+**Latenza audio**:
+- Buffer 128 @ 44.1kHz = **~3ms di latenza**
+- Accettabile per performance live
+- Per latenza minore: richiede CPU più potente
+
 ### Performance
 
-1. **Usare soundfont SF3** invece di SF2 su dispositivi con poca RAM (Raspberry Pi)
-2. **Limitare polifonia** in FluidSynth: `-o synth.polyphony=128`
-3. **Disabilitare reverb/chorus** se non necessari per risparmiare CPU
-4. **Usare scheda audio USB** per migliore qualità e minor latenza
+1. **Usare soundfont SF3** invece di SF2 su dispositivi con poca RAM (Raspberry Pi Zero 2W)
+2. **Polyphony già limitata** a 64 voci nella configurazione ottimizzata
+3. **Reverb/chorus già ottimizzati** per Raspberry Pi Zero 2W
+4. **Usare scheda audio USB** per migliore qualità e minor latenza (opzionale)
 
 ### Sicurezza
 
