@@ -546,15 +546,19 @@ def api_audio():
                 card_num = parts[0].replace('card', '').strip()
                 name = parts[1].split(',')[0].strip()
                 
-                # Formato compatibile con FluidSynth (es. hw:1)
-                dev_id = f"hw:{card_num}" 
+                # Formato compatibile con FluidSynth (es. plughw:1)
+                dev_id = f"plughw:{card_num}"
+                print(f"DEBUG: Device trovato: {dev_id} - {name}")
                 devices.append({"id": dev_id, "name": f"Scheda {card_num}: {name}"})
     except Exception as e:
         print(f"Errore lettura audio: {e}")
 
     state = get_last_state()
     # Se non c'è una scheda salvata, mettiamo un default vuoto
-    current = state.get('audio_device', '') 
+    current = state.get('audio_device', '')
+    # Converti vecchi valori hw: in plughw: per compatibilità
+    if current and current.startswith('hw:'):
+        current = current.replace('hw:', 'plughw:', 1)
     return jsonify({"devices": devices, "current": current})
 
 @app.route('/api/midi_devices')
@@ -585,8 +589,14 @@ def api_midi():
 def save_hardware():
     """Salva le impostazioni e riavvia il servizio MatSynth"""
     data = request.json
-    if 'audio' in data and data['audio']: 
-        save_state('audio_device', data['audio'])
+    if 'audio' in data and data['audio']:
+        audio_device = data['audio']
+        # Forza sempre plughw: invece di hw:
+        if audio_device.startswith('hw:'):
+            audio_device = audio_device.replace('hw:', 'plughw:', 1)
+        # Debug: stampa cosa viene salvato
+        print(f"DEBUG: Salvando audio_device: {audio_device}")
+        save_state('audio_device', audio_device)
     if 'midi' in data and data['midi']: 
         save_state('midi_device', data['midi'])
     
