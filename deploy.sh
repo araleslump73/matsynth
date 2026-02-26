@@ -17,6 +17,13 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_DIR="$SCRIPT_DIR/home/matteo/matsynth_web"
 DEST_DIR="/home/matteo/matsynth_web"
 
+# SSH ControlMaster configuration for single password prompt
+SSH_CONTROL_DIR="$HOME/.ssh/control"
+SSH_CONTROL_PATH="$SSH_CONTROL_DIR/%r@%h:%p"
+
+# Create SSH control directory if it doesn't exist
+mkdir -p "$SSH_CONTROL_DIR"
+
 # Check arguments
 if [ -z "$1" ]; then
     echo -e "${RED}ERROR: No target server specified!${NC}"
@@ -49,10 +56,11 @@ echo ""
 
 # Test SSH connection (will prompt for password)
 echo -e "${CYAN}🔐 Testing SSH connection...${NC}"
-echo -e "${YELLOW}   (You will be prompted for your password now)${NC}"
+echo -e "${YELLOW}   (You will be prompted for your password once)${NC}"
 echo ""
 
-ssh "$TARGET" "echo 'Connection successful'" 2>/dev/null
+# Establish SSH ControlMaster connection (prompts for password)
+ssh -o ControlMaster=yes -o ControlPath="$SSH_CONTROL_PATH" -o ControlPersist=60s -f -N "$TARGET" 2>/dev/null
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ ERROR: Cannot connect to $TARGET${NC}"
@@ -64,17 +72,16 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-echo -e "${GREEN}✅ Connection successful!${NC}"
-echo ""
-echo -e "${YELLOW}⚠️  NOTE: SSH password may be requested again for file transfer operations.${NC}"
-echo -e "${CYAN}   To avoid this, configure SSH keys with: ssh-copy-id $TARGET${NC}"
-echo ""
+# Test the connection
+ssh -o ControlPath="$SSH_CONTROL_PATH" "$TARGET" "echo 'Connection successful'" 2>/dev/null
 
-# Check if scp is available
-if ! command -v scp &> /dev/null; then
-    echo -e "${RED}❌ ERROR: SCP not found. Please install OpenSSH.${NC}"
+if [ $? -ne 0 ]; then
+    echo -e "${RED}❌ ERROR: SSH connection test failed${NC}"
     exit 1
 fi
+
+echo -e "${GREEN}✅ Connection established! (password not required for remaining operations)${NC}"
+echo ""
 
 # Confirm before proceeding
 echo -e "${YELLOW}⚠️  This will overwrite files on the target server!${NC}"
@@ -82,6 +89,8 @@ read -p "Do you want to continue? (yes/no): " confirmation
 
 if [[ ! "$confirmation" =~ ^(yes|y)$ ]]; then
     echo -e "${YELLOW}❌ Deployment cancelled by user.${NC}"
+    # Close SSH connection
+    ssh -o ControlPath="$SSH_CONTROL_PATH" -O exit "$TARGET" 2>/dev/null
     exit 0
 fi
 
@@ -90,7 +99,7 @@ echo ""
 
 # Create destination directory on remote server
 echo -e "${CYAN}📦 Ensuring destination directory exists...${NC}"
-ssh "$TARGET" "mkdir -p $DEST_DIR" 2>/dev/null
+ssh -o ControlPath="$SSH_CONTROL_PATH" "$TARGET" "mkdir -p $DEST_DIR" 2>/dev/null
 
 if [ $? -ne 0 ]; then
     echo -e "${YELLOW}⚠️  Warning: Could not verify/create remote directory${NC}"
@@ -102,7 +111,7 @@ fi
 echo -e "${CYAN}📤 Transferring files (this may take a moment)...${NC}"
 echo ""
 
-scp -r -p -C "$SOURCE_DIR"/* "${TARGET}:${DEST_DIR}/"
+scp -o ControlPath="$SSH_CONTROL_PATH" -r -p -C "$SOURCE_DIR"/* "${TARGET}:${DEST_DIR}/"
 
 if [ $? -eq 0 ]; then
     echo ""
@@ -115,7 +124,7 @@ if [ $? -eq 0 ]; then
     if [[ "$restart_confirm" =~ ^(yes|y)$ ]]; then
         echo ""
         echo -e "${CYAN}🔄 Restarting MatSynth service...${NC}"
-        ssh "$TARGET" "sudo systemctl restart matsynth.service"
+        ssh -o ControlPath="$SSH_CONTROL_PATH" "$TARGET" "sudo systemctl restart matsynth.service"
         
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}✅ Service restarted successfully!${NC}"
@@ -123,6 +132,9 @@ if [ $? -eq 0 ]; then
             echo -e "${YELLOW}⚠️  Warning: Could not restart service. You may need to restart manually.${NC}"
         fi
     fi
+    
+    # Close SSH connection
+    ssh -o ControlPath="$SSH_CONTROL_PATH" -O exit "$TARGET" 2>/dev/null
     
     echo ""
     echo -e "${GREEN}╔════════════════════════════════════════════════╗${NC}"
@@ -137,5 +149,8 @@ else
     echo -e "${YELLOW}   - SSH access and credentials${NC}"
     echo -e "${YELLOW}   - Remote directory permissions${NC}"
     echo ""
+    
+    # Close SSH connection
+    ssh -o ControlPath="$SSH_CONTROL_PATH" -O exit "$TARGET" 2>/dev/null
     exit 1
 fi

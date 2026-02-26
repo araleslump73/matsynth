@@ -84,7 +84,7 @@
                 
                 audioData.devices.forEach(dev => {
                     let opt = document.createElement('option');
-                    opt.value = dev.id;         // e.g., "hw:1,0"
+                    opt.value = dev.id;         // e.g., "plughw:1"
                     opt.innerHTML = dev.name;   // e.g., "USB Audio DAC"
                     if (dev.id === audioData.current) opt.selected = true;
                     audioSelect.appendChild(opt);
@@ -132,9 +132,9 @@
                 btn.style.background = "linear-gradient(135deg, #ffc107, #ff9800)";
                 
                 // Wait 5 seconds for FluidSynth to shut down and restart, then return to Home
-                setTimeout(() => {
-                    window.location.href = "/";
-                }, 5000);
+                // setTimeout(() => {
+                //     window.location.href = "/";
+                // }, 5000);
 
             } catch (e) {
                 alert("Error during save! Check the connection.");
