@@ -5,6 +5,7 @@ import json
 import time
 import subprocess
 import threading
+from daw_recorder import MultiTrackDAW
 
 app = Flask(__name__)
 
@@ -19,6 +20,9 @@ sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
 # Crea la directory dei preset se non esiste
 if not os.path.exists(PRESETS_DIR):
     os.makedirs(PRESETS_DIR)
+
+# Inizializza il sistema DAW Multi-Track
+daw = MultiTrackDAW(bpm=120)
 
 def save_state(key, value):
     try:
@@ -600,6 +604,185 @@ def save_hardware():
     restart_thread.start()
     
     return jsonify({"status": "ok"})
+
+
+# ==========================================
+# DAW MULTI-TRACK RECORDER API
+# ==========================================
+
+@app.route('/api/daw/state', methods=['GET'])
+def daw_get_state():
+    """Ottiene lo stato completo del DAW"""
+    try:
+        state = daw.get_state()
+        return jsonify({"status": "ok", "data": state})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/record/start', methods=['POST'])
+def daw_start_recording():
+    """Avvia la registrazione su un canale specifico"""
+    try:
+        data = request.json
+        channel = data.get('channel', 0)
+        
+        # Verifica che il canale sia armato
+        if not daw.armed.get(channel):
+            return jsonify({
+                "status": "error", 
+                "message": f"Canale {channel} non è armato. Attiva ARM prima di registrare."
+            }), 400
+        
+        success = daw.start_recording(channel)
+        
+        if success:
+            return jsonify({"status": "ok", "message": f"Registrazione avviata su canale {channel}"})
+        else:
+            return jsonify({"status": "error", "message": "Impossibile avviare registrazione"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/record/stop', methods=['POST'])
+def daw_stop_recording():
+    """Ferma la registrazione in corso"""
+    try:
+        success = daw.stop_recording()
+        
+        if success:
+            return jsonify({"status": "ok", "message": "Registrazione fermata"})
+        else:
+            return jsonify({"status": "error", "message": "Nessuna registrazione in corso"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/play/start', methods=['POST'])
+def daw_start_playback():
+    """Avvia la riproduzione di tutte le tracce"""
+    try:
+        success = daw.start_playback()
+        
+        if success:
+            return jsonify({"status": "ok", "message": "Riproduzione avviata"})
+        else:
+            return jsonify({"status": "error", "message": "Nessuna traccia da riprodurre o già in riproduzione"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/play/stop', methods=['POST'])
+def daw_stop_playback():
+    """Ferma la riproduzione"""
+    try:
+        success = daw.stop_playback()
+        
+        if success:
+            return jsonify({"status": "ok", "message": "Riproduzione fermata"})
+        else:
+            return jsonify({"status": "error", "message": "Nessuna riproduzione in corso"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/stop_all', methods=['POST'])
+def daw_stop_all():
+    """Ferma tutto: registrazione e riproduzione"""
+    try:
+        daw.stop_all()
+        return jsonify({"status": "ok", "message": "Tutto fermato"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/rewind', methods=['POST'])
+def daw_rewind():
+    """Riporta la timeline a 00:00:00"""
+    try:
+        daw.rewind()
+        return jsonify({"status": "ok", "message": "Timeline resettata"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/arm', methods=['POST'])
+def daw_arm_track(channel):
+    """Arma/disarma una traccia per la registrazione"""
+    try:
+        data = request.json
+        armed = data.get('armed', True)
+        
+        daw.arm_track(channel, armed)
+        
+        return jsonify({
+            "status": "ok", 
+            "message": f"Traccia {channel} {'armata' if armed else 'disarmata'}"
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/mute', methods=['POST'])
+def daw_mute_track(channel):
+    """Muta/smuta una traccia"""
+    try:
+        data = request.json
+        muted = data.get('muted', True)
+        
+        daw.mute_track(channel, muted)
+        
+        return jsonify({
+            "status": "ok", 
+            "message": f"Traccia {channel} {'mutata' if muted else 'smutata'}"
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/clear', methods=['POST'])
+def daw_clear_track(channel):
+    """Cancella una traccia specifica"""
+    try:
+        daw.clear_track(channel)
+        return jsonify({"status": "ok", "message": f"Traccia {channel} cancellata"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clear_all', methods=['POST'])
+def daw_clear_all():
+    """Cancella tutte le tracce"""
+    try:
+        daw.clear_all_tracks()
+        return jsonify({"status": "ok", "message": "Tutte le tracce cancellate"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/bpm', methods=['POST'])
+def daw_set_bpm():
+    """Imposta il tempo (BPM)"""
+    try:
+        data = request.json
+        bpm = data.get('bpm', 120)
+        
+        success = daw.set_bpm(bpm)
+        
+        if success:
+            return jsonify({"status": "ok", "message": f"BPM impostato a {bpm}"})
+        else:
+            return jsonify({
+                "status": "error", 
+                "message": "Impossibile cambiare BPM durante registrazione/riproduzione"
+            }), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 if __name__ == '__main__':
