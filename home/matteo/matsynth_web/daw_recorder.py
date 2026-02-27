@@ -230,7 +230,8 @@ class MultiTrackDAW:
         
         self.is_playing = True
         self.stop_event.clear()
-        self.timeline_position = 0.0
+        # NON resettare timeline_position - riprendi da dove sei
+        # (solo REWIND resetta a 0.0)
         
         self.playback_thread = threading.Thread(
             target=self._playback_loop,
@@ -238,7 +239,7 @@ class MultiTrackDAW:
         )
         self.playback_thread.start()
         
-        print("[DAW] Playback avviato")
+        print(f"[DAW] Playback avviato da posizione {self.timeline_position:.1f}s")
         self._emit_state_change()  # Notifica via WebSocket
         return True
     
@@ -418,6 +419,8 @@ class MultiTrackDAW:
             print("[DAW] Errore: Nessun output MIDI disponibile")
             return
         
+        # Salva la posizione iniziale (da dove riprendere)
+        initial_position = self.timeline_position
         start_time = time.time()
         
         # Prepara gli eventi di tutte le tracce non mutate
@@ -431,12 +434,16 @@ class MultiTrackDAW:
         # Ordina gli eventi per timestamp
         all_events.sort(key=lambda x: x[0])
         
-        print(f"[DAW] Riproduzione di {len(all_events)} eventi totali")
+        # Salta gli eventi già passati (prima della posizione corrente)
+        event_index = 0
+        while event_index < len(all_events) and all_events[event_index][0] < initial_position:
+            event_index += 1
+        
+        print(f"[DAW] Riproduzione di {len(all_events) - event_index} eventi da {initial_position:.1f}s")
         
         try:
-            event_index = 0
             while not self.stop_event.is_set() and event_index < len(all_events):
-                current_time = time.time() - start_time
+                current_time = initial_position + (time.time() - start_time)
                 
                 # Aggiorna timeline position
                 self.timeline_position = current_time

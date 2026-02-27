@@ -69,11 +69,21 @@
                 </div>
             </div>
             <div class="row g-2 mb-3">
-                <div class="col-12">
+                <div class="col-6">
                     <div class="d-flex align-items-center">
                         <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">BPM:</label>
                         <input type="number" id="daw-bpm" class="form-control form-control-sm" value="120" min="30" max="300"
                                onchange="dawSetBPM(this.value)" style="width: 70px; padding: 4px 6px; font-size: 0.85rem;">
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="d-flex align-items-center justify-content-end">
+                        <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">
+                            <i class="fas fa-clock"></i> TIME:
+                        </label>
+                        <span id="daw-timeline" class="badge bg-dark" style="font-size: 0.9rem; font-family: monospace; padding: 6px 10px;">
+                            00:00.0
+                        </span>
                     </div>
                 </div>
             </div>
@@ -650,6 +660,26 @@ function dawUpdateUI() {
     
     // Update BPM
     document.getElementById('daw-bpm').value = dawState.bpm;
+    
+    // Update Timeline display (mm:ss.d format)
+    const timelineSpan = document.getElementById('daw-timeline');
+    const timeSeconds = dawState.timeline_position || 0;
+    const minutes = Math.floor(timeSeconds / 60);
+    const seconds = Math.floor(timeSeconds % 60);
+    const deciseconds = Math.floor((timeSeconds % 1) * 10);
+    timelineSpan.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+    
+    // Change color based on state
+    if (dawState.is_recording) {
+        timelineSpan.classList.remove('bg-dark', 'bg-info');
+        timelineSpan.classList.add('bg-danger');
+    } else if (dawState.is_playing) {
+        timelineSpan.classList.remove('bg-dark', 'bg-danger');
+        timelineSpan.classList.add('bg-info');
+    } else {
+        timelineSpan.classList.remove('bg-danger', 'bg-info');
+        timelineSpan.classList.add('bg-dark');
+    }
     
     // Calculate total events
     let totalEvents = 0;
