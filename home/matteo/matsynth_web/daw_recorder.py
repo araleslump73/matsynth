@@ -51,13 +51,18 @@ class MultiTrackDAW:
     def _init_midi_ports(self):
         """Inizializza le porte MIDI virtuali e fisiche"""
         try:
-            # Trova la tastiera fisica (SINCO o simile)
+            # Trova la tastiera fisica (FANTOM, SINCO, USB, etc.)
             available_inputs = mido.get_input_names()
             physical_keyboard = None
             
-            for port_name in available_inputs:
-                if 'SINCO' in port_name or 'USB' in port_name or 'Midi Through' not in port_name:
-                    physical_keyboard = port_name
+            # Priorità: FANTOM > SINCO > USB > altro (escludi Midi Through)
+            keywords = ['FANTOM', 'SINCO', 'USB']
+            for keyword in keywords:
+                for port_name in available_inputs:
+                    if keyword in port_name.upper() and 'MIDI THROUGH' not in port_name.upper():
+                        physical_keyboard = port_name
+                        break
+                if physical_keyboard:
                     break
             
             if physical_keyboard:
@@ -65,6 +70,7 @@ class MultiTrackDAW:
                 print(f"[DAW] MIDI Input connesso: {physical_keyboard}")
             else:
                 print("[DAW] ATTENZIONE: Nessuna tastiera MIDI fisica trovata")
+                print(f"[DAW] Porte disponibili: {available_inputs}")
             
             # Trova FluidSynth come output
             available_outputs = mido.get_output_names()
@@ -84,24 +90,58 @@ class MultiTrackDAW:
         except Exception as e:
             print(f"[DAW] Errore inizializzazione MIDI: {e}")
     
-    def start_recording(self, channel):
+    def start_recording(self, channel=None):
         """
-        Avvia la registrazione su un canale specifico
+        Avvia la registrazione su canali armati
         
         Args:
-            channel: Canale MIDI (0-15) da registrare
+            channel: Canale MIDI (0-15) da registrare, o None per tutti i canali armati
             
         Returns:
             bool: True se registrazione avviata, False altrimenti
         """
-        if not self.armed[channel]:
-            return False
+        print(f"[DAW] start_recording chiamato con channel={channel}")
+        print(f"[DAW] armed state: {self.armed}")
+        print(f"[DAW] is_recording: {self.is_recording}")
+        
+        # Se channel specificato, verifica che sia armato
+        if channel is not None:
+            if not self.armed[channel]:
+                print(f"[DAW] Canale {channel} non armato, esco")
+                return False
+        else:
+            # Se nessun channel specificato, verifica che almeno uno sia armato
+            if not any(self.armed.values()):
+                print(f"[DAW] Nessun canale armato, esco")
+                return False
         
         if self.is_recording:
+            print(f"[DAW] Già in registrazione, esco")
             return False
         
-        # Se ci sono altre tracce con dati, avvia anche la riproduzione
-        has_other_tracks = any(self.has_data[ch] for ch in range(16) if ch != channel)
+        # FLUSH della coda MIDI per evitare messaggi accumulati
+        if self.midi_input:
+            # Svuota tutti i messaggi in attesa prima di iniziare
+            discarded_count = 0
+            for _ in self.midi_input.iter_pending():
+                discarded_count += 1
+            if discarded_count > 0:
+                print(f"[DAW] Scartati {discarded_count} messaggi MIDI in buffer prima di registrare")
+        
+        # Invia "All Notes Off" per sicurezza (pulisce eventuali note stuck)
+        self._send_all_notes_off()
+        
+        # Breve pausa per stabilizzare il sistema
+        time.sleep(0.05)  # 50ms
+        
+        # Determina i canali da registrare
+        if channel is not None:
+            recording_channels = [channel]
+        else:
+            recording_channels = [ch for ch in range(16) if self.armed[ch]]
+        
+        # Se ci sono altre tracce con dati (non in registrazione), avvia anche la riproduzione
+        has_other_tracks = any(self.has_data[ch] for ch in range(16) if ch not in recording_channels)
         
         self.is_recording = True
         self.stop_event.clear()
@@ -109,10 +149,10 @@ class MultiTrackDAW:
         # Reset timeline position all'inizio
         self.timeline_position = 0.0
         
-        # Thread di registrazione
+        # Thread di registrazione (registra su tutti i canali armati)
         self.record_thread = threading.Thread(
             target=self._record_loop, 
-            args=(channel,),
+            args=(recording_channels,),
             daemon=True
         )
         self.record_thread.start()
@@ -126,7 +166,7 @@ class MultiTrackDAW:
             )
             self.playback_thread.start()
         
-        print(f"[DAW] Registrazione avviata su canale {channel}")
+        print(f"[DAW] Registrazione avviata su canali {recording_channels}")
         return True
     
     def stop_recording(self):
@@ -258,6 +298,19 @@ class MultiTrackDAW:
     
     def get_state(self):
         """Ritorna lo stato completo del sistema"""
+        # Calcola la durata di ogni traccia (timestamp dell'ultimo evento)
+        track_durations = {}
+        max_duration = 0.0
+        
+        for ch in range(16):
+            if self.tracks[ch]:
+                # Ultimo timestamp della traccia
+                duration = self.tracks[ch][-1][0]
+                track_durations[ch] = duration
+                max_duration = max(max_duration, duration)
+            else:
+                track_durations[ch] = 0.0
+        
         return {
             'is_recording': self.is_recording,
             'is_playing': self.is_playing,
@@ -266,39 +319,54 @@ class MultiTrackDAW:
             'armed': self.armed.copy(),
             'muted': self.muted.copy(),
             'has_data': self.has_data.copy(),
-            'track_counts': {ch: len(self.tracks[ch]) for ch in range(16)}
+            'track_counts': {ch: len(self.tracks[ch]) for ch in range(16)},
+            'track_durations': track_durations,  # Durata di ogni traccia in secondi
+            'max_duration': max_duration  # Durata massima tra tutte le tracce
         }
     
-    def _record_loop(self, channel):
-        """Loop di registrazione (eseguito in thread separato)"""
+    def _record_loop(self, recording_channels):
+        """Loop di registrazione (eseguito in thread separato)
+        
+        Args:
+            recording_channels: Lista di canali su cui registrare (es. [0, 1, 2])
+        """
         if not self.midi_input:
             print("[DAW] Errore: Nessun input MIDI disponibile")
             return
         
         start_time = time.time()
+        GRACE_PERIOD = 0.01  # Ignora i primi 10ms per evitare messaggi residui
         
         try:
             while not self.stop_event.is_set():
                 # Polling veloce con timeout minimo
                 for msg in self.midi_input.iter_pending():
-                    # Filtra solo messaggi del canale corretto
-                    if hasattr(msg, 'channel') and msg.channel == channel:
+                    # Filtra solo messaggi dei canali in registrazione
+                    if hasattr(msg, 'channel') and msg.channel in recording_channels:
                         timestamp = time.time() - start_time
                         
-                        # Salva evento in formato tuple leggera
-                        self.tracks[channel].append((timestamp, msg.bytes()))
+                        # Ignora messaggi nei primi millisecondi (grace period)
+                        # per evitare di registrare eventi residui nel buffer
+                        if timestamp < GRACE_PERIOD:
+                            continue
                         
-                        # Invia a FluidSynth per monitoring real-time
-                        if self.midi_output:
-                            self.midi_output.send(msg)
+                        # Salva evento in formato tuple leggera
+                        self.tracks[msg.channel].append((timestamp, msg.bytes()))
+                        
+                        # NON fare thru a FluidSynth - è già collegato direttamente alla tastiera
+                        # Il monitoring real-time avviene tramite la connessione diretta aconnect
+                        
+                        # Aggiorna timeline position
+                        self.timeline_position = timestamp
                 
                 # Sleep minimo per non sovraccaricare CPU
                 time.sleep(0.001)  # 1ms polling
             
-            # Marca la traccia come avente dati
-            if len(self.tracks[channel]) > 0:
-                self.has_data[channel] = True
-                print(f"[DAW] Registrati {len(self.tracks[channel])} eventi su canale {channel}")
+            # Marca le tracce come aventi dati
+            for channel in recording_channels:
+                if len(self.tracks[channel]) > 0:
+                    self.has_data[channel] = True
+                    print(f"[DAW] Registrati {len(self.tracks[channel])} eventi su canale {channel}")
                 
         except Exception as e:
             print(f"[DAW] Errore nel loop di registrazione: {e}")
@@ -328,6 +396,9 @@ class MultiTrackDAW:
             event_index = 0
             while not self.stop_event.is_set() and event_index < len(all_events):
                 current_time = time.time() - start_time
+                
+                # Aggiorna timeline position
+                self.timeline_position = current_time
                 
                 # Invia tutti gli eventi che dovrebbero essere già suonati
                 while event_index < len(all_events):

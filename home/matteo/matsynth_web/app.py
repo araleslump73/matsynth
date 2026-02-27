@@ -632,26 +632,56 @@ def daw_get_state():
 
 @app.route('/api/daw/record/start', methods=['POST'])
 def daw_start_recording():
-    """Avvia la registrazione su un canale specifico"""
+    """Avvia la registrazione su tutti i canali armati"""
     try:
-        data = request.json
-        channel = data.get('channel', 0)
+        data = request.json or {}
+        channel = data.get('channel', None)
         
-        # Verifica che il canale sia armato
-        if not daw.armed.get(channel):
+        print(f"[DAW API] === START RECORDING REQUEST ===")
+        print(f"[DAW API] request.json: {request.json}")
+        print(f"[DAW API] data: {data}")
+        print(f"[DAW API] channel param: {channel}")
+        print(f"[DAW API] daw.armed dict: {daw.armed}")
+        
+        # Trova i canali armati
+        armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
+        print(f"[DAW API] armed_channels list: {armed_channels}")
+        
+        if not armed_channels:
+            print(f"[DAW API] ERRORE: Nessun canale armato!")
             return jsonify({
                 "status": "error", 
-                "message": f"Canale {channel} non è armato. Attiva ARM prima di registrare."
+                "message": "Nessun canale armato. Attiva ARM su almeno un canale."
             }), 400
         
-        success = daw.start_recording(channel)
+        if channel is not None:
+            # Registrazione su canale specifico (backward compatibility)
+            print(f"[DAW API] Richiesta start recording su canale {channel}")
+            if not daw.armed.get(channel):
+                print(f"[DAW API] ERRORE: Canale {channel} non armato!")
+                return jsonify({
+                    "status": "error", 
+                    "message": f"Canale {channel} non è armato. Attiva ARM prima di registrare."
+                }), 400
+            success = daw.start_recording(channel)
+        else:
+            # Registrazione su tutti i canali armati (nuovo workflow)
+            print(f"[DAW API] Richiesta start recording su canali armati: {armed_channels}")
+            print(f"[DAW API] Stato is_recording: {daw.is_recording}")
+            success = daw.start_recording()
+        
+        print(f"[DAW API] start_recording ritorna: {success}")
         
         if success:
-            return jsonify({"status": "ok", "message": f"Registrazione avviata su canale {channel}"})
+            return jsonify({"status": "ok", "message": f"Registrazione avviata su canali {armed_channels}"})
         else:
+            print(f"[DAW API] ERRORE: Impossibile avviare registrazione")
             return jsonify({"status": "error", "message": "Impossibile avviare registrazione"}), 400
             
     except Exception as e:
+        print(f"[DAW API] ECCEZIONE in start_recording: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
@@ -727,11 +757,15 @@ def daw_arm_track(channel):
         data = request.json
         armed = data.get('armed', True)
         
-        daw.arm_track(channel, armed)
+        success = daw.arm_track(channel, armed)
+        
+        print(f"[DAW API] Traccia {channel} {'armata' if armed else 'disarmata'} - success={success}")
+        print(f"[DAW API] Stato armed aggiornato: {daw.armed[channel]}")
         
         return jsonify({
             "status": "ok", 
-            "message": f"Traccia {channel} {'armata' if armed else 'disarmata'}"
+            "message": f"Traccia {channel} {'armata' if armed else 'disarmata'}",
+            "armed": daw.armed[channel]  # Ritorna lo stato effettivo
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

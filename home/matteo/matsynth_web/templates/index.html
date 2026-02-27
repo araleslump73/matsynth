@@ -45,10 +45,15 @@
         </div>
         <div class="p-3">
             <!-- Transport Controls -->
-            <div class="row g-2 mb-3">
+            <div class="row g-2 mb-2">
                 <div class="col-3">
                     <button id="daw-play" class="btn btn-success w-100 btn-sm fw-bold" onclick="dawPlay()" style="padding: 8px;">
                         <i class="fas fa-play"></i> PLAY
+                    </button>
+                </div>
+                <div class="col-3">
+                    <button id="daw-rec" class="btn btn-outline-danger w-100 btn-sm fw-bold" onclick="dawRecord()" style="padding: 8px;">
+                        <i class="fas fa-circle"></i> REC
                     </button>
                 </div>
                 <div class="col-3">
@@ -61,11 +66,13 @@
                         <i class="fas fa-undo"></i> RWD
                     </button>
                 </div>
-                <div class="col-3">
-                    <div class="d-flex align-items-center h-100">
-                        <label class="me-1 mb-0 text-white" style="font-size: 0.7rem; white-space: nowrap;">BPM:</label>
+            </div>
+            <div class="row g-2 mb-3">
+                <div class="col-12">
+                    <div class="d-flex align-items-center">
+                        <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">BPM:</label>
                         <input type="number" id="daw-bpm" class="form-control form-control-sm" value="120" min="30" max="300"
-                               onchange="dawSetBPM(this.value)" style="width: 60px; padding: 2px 4px; font-size: 0.75rem;">
+                               onchange="dawSetBPM(this.value)" style="width: 70px; padding: 4px 6px; font-size: 0.85rem;">
                     </div>
                 </div>
             </div>
@@ -522,6 +529,9 @@ fetchSF2List();
 let dawState = null;
 let dawPollInterval = null;
 let dawRecordingChannel = null;
+let dawPollRate = 2000; // Intervallo di polling in ms (2 secondi di default)
+let dawIdleTime = 0; // Tempo in cui il DAW è idle
+const DAW_IDLE_TIMEOUT = 60000; // 60 secondi di inattività prima di fermare il polling
 
 // Initialize DAW tracks
 function initDAW() {
@@ -566,9 +576,29 @@ function initDAW() {
         tbody.appendChild(row);
     }
     
-    // Start polling
-    dawPollState();
-    dawPollInterval = setInterval(dawPollState, 400);
+    // Non avviare il polling automaticamente - inizia solo quando si usa il DAW
+    // Il polling partirà quando l'utente preme REC, PLAY, o ARM
+    // Inizializza lo stato DAW con un fetch iniziale (senza polling)
+    dawPollState().then(() => {
+        console.log('DAW initialized. Polling will start when you interact with DAW controls.');
+    });
+}
+
+// Avvia il polling con un intervallo specifico
+function dawStartPolling(interval) {
+    if (dawPollInterval) {
+        clearInterval(dawPollInterval);
+    }
+    dawPollRate = interval;
+    dawPollInterval = setInterval(dawPollState, interval);
+}
+
+// Ferma il polling
+function dawStopPolling() {
+    if (dawPollInterval) {
+        clearInterval(dawPollInterval);
+        dawPollInterval = null;
+    }
 }
 
 // Poll DAW state
@@ -580,6 +610,36 @@ async function dawPollState() {
         if (data.status === 'ok') {
             dawState = data.data;
             dawUpdateUI();
+            
+            // Controlla se il DAW è attivo
+            const isActive = dawState.is_recording || dawState.is_playing;
+            const hasArmedChannels = Object.values(dawState.armed || {}).some(armed => armed);
+            const hasRecordedData = Object.values(dawState.tracks || {}).some(track => track.events > 0);
+            
+            if (isActive) {
+                // Attivo: polling veloce e reset idle timer
+                dawIdleTime = 0;
+                const newRate = 500;
+                if (newRate !== dawPollRate) {
+                    dawStartPolling(newRate);
+                }
+            } else if (hasArmedChannels || hasRecordedData) {
+                // Canali armati o dati registrati: polling lento ma attivo
+                dawIdleTime = 0;
+                const newRate = 2000;
+                if (newRate !== dawPollRate) {
+                    dawStartPolling(newRate);
+                }
+            } else {
+                // Completamente idle: incrementa timer e considera di fermare il polling
+                dawIdleTime += dawPollRate;
+                
+                if (dawIdleTime >= DAW_IDLE_TIMEOUT) {
+                    console.log('DAW idle for 60 seconds, stopping polling to save resources');
+                    dawStopPolling();
+                    dawIdleTime = 0;
+                }
+            }
         }
     } catch (e) {
         console.error('DAW poll error:', e);
@@ -592,6 +652,7 @@ function dawUpdateUI() {
     
     // Update transport buttons
     const playBtn = document.getElementById('daw-play');
+    const recBtn = document.getElementById('daw-rec');
     const stopBtn = document.getElementById('daw-stop');
     
     if (dawState.is_playing) {
@@ -602,6 +663,19 @@ function dawUpdateUI() {
         playBtn.classList.remove('btn-warning');
         playBtn.classList.add('btn-success');
         playBtn.innerHTML = '<i class="fas fa-play"></i> PLAY';
+    }
+    
+    // Update REC button
+    if (dawState.is_recording) {
+        recBtn.classList.remove('btn-outline-danger');
+        recBtn.classList.add('btn-danger');
+        recBtn.innerHTML = '<i class="fas fa-circle"></i> RECORDING';
+        recBtn.style.animation = 'pulse 1s infinite';
+    } else {
+        recBtn.classList.remove('btn-danger');
+        recBtn.classList.add('btn-outline-danger');
+        recBtn.innerHTML = '<i class="fas fa-circle"></i> REC';
+        recBtn.style.animation = 'none';
     }
     
     // Update BPM
@@ -651,12 +725,31 @@ function dawUpdateUI() {
             eventBadge.style.fontSize = '0.65rem';
         }
         
-        // Progress bar (shows data presence)
-        if (eventCount > 0) {
-            progressBar.style.width = '100%';
+        // Progress bar (shows temporal progress/duration)
+        const trackDuration = dawState.track_durations ? dawState.track_durations[i] : 0;
+        const maxDuration = dawState.max_duration || 1;
+        
+        if (dawState.is_recording && dawState.armed[i]) {
+            // Durante registrazione: mostra progresso temporale crescente
+            // Usa il tempo corrente come riferimento se è la prima traccia
+            const displayMax = Math.max(maxDuration, dawState.timeline_position || 1);
+            const progress = (dawState.timeline_position / displayMax) * 100;
+            progressBar.style.width = Math.min(100, progress) + '%';
+            progressBar.className = 'progress-bar bg-danger progress-bar-striped progress-bar-animated';
+        } else if (dawState.is_playing && trackDuration > 0 && !dawState.muted[i]) {
+            // Durante playback: mostra posizione nella traccia
+            const progress = maxDuration > 0 ? (dawState.timeline_position / maxDuration) * 100 : 0;
+            progressBar.style.width = Math.min(100, progress) + '%';
+            progressBar.className = 'progress-bar bg-warning progress-bar-striped progress-bar-animated';
+        } else if (trackDuration > 0) {
+            // Traccia ferma: mostra lunghezza relativa alla traccia più lunga
+            const relativeWidth = maxDuration > 0 ? (trackDuration / maxDuration) * 100 : 100;
+            progressBar.style.width = relativeWidth + '%';
             progressBar.className = dawState.muted[i] ? 'progress-bar bg-secondary' : 'progress-bar bg-success';
         } else {
+            // Nessun dato
             progressBar.style.width = '0%';
+            progressBar.className = 'progress-bar bg-info';
         }
         
         // Highlight recording track
@@ -691,6 +784,16 @@ function dawUpdateUI() {
 // Transport Controls
 async function dawPlay() {
     try {
+        // Avvia polling se non è già attivo
+        if (!dawPollInterval) {
+            dawStartPolling(500);
+        }
+        
+        // Assicurati che dawState sia caricato
+        if (!dawState) {
+            await dawPollState();
+        }
+        
         if (dawState.is_playing) {
             // Stop playback
             await fetch('/api/daw/play/stop', { 
@@ -717,7 +820,20 @@ async function dawStop() {
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' } 
         });
-        await dawPollState();
+        
+        // Ferma il polling quando si preme STOP per risparmiare risorse
+        // Lo stato si aggiornerà quando l'utente interagirà nuovamente con i controlli
+        dawStopPolling();
+        dawIdleTime = 0;
+        
+        // Aggiorna lo stato locale senza fare una richiesta al server
+        if (dawState) {
+            dawState.is_playing = false;
+            dawState.is_recording = false;
+            dawUpdateUI();
+        }
+        
+        console.log('DAW stopped - polling disabled');
     } catch (e) {
         console.error('Stop error:', e);
     }
@@ -756,50 +872,45 @@ async function dawSetBPM(bpm) {
 // Track Controls
 async function dawToggleArm(channel) {
     try {
-        const newState = !dawState.armed[channel];
-        
-        // If arming and not recording yet, start recording
-        if (newState && !dawState.is_recording) {
-            // Arm the track first
-            await fetch(`/api/daw/track/${channel}/arm`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ armed: true })
-            });
-            
-            // Then start recording
-            const res = await fetch('/api/daw/record/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ channel: channel })
-            });
-            
-            const data = await res.json();
-            if (data.status !== 'ok') {
-                alert(data.message);
-            }
-        } else if (!newState && dawState.is_recording) {
-            // Disarming while recording = stop recording
-            await fetch('/api/daw/record/stop', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
-            
-            await fetch(`/api/daw/track/${channel}/arm`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ armed: false })
-            });
-        } else {
-            // Just toggle arm state
-            await fetch(`/api/daw/track/${channel}/arm`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ armed: newState })
-            });
+        // Avvia polling se non è già attivo (l'utente sta iniziando a usare il DAW)
+        if (!dawPollInterval) {
+            dawStartPolling(2000);
         }
         
+        // Assicurati che dawState sia caricato
+        if (!dawState) {
+            console.log('[DAW] dawState is null, loading initial state...');
+            await dawPollState();
+        }
+        
+        const currentlyArmed = dawState.armed[channel];
+        const currentlyRecording = dawState.is_recording;
+        
+        console.log(`[DAW] ARM click ch${channel}: armed=${currentlyArmed}, recording=${currentlyRecording}`);
+        
+        // Non permettere disarm durante la registrazione
+        if (currentlyRecording && currentlyArmed) {
+            alert('Stop recording first before disarming tracks');
+            return;
+        }
+        
+        // Toggle arm state
+        const newState = !currentlyArmed;
+        console.log(`[DAW] ${newState ? 'Arming' : 'Disarming'} track ${channel}...`);
+        
+        const armRes = await fetch(`/api/daw/track/${channel}/arm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ armed: newState })
+        });
+        
+        const armData = await armRes.json();
+        console.log('[DAW] Arm response:', armData);
+        
+        // Refresh state immediatamente
         await dawPollState();
+        
+        console.log('[DAW] ARM operation completed');
     } catch (e) {
         console.error('Arm error:', e);
     }
@@ -816,6 +927,75 @@ async function dawToggleMute(channel) {
         await dawPollState();
     } catch (e) {
         console.error('Mute error:', e);
+    }
+}
+
+async function dawRecord() {
+    try {
+        // Avvia polling se non è già attivo
+        if (!dawPollInterval) {
+            dawStartPolling(2000);
+        }
+        
+        // Assicurati che dawState sia caricato
+        if (!dawState) {
+            console.log('[DAW] dawState is null, loading initial state...');
+            await dawPollState();
+        }
+        
+        const currentlyRecording = dawState.is_recording;
+        
+        if (!currentlyRecording) {
+            // Start recording
+            console.log('[DAW] Starting global recording...');
+            
+            // Check if any track is armed (dawState.armed is an object, not array)
+            const armedTracks = Object.values(dawState.armed).filter(armed => armed).length;
+            if (armedTracks === 0) {
+                alert('Please ARM at least one track before recording');
+                return;
+            }
+            
+            console.log('[DAW] Armed tracks:', armedTracks);
+            console.log('[DAW] Armed state:', dawState.armed);
+            
+            const res = await fetch('/api/daw/record/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            
+            const data = await res.json();
+            console.log('[DAW] Start recording response:', data);
+            
+            if (data.status !== 'ok') {
+                alert(data.message);
+            } else {
+                // Accelera il polling durante la registrazione
+                dawStartPolling(500);
+            }
+        } else {
+            // Stop recording
+            console.log('[DAW] Stopping global recording...');
+            
+            const res = await fetch('/api/daw/record/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await res.json();
+            console.log('[DAW] Stop recording response:', data);
+            
+            // Rallenta il polling dopo lo stop
+            dawStartPolling(2000);
+        }
+        
+        // Refresh state immediatamente
+        await dawPollState();
+        
+        console.log('[DAW] REC operation completed');
+    } catch (e) {
+        console.error('Record error:', e);
     }
 }
 
