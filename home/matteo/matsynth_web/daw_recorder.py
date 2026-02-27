@@ -27,7 +27,8 @@ class MultiTrackDAW:
         self.beat_duration = 60.0 / bpm  # durata di un beat in secondi
         self.socketio = socketio  # WebSocket per notifiche real-time
         
-        # Storage tracce: {channel_id: [(timestamp, midi_msg), ...]}
+        # Storage tracce: {channel_id: [(beat_position, midi_msg), ...]}
+        # Gli eventi sono salvati in beat (unità musicale) per supportare cambi di BPM
         self.tracks = defaultdict(list)
         
         # Stato di ogni traccia (16 canali MIDI)
@@ -40,11 +41,17 @@ class MultiTrackDAW:
         self.is_playing = False
         self.timeline_position = 0.0  # posizione corrente in secondi
         
+        # Metronomo
+        self.metronome_enabled = False
+        self.metronome_thread = None
+        self.last_beat = -1  # ultimo beat suonato (per evitare duplicati)
+        
         # Thread control
         self.record_thread = None
         self.playback_thread = None
         self.update_thread = None  # Thread per aggiornamenti periodici via WebSocket
         self.stop_event = threading.Event()
+        self.metronome_stop_event = threading.Event()
         
         # Porte MIDI
         self.midi_input = None
@@ -180,13 +187,14 @@ class MultiTrackDAW:
         self.is_recording = True
         self.stop_event.clear()
         
-        # Reset timeline position all'inizio
-        self.timeline_position = 0.0
+        # NON resettare timeline position - registra dalla posizione corrente
+        # (solo REWIND resetta a 0.0)
+        initial_position = self.timeline_position
         
         # Thread di registrazione (registra su tutti i canali armati)
         self.record_thread = threading.Thread(
             target=self._record_loop, 
-            args=(recording_channels,),
+            args=(recording_channels, initial_position),
             daemon=True
         )
         self.record_thread.start()
@@ -200,7 +208,11 @@ class MultiTrackDAW:
             )
             self.playback_thread.start()
         
-        print(f"[DAW] Registrazione avviata su canali {recording_channels}")
+        # Avvia metronomo se abilitato
+        if self.metronome_enabled:
+            self._start_metronome()
+        
+        print(f"[DAW] Registrazione avviata su canali {recording_channels} da posizione {initial_position:.1f}s")
         self._emit_state_change()  # Notifica via WebSocket
         return True
     
@@ -239,6 +251,10 @@ class MultiTrackDAW:
         )
         self.playback_thread.start()
         
+        # Avvia metronomo se abilitato
+        if self.metronome_enabled:
+            self._start_metronome()
+        
         print(f"[DAW] Playback avviato da posizione {self.timeline_position:.1f}s")
         self._emit_state_change()  # Notifica via WebSocket
         return True
@@ -265,24 +281,21 @@ class MultiTrackDAW:
         """Ferma registrazione e riproduzione"""
         self.stop_recording()
         self.stop_playback()
+        self._stop_metronome()  # Ferma anche il metronomo
         self._send_all_notes_off()
         self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def rewind(self):
         """Riporta la timeline a 00:00:00"""
-        was_playing = self.is_playing
-        was_recording = self.is_recording
-        
         # Ferma tutto
         self.stop_all()
         
         # Reset timeline
         self.timeline_position = 0.0
+        self._emit_state_change()  # Notifica via WebSocket
         
-        # Riavvia se necessario
-        if was_playing:
-            self.start_playback()
+        return True
         
         print("[DAW] Timeline resettata")
         return True
@@ -328,7 +341,7 @@ class MultiTrackDAW:
     def set_bpm(self, bpm):
         """
         Imposta il tempo (BPM)
-        Può essere cambiato solo quando il sistema è fermo
+        Gli eventi sono salvati in beat, quindi cambiano velocità automaticamente
         """
         if self.is_recording or self.is_playing:
             return False
@@ -340,14 +353,15 @@ class MultiTrackDAW:
     
     def get_state(self):
         """Ritorna lo stato completo del sistema"""
-        # Calcola la durata di ogni traccia (timestamp dell'ultimo evento)
+        # Calcola la durata di ogni traccia (converti beat in secondi per visualizzazione)
         track_durations = {}
         max_duration = 0.0
         
         for ch in range(16):
             if self.tracks[ch]:
-                # Ultimo timestamp della traccia
-                duration = self.tracks[ch][-1][0]
+                # Ultimo beat della traccia convertito in secondi
+                last_beat = self.tracks[ch][-1][0]
+                duration = last_beat * self.beat_duration
                 track_durations[ch] = duration
                 max_duration = max(max_duration, duration)
             else:
@@ -358,6 +372,7 @@ class MultiTrackDAW:
             'is_playing': self.is_playing,
             'timeline_position': self.timeline_position,
             'bpm': self.bpm,
+            'metronome_enabled': self.metronome_enabled,
             'armed': self.armed.copy(),
             'muted': self.muted.copy(),
             'has_data': self.has_data.copy(),
@@ -366,11 +381,94 @@ class MultiTrackDAW:
             'max_duration': max_duration  # Durata massima tra tutte le tracce
         }
     
-    def _record_loop(self, recording_channels):
+    def toggle_metronome(self):
+        """Toggle metronomo on/off"""
+        self.metronome_enabled = not self.metronome_enabled
+        
+        # Se è attivo durante registrazione/playback, avvia il thread
+        if self.metronome_enabled and (self.is_recording or self.is_playing):
+            self._start_metronome()
+        elif not self.metronome_enabled:
+            self._stop_metronome()
+        
+        self._emit_state_change()
+        return self.metronome_enabled
+    
+    def _start_metronome(self):
+        """Avvia il thread del metronomo"""
+        if self.metronome_thread is None or not self.metronome_thread.is_alive():
+            self.metronome_stop_event.clear()
+            self.last_beat = -1
+            self.metronome_thread = threading.Thread(
+                target=self._metronome_loop,
+                daemon=True
+            )
+            self.metronome_thread.start()
+            print("[DAW] Metronomo avviato")
+    
+    def _stop_metronome(self):
+        """Ferma il thread del metronomo"""
+        if self.metronome_thread and self.metronome_thread.is_alive():
+            self.metronome_stop_event.set()
+            self.metronome_thread.join(timeout=0.5)
+            print("[DAW] Metronomo fermato")
+    
+    def _metronome_loop(self):
+        """Loop del metronomo (eseguito in thread separato)"""
+        if not self.midi_output:
+            return
+        
+        CLICK_CHANNEL = 9  # Canale 10 (drum channel, 0-indexed)
+        ACCENT_NOTE = 76   # High Wood Block (primo beat della misura)
+        NORMAL_NOTE = 77   # Low Wood Block (altri beat)
+        VELOCITY = 100
+        NOTE_DURATION = 0.05  # 50ms
+        
+        beats_per_measure = 4  # 4/4 time
+        
+        try:
+            while not self.metronome_stop_event.is_set():
+                # Calcola il beat corrente dalla timeline position
+                current_beat = int(self.timeline_position / self.beat_duration)
+                
+                # Se è un nuovo beat, suona il click
+                if current_beat != self.last_beat:
+                    self.last_beat = current_beat
+                    
+                    # Primo beat della misura = accento
+                    beat_in_measure = current_beat % beats_per_measure
+                    note = ACCENT_NOTE if beat_in_measure == 0 else NORMAL_NOTE
+                    
+                    # Note ON
+                    msg_on = mido.Message('note_on', 
+                                         channel=CLICK_CHANNEL, 
+                                         note=note, 
+                                         velocity=VELOCITY)
+                    self.midi_output.send(msg_on)
+                    
+                    # Breve durata
+                    time.sleep(NOTE_DURATION)
+                    
+                    # Note OFF
+                    msg_off = mido.Message('note_off', 
+                                          channel=CLICK_CHANNEL, 
+                                          note=note, 
+                                          velocity=0)
+                    self.midi_output.send(msg_off)
+                
+                # Sleep fino al prossimo possibile beat (con margine)
+                time_to_next_beat = self.beat_duration - (self.timeline_position % self.beat_duration)
+                time.sleep(min(0.01, time_to_next_beat * 0.5))
+                
+        except Exception as e:
+            print(f"[DAW] Errore nel metronomo: {e}")
+    
+    def _record_loop(self, recording_channels, initial_position=0.0):
         """Loop di registrazione (eseguito in thread separato)
         
         Args:
             recording_channels: Lista di canali su cui registrare (es. [0, 1, 2])
+            initial_position: Posizione iniziale della timeline (offset temporale)
         """
         if not self.midi_input:
             print("[DAW] Errore: Nessun input MIDI disponibile")
@@ -381,32 +479,43 @@ class MultiTrackDAW:
         
         try:
             while not self.stop_event.is_set():
+                # Calcola posizione corrente sulla timeline
+                current_time = initial_position + (time.time() - start_time)
+                
+                # Aggiorna sempre la timeline position (scorre continuamente)
+                self.timeline_position = current_time
+                
                 # Polling veloce con timeout minimo
                 for msg in self.midi_input.iter_pending():
                     # Filtra solo messaggi dei canali in registrazione
                     if hasattr(msg, 'channel') and msg.channel in recording_channels:
-                        timestamp = time.time() - start_time
+                        elapsed_time = time.time() - start_time
                         
                         # Ignora messaggi nei primi millisecondi (grace period)
                         # per evitare di registrare eventi residui nel buffer
-                        if timestamp < GRACE_PERIOD:
+                        if elapsed_time < GRACE_PERIOD:
                             continue
                         
-                        # Salva evento in formato tuple leggera
-                        self.tracks[msg.channel].append((timestamp, msg.bytes()))
+                        # Timestamp assoluto sulla timeline in secondi
+                        timestamp_seconds = initial_position + elapsed_time
+                        
+                        # Converti in beat (posizione musicale) per supportare cambi di BPM
+                        beat_position = timestamp_seconds / self.beat_duration
+                        
+                        # Salva evento in formato tuple leggera (beat, msg_bytes)
+                        self.tracks[msg.channel].append((beat_position, msg.bytes()))
                         
                         # NON fare thru a FluidSynth - è già collegato direttamente alla tastiera
                         # Il monitoring real-time avviene tramite la connessione diretta aconnect
-                        
-                        # Aggiorna timeline position
-                        self.timeline_position = timestamp
                 
                 # Sleep minimo per non sovraccaricare CPU
                 time.sleep(0.001)  # 1ms polling
             
-            # Marca le tracce come aventi dati
+            # Marca le tracce come aventi dati e riordina gli eventi per beat position
             for channel in recording_channels:
                 if len(self.tracks[channel]) > 0:
+                    # Riordina gli eventi per beat position (potrebbero essere stati aggiunti in ordine sparso)
+                    self.tracks[channel].sort(key=lambda x: x[0])
                     self.has_data[channel] = True
                     print(f"[DAW] Registrati {len(self.tracks[channel])} eventi su canale {channel}")
                 
@@ -424,14 +533,16 @@ class MultiTrackDAW:
         start_time = time.time()
         
         # Prepara gli eventi di tutte le tracce non mutate
+        # Converti beat position in secondi usando BPM corrente
         all_events = []
         for channel in range(16):
             if self.has_data[channel] and not self.muted[channel]:
-                for timestamp, msg_bytes in self.tracks[channel]:
-                    # Ricostruisci il messaggio MIDI
-                    all_events.append((timestamp, channel, msg_bytes))
+                for beat_position, msg_bytes in self.tracks[channel]:
+                    # Converti beat in secondi con BPM corrente
+                    timestamp_seconds = beat_position * self.beat_duration
+                    all_events.append((timestamp_seconds, channel, msg_bytes))
         
-        # Ordina gli eventi per timestamp
+        # Ordina gli eventi per timestamp in secondi
         all_events.sort(key=lambda x: x[0])
         
         # Salta gli eventi già passati (prima della posizione corrente)

@@ -831,6 +831,20 @@ def daw_set_bpm():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/metronome/toggle', methods=['POST'])
+def daw_toggle_metronome():
+    """Toggle metronomo on/off"""
+    try:
+        enabled = daw.toggle_metronome()
+        return jsonify({
+            "status": "ok", 
+            "message": f"Metronomo {'abilitato' if enabled else 'disabilitato'}",
+            "enabled": enabled
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 if __name__ == '__main__':
     time.sleep(2)
     restore_settings()

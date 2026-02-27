@@ -74,6 +74,10 @@
                         <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">BPM:</label>
                         <input type="number" id="daw-bpm" class="form-control form-control-sm" value="120" min="30" max="300"
                                onchange="dawSetBPM(this.value)" style="width: 70px; padding: 4px 6px; font-size: 0.85rem;">
+                        <button id="daw-metronome" class="btn btn-outline-light btn-sm ms-2" onclick="dawToggleMetronome()" 
+                                style="padding: 4px 8px; font-size: 0.75rem;" title="Metronomo">
+                            <i class="fas fa-stopwatch"></i>
+                        </button>
                     </div>
                 </div>
                 <div class="col-6">
@@ -661,6 +665,16 @@ function dawUpdateUI() {
     // Update BPM
     document.getElementById('daw-bpm').value = dawState.bpm;
     
+    // Update metronome button
+    const metronomeBtn = document.getElementById('daw-metronome');
+    if (dawState.metronome_enabled) {
+        metronomeBtn.classList.remove('btn-outline-light');
+        metronomeBtn.classList.add('btn-warning');
+    } else {
+        metronomeBtn.classList.remove('btn-warning');
+        metronomeBtn.classList.add('btn-outline-light');
+    }
+    
     // Update Timeline display (mm:ss.d format)
     const timelineSpan = document.getElementById('daw-timeline');
     const timeSeconds = dawState.timeline_position || 0;
@@ -850,6 +864,22 @@ async function dawSetBPM(bpm) {
         }
     } catch (e) {
         console.error('BPM error:', e);
+    }
+}
+
+async function dawToggleMetronome() {
+    try {
+        const res = await fetch('/api/daw/metronome/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const data = await res.json();
+        if (data.status === 'ok') {
+            console.log('[DAW] Metronome:', data.enabled);
+        }
+    } catch (e) {
+        console.error('Metronome error:', e);
     }
 }
 
