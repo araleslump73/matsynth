@@ -85,14 +85,14 @@ echo ""
 
 # Confirm before proceeding
 echo -e "${YELLOW}⚠️  This will overwrite files on the target server!${NC}"
-read -p "Do you want to continue? (yes/no): " confirmation
+# read -p "Do you want to continue? (yes/no): " confirmation
 
-if [[ ! "$confirmation" =~ ^(yes|y)$ ]]; then
-    echo -e "${YELLOW}❌ Deployment cancelled by user.${NC}"
-    # Close SSH connection
-    ssh -o ControlPath="$SSH_CONTROL_PATH" -O exit "$TARGET" 2>/dev/null
-    exit 0
-fi
+# if [[ ! "$confirmation" =~ ^(yes|y)$ ]]; then
+#     echo -e "${YELLOW}❌ Deployment cancelled by user.${NC}"
+#     # Close SSH connection
+#     ssh -o ControlPath="$SSH_CONTROL_PATH" -O exit "$TARGET" 2>/dev/null
+#     exit 0
+# fi
 
 echo -e "${CYAN}🚀 Starting file transfer...${NC}"
 echo ""

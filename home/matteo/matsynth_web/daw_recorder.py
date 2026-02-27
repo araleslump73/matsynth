@@ -15,15 +15,17 @@ class MultiTrackDAW:
     con sincronizzazione automatica e routing intelligente
     """
     
-    def __init__(self, bpm=120):
+    def __init__(self, bpm=120, socketio=None):
         """
         Inizializza il sistema DAW
         
         Args:
             bpm: Beats per minute (default 120)
+            socketio: Flask-SocketIO instance per eventi real-time (optional)
         """
         self.bpm = bpm
         self.beat_duration = 60.0 / bpm  # durata di un beat in secondi
+        self.socketio = socketio  # WebSocket per notifiche real-time
         
         # Storage tracce: {channel_id: [(timestamp, midi_msg), ...]}
         self.tracks = defaultdict(list)
@@ -41,12 +43,16 @@ class MultiTrackDAW:
         # Thread control
         self.record_thread = None
         self.playback_thread = None
+        self.update_thread = None  # Thread per aggiornamenti periodici via WebSocket
         self.stop_event = threading.Event()
         
         # Porte MIDI
         self.midi_input = None
         self.midi_output = None
         self._init_midi_ports()
+        
+        # Avvia thread per aggiornamenti periodici WebSocket
+        self._start_update_thread()
     
     def _init_midi_ports(self):
         """Inizializza le porte MIDI virtuali e fisiche"""
@@ -89,6 +95,34 @@ class MultiTrackDAW:
                 
         except Exception as e:
             print(f"[DAW] Errore inizializzazione MIDI: {e}")
+    
+    def _emit_state_change(self):
+        """Emette lo stato DAW corrente via WebSocket"""
+        if self.socketio:
+            state = self.get_state()
+            self.socketio.emit('daw_state_update', state, namespace='/')
+    
+    def _start_update_thread(self):
+        """Avvia thread per aggiornamenti periodici durante registrazione/playback"""
+        self.update_thread = threading.Thread(
+            target=self._update_loop,
+            daemon=True
+        )
+        self.update_thread.start()
+    
+    def _update_loop(self):
+        """Loop che emette aggiornamenti periodici via WebSocket"""
+        while True:
+            try:
+                # Emetti aggiornamento solo se registrazione o playback attivi
+                if self.is_recording or self.is_playing:
+                    self._emit_state_change()
+                    time.sleep(0.5)  # Aggiorna ogni 500ms durante attività
+                else:
+                    time.sleep(1.0)  # Check meno frequente quando idle
+            except Exception as e:
+                print(f"[DAW] Errore in update loop: {e}")
+                time.sleep(1.0)
     
     def start_recording(self, channel=None):
         """
@@ -167,6 +201,7 @@ class MultiTrackDAW:
             self.playback_thread.start()
         
         print(f"[DAW] Registrazione avviata su canali {recording_channels}")
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def stop_recording(self):
@@ -181,6 +216,7 @@ class MultiTrackDAW:
             self.record_thread.join(timeout=1.0)
         
         print("[DAW] Registrazione fermata")
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def start_playback(self):
@@ -203,6 +239,7 @@ class MultiTrackDAW:
         self.playback_thread.start()
         
         print("[DAW] Playback avviato")
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def stop_playback(self):
@@ -220,6 +257,7 @@ class MultiTrackDAW:
         self._send_all_notes_off()
         
         print("[DAW] Playback fermato")
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def stop_all(self):
@@ -227,6 +265,7 @@ class MultiTrackDAW:
         self.stop_recording()
         self.stop_playback()
         self._send_all_notes_off()
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def rewind(self):
@@ -256,6 +295,7 @@ class MultiTrackDAW:
             armed: True per armare, False per disarmare
         """
         self.armed[channel] = armed
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def mute_track(self, channel, muted=True):
@@ -267,6 +307,7 @@ class MultiTrackDAW:
             muted: True per mutare, False per smutare
         """
         self.muted[channel] = muted
+        self._emit_state_change()  # Notifica via WebSocket
         return True
     
     def clear_track(self, channel):
@@ -441,8 +482,12 @@ class MultiTrackDAW:
         try:
             for channel in range(16):
                 # Control Change 123 (All Notes Off)
-                msg = mido.Message('control_change', channel=channel, control=123, value=0)
-                self.midi_output.send(msg)
+                try:
+                    msg = mido.Message('control_change', channel=channel, control=123, value=0)
+                    self.midi_output.send(msg)
+                except TypeError:
+                    # Alcune porte MIDI potrebbero non supportare send() diretto
+                    pass
         except Exception as e:
             print(f"[DAW] Errore invio All Notes Off: {e}")
     

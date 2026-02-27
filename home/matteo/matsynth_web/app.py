@@ -1,4 +1,5 @@
 from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit
 import socket
 import os
 import json
@@ -8,6 +9,7 @@ import threading
 from daw_recorder import MultiTrackDAW
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Configurazione
 SF2_DIR = "/usr/share/sounds/sf2/"
@@ -22,7 +24,7 @@ if not os.path.exists(PRESETS_DIR):
     os.makedirs(PRESETS_DIR)
 
 # Inizializza il sistema DAW Multi-Track
-daw = MultiTrackDAW(bpm=120)
+daw = MultiTrackDAW(bpm=120, socketio=socketio)
 
 def save_state(key, value):
     try:
@@ -835,4 +837,5 @@ if __name__ == '__main__':
     # Inizializza l'ID del soundfont all'avvio
     sf_id = get_active_sf_id()
     print(f"Soundfont ID caricato: {sf_id}")
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=False)
+    print("Starting server with WebSocket support...")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)

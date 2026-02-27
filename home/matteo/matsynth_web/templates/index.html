@@ -7,6 +7,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body class="container py-4">
     <div class="text-center mb-4">
@@ -527,11 +528,7 @@ fetchSF2List();
 // ==========================================
 
 let dawState = null;
-let dawPollInterval = null;
-let dawRecordingChannel = null;
-let dawPollRate = 2000; // Intervallo di polling in ms (2 secondi di default)
-let dawIdleTime = 0; // Tempo in cui il DAW è idle
-const DAW_IDLE_TIMEOUT = 60000; // 60 secondi di inattività prima di fermare il polling
+let dawSocket = null;  // WebSocket connection
 
 // Initialize DAW tracks
 function initDAW() {
@@ -576,33 +573,35 @@ function initDAW() {
         tbody.appendChild(row);
     }
     
-    // Non avviare il polling automaticamente - inizia solo quando si usa il DAW
-    // Il polling partirà quando l'utente preme REC, PLAY, o ARM
-    // Inizializza lo stato DAW con un fetch iniziale (senza polling)
-    dawPollState().then(() => {
-        console.log('DAW initialized. Polling will start when you interact with DAW controls.');
+    // Inizializza WebSocket per aggiornamenti real-time
+    dawInitWebSocket();
+    
+    // Carica lo stato iniziale
+    dawLoadInitialState();
+}
+
+// Inizializza connessione WebSocket
+function dawInitWebSocket() {
+    dawSocket = io();
+    
+    dawSocket.on('connect', () => {
+        console.log('[WebSocket] Connesso al server');
+    });
+    
+    dawSocket.on('disconnect', () => {
+        console.log('[WebSocket] Disconnesso dal server');
+    });
+    
+    // Ascolta aggiornamenti di stato in real-time
+    dawSocket.on('daw_state_update', (data) => {
+        console.log('[WebSocket] State update ricevuto');
+        dawState = data;
+        dawUpdateUI();
     });
 }
 
-// Avvia il polling con un intervallo specifico
-function dawStartPolling(interval) {
-    if (dawPollInterval) {
-        clearInterval(dawPollInterval);
-    }
-    dawPollRate = interval;
-    dawPollInterval = setInterval(dawPollState, interval);
-}
-
-// Ferma il polling
-function dawStopPolling() {
-    if (dawPollInterval) {
-        clearInterval(dawPollInterval);
-        dawPollInterval = null;
-    }
-}
-
-// Poll DAW state
-async function dawPollState() {
+// Carica lo stato iniziale (una sola volta)
+async function dawLoadInitialState() {
     try {
         const res = await fetch('/api/daw/state');
         const data = await res.json();
@@ -610,39 +609,10 @@ async function dawPollState() {
         if (data.status === 'ok') {
             dawState = data.data;
             dawUpdateUI();
-            
-            // Controlla se il DAW è attivo
-            const isActive = dawState.is_recording || dawState.is_playing;
-            const hasArmedChannels = Object.values(dawState.armed || {}).some(armed => armed);
-            const hasRecordedData = Object.values(dawState.tracks || {}).some(track => track.events > 0);
-            
-            if (isActive) {
-                // Attivo: polling veloce e reset idle timer
-                dawIdleTime = 0;
-                const newRate = 500;
-                if (newRate !== dawPollRate) {
-                    dawStartPolling(newRate);
-                }
-            } else if (hasArmedChannels || hasRecordedData) {
-                // Canali armati o dati registrati: polling lento ma attivo
-                dawIdleTime = 0;
-                const newRate = 2000;
-                if (newRate !== dawPollRate) {
-                    dawStartPolling(newRate);
-                }
-            } else {
-                // Completamente idle: incrementa timer e considera di fermare il polling
-                dawIdleTime += dawPollRate;
-                
-                if (dawIdleTime >= DAW_IDLE_TIMEOUT) {
-                    console.log('DAW idle for 60 seconds, stopping polling to save resources');
-                    dawStopPolling();
-                    dawIdleTime = 0;
-                }
-            }
+            console.log('DAW initialized with WebSocket real-time updates');
         }
     } catch (e) {
-        console.error('DAW poll error:', e);
+        console.error('DAW init error:', e);
     }
 }
 
@@ -784,14 +754,9 @@ function dawUpdateUI() {
 // Transport Controls
 async function dawPlay() {
     try {
-        // Avvia polling se non è già attivo
-        if (!dawPollInterval) {
-            dawStartPolling(500);
-        }
-        
         // Assicurati che dawState sia caricato
         if (!dawState) {
-            await dawPollState();
+            await dawLoadInitialState();
         }
         
         if (dawState.is_playing) {
@@ -807,7 +772,7 @@ async function dawPlay() {
                 headers: { 'Content-Type': 'application/json' } 
             });
         }
-        await dawPollState();
+        // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Play error:', e);
         alert('Error during playback!');
@@ -821,19 +786,8 @@ async function dawStop() {
             headers: { 'Content-Type': 'application/json' } 
         });
         
-        // Ferma il polling quando si preme STOP per risparmiare risorse
-        // Lo stato si aggiornerà quando l'utente interagirà nuovamente con i controlli
-        dawStopPolling();
-        dawIdleTime = 0;
-        
-        // Aggiorna lo stato locale senza fare una richiesta al server
-        if (dawState) {
-            dawState.is_playing = false;
-            dawState.is_recording = false;
-            dawUpdateUI();
-        }
-        
-        console.log('DAW stopped - polling disabled');
+        // WebSocket aggiornerà automaticamente il UI
+        console.log('DAW stopped');
     } catch (e) {
         console.error('Stop error:', e);
     }
@@ -845,7 +799,7 @@ async function dawRewind() {
             method: 'POST', 
             headers: { 'Content-Type': 'application/json' } 
         });
-        await dawPollState();
+        // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Rewind error:', e);
     }
@@ -872,15 +826,10 @@ async function dawSetBPM(bpm) {
 // Track Controls
 async function dawToggleArm(channel) {
     try {
-        // Avvia polling se non è già attivo (l'utente sta iniziando a usare il DAW)
-        if (!dawPollInterval) {
-            dawStartPolling(2000);
-        }
-        
-        // Assicurati che dawState sia caricato
+        // Assicurati che dawState sia caricato (singola chiamata, no polling continuo)
         if (!dawState) {
             console.log('[DAW] dawState is null, loading initial state...');
-            await dawPollState();
+            await dawLoadInitialState();
         }
         
         const currentlyArmed = dawState.armed[channel];
@@ -907,9 +856,7 @@ async function dawToggleArm(channel) {
         const armData = await armRes.json();
         console.log('[DAW] Arm response:', armData);
         
-        // Refresh state immediatamente
-        await dawPollState();
-        
+        // WebSocket aggiornerà automaticamente il UI
         console.log('[DAW] ARM operation completed');
     } catch (e) {
         console.error('Arm error:', e);
@@ -924,7 +871,7 @@ async function dawToggleMute(channel) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ muted: newState })
         });
-        await dawPollState();
+        // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Mute error:', e);
     }
@@ -932,15 +879,10 @@ async function dawToggleMute(channel) {
 
 async function dawRecord() {
     try {
-        // Avvia polling se non è già attivo
-        if (!dawPollInterval) {
-            dawStartPolling(2000);
-        }
-        
         // Assicurati che dawState sia caricato
         if (!dawState) {
             console.log('[DAW] dawState is null, loading initial state...');
-            await dawPollState();
+            await dawLoadInitialState();
         }
         
         const currentlyRecording = dawState.is_recording;
@@ -970,10 +912,8 @@ async function dawRecord() {
             
             if (data.status !== 'ok') {
                 alert(data.message);
-            } else {
-                // Accelera il polling durante la registrazione
-                dawStartPolling(500);
             }
+            // WebSocket aggiornerà automaticamente il UI
         } else {
             // Stop recording
             console.log('[DAW] Stopping global recording...');
@@ -985,13 +925,8 @@ async function dawRecord() {
             
             const data = await res.json();
             console.log('[DAW] Stop recording response:', data);
-            
-            // Rallenta il polling dopo lo stop
-            dawStartPolling(2000);
+            // WebSocket aggiornerà automaticamente il UI
         }
-        
-        // Refresh state immediatamente
-        await dawPollState();
         
         console.log('[DAW] REC operation completed');
     } catch (e) {
@@ -1007,7 +942,7 @@ async function dawClearTrack(channel) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
         });
-        await dawPollState();
+        // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Clear track error:', e);
     }
@@ -1021,7 +956,7 @@ async function dawClearAll() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' }
         });
-        await dawPollState();
+        // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Clear all error:', e);
     }
