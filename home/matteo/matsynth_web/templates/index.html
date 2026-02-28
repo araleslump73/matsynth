@@ -290,8 +290,12 @@
                     populateDropdown(document.getElementById(`select-ch-${i}`));
                 }
                 
-                // Carica lo stato salvato e applica le selezioni ai canali
+                // Carica lo stato salvato dai file
                 await loadSavedChannelState();
+                
+                // Poi sincronizza con lo stato REALE di FluidSynth
+                // (sovrascrive eventuali differenze tra stato salvato e realtà)
+                await syncWithSynth();
             } catch(e) { console.error("Setup Error:", e); }
         }
 

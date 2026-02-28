@@ -31,7 +31,7 @@ def save_state(key, value):
         state = get_last_state()
         state[key] = value
         with open(STATE_FILE, 'w') as f:
-            json.dump(state, f)
+            json.dump(state, f, indent=2)
     except Exception as e:
         print(f"Errore salvataggio stato: {e}")
 
@@ -161,15 +161,17 @@ def select_prog(chan, bank, prog):
     if 'channels' not in state:
         state['channels'] = {}
     
-    state['channels'][str(chan)] = {
-        'bank': bank,
-        'program': prog
-    }
+    # Preserva i dati esistenti del canale (CC, ecc.)
+    if str(chan) not in state['channels']:
+        state['channels'][str(chan)] = {}
+    
+    state['channels'][str(chan)]['bank'] = bank
+    state['channels'][str(chan)]['program'] = prog
     
     print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
     
     with open(STATE_FILE, 'w') as f:
-        json.dump(state, f)
+        json.dump(state, f, indent=2)
     
     return "OK"
 
@@ -208,7 +210,7 @@ def control(chan, cc, val):
         state['channels'][str(chan)][cc_names[cc]] = val
         
         with open(STATE_FILE, 'w') as f:
-            json.dump(state, f)
+            json.dump(state, f, indent=2)
     
     return "OK"
 
