@@ -54,13 +54,33 @@ echo -e "${CYAN}🎯 Target server:    $TARGET${NC}"
 echo -e "${CYAN}📂 Destination:      $DEST_DIR${NC}"
 echo ""
 
-# Test SSH connection (will prompt for password)
-echo -e "${CYAN}🔐 Testing SSH connection...${NC}"
-echo -e "${YELLOW}   (You will be prompted for your password once)${NC}"
+# Check if passwordless SSH is configured
+echo -e "${CYAN}🔐 Checking SSH authentication...${NC}"
+ssh -o BatchMode=yes -o ConnectTimeout=5 "$TARGET" "echo 'OK'" 2>/dev/null 1>/dev/null
+
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}✓ Passwordless SSH configured${NC}"
+    USE_PASSWORDLESS=true
+else
+    echo -e "${YELLOW}⚠ Passwordless SSH not configured${NC}"
+    echo -e "${YELLOW}  For automatic deployment without password, run:${NC}"
+    echo -e "${YELLOW}    ./setup-ssh-key.sh $TARGET${NC}"
+    echo ""
+    echo -e "${CYAN}  Falling back to password authentication...${NC}"
+    echo -e "${YELLOW}  (You will be prompted for your password once)${NC}"
+    USE_PASSWORDLESS=false
+fi
+
 echo ""
 
-# Establish SSH ControlMaster connection (prompts for password)
-ssh -o ControlMaster=yes -o ControlPath="$SSH_CONTROL_PATH" -o ControlPersist=60s -f -N "$TARGET" 2>/dev/null
+# Establish connection based on authentication method
+if [ "$USE_PASSWORDLESS" = true ]; then
+    # Use passwordless connection
+    ssh -o ControlMaster=yes -o ControlPath="$SSH_CONTROL_PATH" -o ControlPersist=60s -f -N "$TARGET" 2>/dev/null
+else
+    # Use password authentication with ControlMaster
+    ssh -o ControlMaster=yes -o ControlPath="$SSH_CONTROL_PATH" -o ControlPersist=60s -f -N "$TARGET" 2>/dev/null
+fi
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ ERROR: Cannot connect to $TARGET${NC}"
@@ -72,15 +92,12 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-# Test the connection
-ssh -o ControlPath="$SSH_CONTROL_PATH" "$TARGET" "echo 'Connection successful'" 2>/dev/null
-
-if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ ERROR: SSH connection test failed${NC}"
-    exit 1
+echo -e "${GREEN}✅ Connection established!${NC}"
+if [ "$USE_PASSWORDLESS" = true ]; then
+    echo -e "${GREEN}   (No password required)${NC}"
+else
+    echo -e "${GREEN}   (Password not required for remaining operations)${NC}"
 fi
-
-echo -e "${GREEN}✅ Connection established! (password not required for remaining operations)${NC}"
 echo ""
 
 # Confirm before proceeding

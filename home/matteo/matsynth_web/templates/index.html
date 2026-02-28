@@ -290,7 +290,8 @@
                     populateDropdown(document.getElementById(`select-ch-${i}`));
                 }
                 
-                syncWithSynth();
+                // Carica lo stato salvato e applica le selezioni ai canali
+                await loadSavedChannelState();
             } catch(e) { console.error("Setup Error:", e); }
         }
 
@@ -307,6 +308,40 @@
                 opt.innerText = inst;
                 dropdown.appendChild(opt);
             });
+        }
+
+        async function loadSavedChannelState() {
+            try {
+                // Carica lo stato salvato (che include le selezioni dei canali)
+                const resState = await fetch('/get_state');
+                const state = await resState.json();
+                
+                console.log("Ripristino stato canali salvati:", state.channels);
+                
+                // Applica le selezioni salvate ai dropdown
+                if (state.channels) {
+                    for (let chan in state.channels) {
+                        const channelData = state.channels[chan];
+                        const bank = channelData.bank;
+                        const prog = channelData.program;
+                        const value = `${bank},${prog}`;
+                        
+                        const dropdown = document.getElementById(`select-ch-${chan}`);
+                        if (dropdown) {
+                            // Cerca l'opzione corrispondente nel dropdown
+                            for (let option of dropdown.options) {
+                                if (option.value === value) {
+                                    dropdown.value = value;
+                                    console.log(`✓ Ripristinato canale ${chan}: ${option.text}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Errore caricamento stato canali:", e);
+            }
         }
 
         // Change Channel for Sliders

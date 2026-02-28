@@ -125,6 +125,48 @@ sudo cp *.sf3 /usr/share/sounds/sf2/
 chmod +x /home/matteo/matsynth/home/matteo/startfluid.sh
 ```
 
+## 🚀 Deployment Automatico su Raspberry Pi
+
+Il progetto include script per il deployment automatico da PC a Raspberry Pi tramite SSH.
+
+### Setup Iniziale (Una Tantum) - Deploy Senza Password
+
+Per configurare l'autenticazione SSH senza password:
+
+```bash
+# Dalla directory del progetto sul tuo PC
+./setup-ssh-key.sh matteo@matsynth
+
+# O con indirizzo IP
+./setup-ssh-key.sh matteo@192.168.1.50
+```
+
+**Cosa fa lo script:**
+1. 🔑 Verifica se esiste già una chiave SSH, altrimenti ne genera una nuova (Ed25519)
+2. 📤 Copia la chiave pubblica sul Raspberry Pi (richiede password UNA VOLTA)
+3. ✅ Testa la connessione passwordless
+4. 🎉 Setup completato! I deployment futuri non richiederanno password
+
+### Deploy dell'Applicazione
+
+Dopo il setup iniziale, per fare deploy delle modifiche senza password:
+
+```bash
+./deploy.sh matteo@matsynth
+```
+
+**Lo script automaticamente:**
+- ✓ Usa autenticazione passwordless (se configurata)
+- ✓ Fallback a password authentication se necessario
+- ✓ Trasferisce tutti i file in `/home/matteo/matsynth_web/`
+- ✓ Chiede se vuoi riavviare il servizio MatSynth
+
+**Note:**
+- Il primo deploy dopo il setup SSH non richiederà password
+- Tutti i deploy successivi saranno completamente automatici
+- Con password: richiesta 1 sola volta all'inizio
+- Senza password (dopo setup): 0 richieste di password
+
 ## ⚙️ Configurazione
 
 ### Configurazione di Base in `app.py`
