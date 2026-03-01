@@ -906,6 +906,21 @@ def daw_set_bpm():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/time_signature', methods=['POST'])
+def daw_set_time_signature():
+    """Imposta il numeratore della misura (3/4 o 4/4)."""
+    try:
+        data = request.json or {}
+        beats_per_measure = int(data.get('beats_per_measure', 4))
+        success = daw.set_time_signature(beats_per_measure)
+        if success:
+            return jsonify({"status": "ok", "beats_per_measure": beats_per_measure})
+        else:
+            return jsonify({"status": "error", "message": "Time signature non supportato"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/metronome/toggle', methods=['POST'])
 def daw_toggle_metronome():
     """Toggle metronomo on/off"""

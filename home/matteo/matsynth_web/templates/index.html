@@ -78,6 +78,11 @@
                                 style="padding: 4px 8px; font-size: 0.75rem;" title="Metronomo">
                             <i class="fas fa-stopwatch"></i>
                         </button>
+                        <select id="daw-ts-select" class="form-select form-select-sm ms-2" style="width: 80px; font-size: 0.8rem;"
+                                onchange="dawSetTimeSignature(this.value)">
+                            <option value="4">4/4</option>
+                            <option value="3">3/4</option>
+                        </select>
                     </div>
                 </div>
                 <div class="col-6">
@@ -88,6 +93,8 @@
                         <span id="daw-timeline" class="badge bg-dark" style="font-size: 0.9rem; font-family: monospace; padding: 6px 10px;">
                             00:00.0
                         </span>
+                        <span id="daw-time-signature" class="badge bg-secondary ms-2" style="font-size: 0.8rem;">4/4</span>
+                        <span id="daw-bar-counter" class="badge bg-secondary ms-2" style="font-size: 0.8rem;">Bar 1</span>
                     </div>
                 </div>
             </div>
@@ -679,6 +686,9 @@ function dawUpdateUI() {
     const playBtn = document.getElementById('daw-play');
     const recBtn = document.getElementById('daw-rec');
     const stopBtn = document.getElementById('daw-stop');
+    const tsSelect = document.getElementById('daw-ts-select');
+    const tsBadge = document.getElementById('daw-time-signature');
+    const barBadge = document.getElementById('daw-bar-counter');
     
     if (dawState.is_playing) {
         playBtn.classList.remove('btn-success');
@@ -705,6 +715,19 @@ function dawUpdateUI() {
     
     // Update BPM
     document.getElementById('daw-bpm').value = dawState.bpm;
+    const beatsPerMeasure = dawState.beats_per_measure || 4;
+    if (tsSelect && tsSelect.value !== String(beatsPerMeasure)) {
+        tsSelect.value = String(beatsPerMeasure);
+    }
+    if (tsBadge) {
+        tsBadge.textContent = `${beatsPerMeasure}/4`;
+    }
+    if (barBadge) {
+        const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+        const totalBeats = beatDuration > 0 ? (dawState.timeline_position / beatDuration) : 0;
+        const currentBar = Math.max(1, Math.floor(totalBeats / beatsPerMeasure) + 1);
+        barBadge.textContent = `Bar ${currentBar}`;
+    }
     
     // Update metronome button
     const metronomeBtn = document.getElementById('daw-metronome');
@@ -903,6 +926,28 @@ async function dawSetBPM(bpm) {
         }
     } catch (e) {
         console.error('BPM error:', e);
+    }
+}
+
+async function dawSetTimeSignature(beatsPerMeasure) {
+    try {
+        const res = await fetch('/api/daw/time_signature', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ beats_per_measure: parseInt(beatsPerMeasure) })
+        });
+        const data = await res.json();
+        if (data.status !== 'ok') {
+            throw new Error(data.message || 'Errore time signature');
+        }
+    } catch (e) {
+        console.error('Time signature error:', e);
+        // Ripristina il valore attuale dello stato se fallisce
+        if (dawState) {
+            const select = document.getElementById('daw-ts-select');
+            if (select) select.value = String(dawState.beats_per_measure || 4);
+        }
+        alert('Impossibile impostare il time signature');
     }
 }
 

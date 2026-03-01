@@ -25,6 +25,7 @@ class MultiTrackDAW:
         """
         self.bpm = bpm
         self.beat_duration = 60.0 / bpm  # durata di un beat in secondi
+        self.beats_per_measure = 4       # 4/4 di default
         self.socketio = socketio  # WebSocket per notifiche real-time
         
         # Storage tracce: {channel_id: [(beat_position, midi_msg), ...]}
@@ -351,6 +352,14 @@ class MultiTrackDAW:
         self.beat_duration = 60.0 / self.bpm
         print(f"[DAW] BPM impostato a {self.bpm}")
         return True
+
+    def set_time_signature(self, beats_per_measure):
+        """Imposta il numeratore della misura (es. 3 o 4)."""
+        if beats_per_measure not in (3, 4):
+            return False
+        self.beats_per_measure = beats_per_measure
+        print(f"[DAW] Time signature impostato a {beats_per_measure}/4")
+        return True
     
     def get_state(self):
         """Ritorna lo stato completo del sistema"""
@@ -374,6 +383,7 @@ class MultiTrackDAW:
             'timeline_position': self.timeline_position,
             'bpm': self.bpm,
             'metronome_enabled': self.metronome_enabled,
+            'beats_per_measure': self.beats_per_measure,
             'armed': self.armed.copy(),
             'muted': self.muted.copy(),
             'has_data': self.has_data.copy(),
@@ -425,8 +435,6 @@ class MultiTrackDAW:
         VELOCITY = 100
         NOTE_DURATION = 0.05  # 50ms
         
-        beats_per_measure = 4  # 4/4 time
-        
         try:
             while not self.metronome_stop_event.is_set():
                 # Calcola il beat corrente dalla timeline position
@@ -437,7 +445,7 @@ class MultiTrackDAW:
                     self.last_beat = current_beat
                     
                     # Primo beat della misura = accento
-                    beat_in_measure = current_beat % beats_per_measure
+                    beat_in_measure = current_beat % self.beats_per_measure
                     note = ACCENT_NOTE if beat_in_measure == 0 else NORMAL_NOTE
                     
                     # Note ON
