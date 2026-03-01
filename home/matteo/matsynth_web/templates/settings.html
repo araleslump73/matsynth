@@ -131,10 +131,10 @@
                 btn.innerHTML = "<i class='fas fa-sync fa-spin'></i> RESTARTING AUDIO ENGINE...";
                 btn.style.background = "linear-gradient(135deg, #ffc107, #ff9800)";
                 
-                // Wait 5 seconds for FluidSynth to shut down and restart, then return to Home
-                // setTimeout(() => {
-                //     window.location.href = "/";
-                // }, 5000);
+                // Wait 7 seconds for FluidSynth to shut down and restart, then return to Home
+                setTimeout(() => {
+                    window.location.href = "/";
+                }, 7000);
 
             } catch (e) {
                 alert("Error during save! Check the connection.");

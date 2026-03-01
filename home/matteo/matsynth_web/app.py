@@ -18,6 +18,8 @@ FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
 sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
+STATE_LOCK = threading.Lock()
+_INITIALIZED = False
 
 # Crea la directory dei preset se non esiste
 if not os.path.exists(PRESETS_DIR):
@@ -26,12 +28,21 @@ if not os.path.exists(PRESETS_DIR):
 # Inizializza il sistema DAW Multi-Track
 daw = MultiTrackDAW(bpm=120, socketio=socketio)
 
+def _write_state_atomic(state: dict):
+    """Scrive lo stato in modo atomico per evitare file troncati su scritture concorrenti."""
+    tmp_path = STATE_FILE + '.tmp'
+    with open(tmp_path, 'w') as f:
+        json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, STATE_FILE)
+
 def save_state(key, value):
     try:
-        state = get_last_state()
-        state[key] = value
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f, indent=2)
+        with STATE_LOCK:
+            state = get_last_state()
+            state[key] = value
+            _write_state_atomic(state)
     except Exception as e:
         print(f"Errore salvataggio stato: {e}")
 
@@ -40,8 +51,14 @@ def get_last_state():
         try:
             with open(STATE_FILE, 'r') as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as e:
+            # Se il file è corrotto, rinomina e riparti dai default
+            try:
+                corrupted_path = STATE_FILE + f".corrupt_{int(time.time())}"
+                os.rename(STATE_FILE, corrupted_path)
+                print(f"File stato corrotto, backup in {corrupted_path}: {e}")
+            except Exception as e2:
+                print(f"Impossibile rinominare file stato corrotto: {e2}")
     return {"gain": 1.0, "reverb.level": 0.4, "chorus.level": 0.4, "font": "GeneralUser-GS.sf2"}
 
 def send_fluid(command):
@@ -101,6 +118,63 @@ def restore_settings():
     send_fluid(f"set synth.reverb.level {rev}")
     send_fluid(f"set synth.chorus.level {cho}")
 
+    # Se abbiamo un font salvato, prova a caricarlo
+    font_name = state.get('font')
+    if font_name:
+        path = os.path.join(SF2_DIR, font_name)
+        if os.path.exists(path):
+            # scarica tutti i font correnti e carica quello salvato
+            raw_fonts = send_fluid("fonts")
+            for line in raw_fonts.split('\n'):
+                parts = line.strip().split()
+                if parts and parts[0].isdigit():
+                    send_fluid(f"unload {parts[0]}")
+            res = send_fluid(f"load {path}")
+            print(f"Ripristino font {font_name}: {res}")
+            # Aggiorna l'ID attivo del font
+            global sf_id
+            sf_id = get_active_sf_id()
+        else:
+            print(f"Font salvato non trovato: {path}")
+
+    # Applica banche, programmi e CC salvati per ogni canale
+    saved_channels = state.get('channels', {})
+    for ch_str, ch_data in saved_channels.items():
+        try:
+            ch = int(ch_str)
+        except ValueError:
+            continue
+        bank = ch_data.get('bank')
+        prog = ch_data.get('program')
+        if bank is not None and prog is not None:
+            send_fluid(f"select {ch} {sf_id} {bank} {prog}")
+        # Applica CC se presenti
+        cc_map = {
+            'volume': ('7', ch_data.get('volume')),
+            'attack': ('73', ch_data.get('attack')),
+            'release': ('72', ch_data.get('release')),
+            'decay': ('75', ch_data.get('decay')),
+            'cutoff': ('74', ch_data.get('cutoff')),
+            'resonance': ('71', ch_data.get('resonance')),
+        }
+        for _, cc_info in cc_map.items():
+            cc_num, cc_val = cc_info
+            if cc_val is not None:
+                send_fluid(f"cc {ch} {cc_num} {cc_val}")
+
+
+def startup_init_once():
+    global _INITIALIZED, sf_id
+    if _INITIALIZED:
+        return
+    _INITIALIZED = True
+    # Piccola attesa per permettere a FluidSynth di essere pronto
+    time.sleep(2)
+    restore_settings()
+    # Aggiorna l'ID attivo del font dopo il ripristino
+    sf_id = get_active_sf_id()
+    print(f"Soundfont ID caricato all'avvio: {sf_id}")
+
 @app.route('/')
 def index():
     files = [f for f in os.listdir(SF2_DIR) if f.endswith(('.sf2', '.sf3'))] if os.path.exists(SF2_DIR) else []
@@ -157,21 +231,20 @@ def select_prog(chan, bank, prog):
     send_fluid(comando)
     
     # Salva lo stato del canale per il preset
-    state = get_last_state()
-    if 'channels' not in state:
-        state['channels'] = {}
-    
-    # Preserva i dati esistenti del canale (CC, ecc.)
-    if str(chan) not in state['channels']:
-        state['channels'][str(chan)] = {}
-    
-    state['channels'][str(chan)]['bank'] = bank
-    state['channels'][str(chan)]['program'] = prog
-    
-    print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
-    
-    with open(STATE_FILE, 'w') as f:
-        json.dump(state, f, indent=2)
+    with STATE_LOCK:
+        state = get_last_state()
+        if 'channels' not in state:
+            state['channels'] = {}
+        
+        # Preserva i dati esistenti del canale (CC, ecc.)
+        if str(chan) not in state['channels']:
+            state['channels'][str(chan)] = {}
+        
+        state['channels'][str(chan)]['bank'] = bank
+        state['channels'][str(chan)]['program'] = prog
+        
+        print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
+        _write_state_atomic(state)
     
     return "OK"
 
@@ -192,25 +265,24 @@ def control(chan, cc, val):
     # Salva i CC importanti per i preset
     # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=75
     if cc in [7, 71, 72, 73, 74, 75]:
-        state = get_last_state()
-        if 'channels' not in state:
-            state['channels'] = {}
-        if str(chan) not in state['channels']:
-            state['channels'][str(chan)] = {}
-        
-        # Mappa i CC ai nomi
-        cc_names = {
-            7: 'volume',
-            71: 'resonance',
-            72: 'release',
-            73: 'attack',
-            74: 'cutoff',
-            75: 'decay'
-        }
-        state['channels'][str(chan)][cc_names[cc]] = val
-        
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f, indent=2)
+        with STATE_LOCK:
+            state = get_last_state()
+            if 'channels' not in state:
+                state['channels'] = {}
+            if str(chan) not in state['channels']:
+                state['channels'][str(chan)] = {}
+            
+            # Mappa i CC ai nomi
+            cc_names = {
+                7: 'volume',
+                71: 'resonance',
+                72: 'release',
+                73: 'attack',
+                74: 'cutoff',
+                75: 'decay'
+            }
+            state['channels'][str(chan)][cc_names[cc]] = val
+            _write_state_atomic(state)
     
     return "OK"
 
@@ -848,11 +920,8 @@ def daw_toggle_metronome():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+startup_init_once()
+
 if __name__ == '__main__':
-    time.sleep(2)
-    restore_settings()
-    # Inizializza l'ID del soundfont all'avvio
-    sf_id = get_active_sf_id()
-    print(f"Soundfont ID caricato: {sf_id}")
     print("Starting server with WebSocket support...")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)

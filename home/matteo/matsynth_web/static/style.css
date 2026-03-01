@@ -131,9 +131,22 @@ body {
     background-color: var(--bs-btn-bg);
     color: var(--bs-btn-color);
     border-color: var(--bs-btn-border-color);
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.2);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
     transform: none;
 }
+
+/* Soft, variant-aware hover outlines */
+.btn-success:hover,
+.btn-success:focus { box-shadow: 0 0 0 2px rgba(40, 167, 69, 0.35); }
+
+.btn-info:hover,
+.btn-info:focus { box-shadow: 0 0 0 2px rgba(23, 162, 184, 0.35); }
+
+.btn-warning:hover,
+.btn-warning:focus { box-shadow: 0 0 0 2px rgba(255, 193, 7, 0.35); }
+
+.btn-secondary:hover,
+.btn-secondary:focus { box-shadow: 0 0 0 2px rgba(108, 117, 125, 0.35); }
 
 .btn-custom {
     background: linear-gradient(135deg, #00ff88, #00d4ff);
