@@ -391,6 +391,51 @@ class MultiTrackDAW:
             'track_durations': track_durations,  # Durata di ogni traccia in secondi
             'max_duration': max_duration  # Durata massima tra tutte le tracce
         }
+
+    def get_track_activity(self, channel, start_beat=0.0, end_beat=9999.0):
+        """Restituisce intervalli uniti di attività note per una traccia nel range richiesto."""
+        events = self.tracks.get(channel)
+        if not events:
+            return []
+
+        active_notes = {}
+        intervals = []
+
+        for beat_position, msg_bytes in events:
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+            except Exception:
+                continue
+
+            if msg.type == 'note_on' and msg.velocity > 0:
+                active_notes[msg.note] = beat_position
+            elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
+                if msg.note in active_notes:
+                    start = active_notes.pop(msg.note)
+                    intervals.append((start, beat_position))
+
+        # Chiudi eventuali note rimaste aperte fino all'end richiesto
+        for start in active_notes.values():
+            intervals.append((start, end_beat))
+
+        # Unisci intervalli sovrapposti e applica culling con la finestra richiesta
+        intervals = [iv for iv in intervals if iv[1] > start_beat and iv[0] < end_beat]
+        if not intervals:
+            return []
+
+        intervals.sort(key=lambda iv: iv[0])
+        merged = []
+        for s, e in intervals:
+            s = max(s, start_beat)
+            e = min(e, end_beat)
+            if e <= s:
+                continue
+            if not merged or s > merged[-1][1]:
+                merged.append([s, e])
+            else:
+                merged[-1][1] = max(merged[-1][1], e)
+
+        return merged
     
     def toggle_metronome(self):
         """Toggle metronomo on/off"""

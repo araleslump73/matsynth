@@ -935,6 +935,18 @@ def daw_toggle_metronome():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/activity')
+def daw_track_activity(channel):
+    """Restituisce intervalli di attività note per una traccia nel range visibile."""
+    try:
+        start = float(request.args.get('start', 0.0))
+        end = float(request.args.get('end', start + 16.0))
+        intervals = daw.get_track_activity(channel, start, end)
+        return jsonify({"status": "ok", "intervals": intervals})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 startup_init_once()
 
 if __name__ == '__main__':
