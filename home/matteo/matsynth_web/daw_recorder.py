@@ -309,6 +309,7 @@ class MultiTrackDAW:
             armed: True per armare, False per disarmare
         """
         self.armed[channel] = armed
+        print(f"[DAW] arm_track: state updated, armed[{channel}]={self.armed[channel]}")
         self._emit_state_change()  # Notifica via WebSocket
         return True
     

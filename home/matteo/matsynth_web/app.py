@@ -786,7 +786,8 @@ def daw_mute_track(channel):
         
         return jsonify({
             "status": "ok", 
-            "message": f"Traccia {channel} {'mutata' if muted else 'smutata'}"
+            "message": f"Traccia {channel} {'mutata' if muted else 'smutata'}",
+            "muted": daw.muted[channel]  # Ritorna lo stato effettivo
         })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500

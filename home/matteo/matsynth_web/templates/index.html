@@ -582,6 +582,8 @@ fetchSF2List();
 
 let dawState = null;
 let dawSocket = null;  // WebSocket connection
+let armInProgress = {};  // Track which ARM buttons are being processed
+let muteInProgress = {};  // Track which MUTE buttons are being processed
 
 // Initialize DAW tracks
 function initDAW() {
@@ -748,23 +750,21 @@ function dawUpdateUI() {
         
         totalEvents += eventCount;
         
-        // ARM button
+        // ARM button - Rimuovi TUTTE le classi prima di aggiungere quella corretta
+        armBtn.classList.remove('btn-outline-danger', 'btn-danger');
         if (dawState.armed[i]) {
-            armBtn.classList.remove('btn-outline-danger');
             armBtn.classList.add('btn-danger');
             armBtn.style.fontWeight = '700';
         } else {
-            armBtn.classList.remove('btn-danger');
             armBtn.classList.add('btn-outline-danger');
             armBtn.style.fontWeight = '400';
         }
         
-        // MUTE button
+        // MUTE button - Rimuovi TUTTE le classi prima di aggiungere quella corretta
+        muteBtn.classList.remove('btn-outline-warning', 'btn-warning');
         if (dawState.muted[i]) {
-            muteBtn.classList.remove('btn-outline-warning');
             muteBtn.classList.add('btn-warning');
         } else {
-            muteBtn.classList.remove('btn-warning');
             muteBtn.classList.add('btn-outline-warning');
         }
         
@@ -925,54 +925,96 @@ async function dawToggleMetronome() {
 // Track Controls
 async function dawToggleArm(channel) {
     try {
-        // Assicurati che dawState sia caricato (singola chiamata, no polling continuo)
+        // Previeni doppi touch
+        if (armInProgress[channel]) {
+            return;
+        }
+        armInProgress[channel] = true;
+        
         if (!dawState) {
-            console.log('[DAW] dawState is null, loading initial state...');
             await dawLoadInitialState();
         }
         
         const currentlyArmed = dawState.armed[channel];
         const currentlyRecording = dawState.is_recording;
         
-        console.log(`[DAW] ARM click ch${channel}: armed=${currentlyArmed}, recording=${currentlyRecording}`);
-        
         // Non permettere disarm durante la registrazione
         if (currentlyRecording && currentlyArmed) {
             alert('Stop recording first before disarming tracks');
+            armInProgress[channel] = false;
             return;
         }
         
         // Toggle arm state
         const newState = !currentlyArmed;
-        console.log(`[DAW] ${newState ? 'Arming' : 'Disarming'} track ${channel}...`);
         
-        const armRes = await fetch(`/api/daw/track/${channel}/arm`, {
+        const response = await fetch(`/api/daw/track/${channel}/arm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ armed: newState })
         });
         
-        const armData = await armRes.json();
-        console.log('[DAW] Arm response:', armData);
+        const data = await response.json();
         
-        // WebSocket aggiornerà automaticamente il UI
-        console.log('[DAW] ARM operation completed');
+        // Aggiorna lo stato locale
+        if (data.status === 'ok') {
+            dawState.armed[channel] = data.armed;
+            
+            // Forza il repaint del DOM (critico per dispositivi touch)
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    dawUpdateUI();
+                });
+            });
+        }
+        
+        setTimeout(() => {
+            armInProgress[channel] = false;
+        }, 300);
+        
     } catch (e) {
         console.error('Arm error:', e);
+        armInProgress[channel] = false;
     }
 }
 
 async function dawToggleMute(channel) {
     try {
+        // Previeni doppi touch
+        if (muteInProgress[channel]) {
+            return;
+        }
+        muteInProgress[channel] = true;
+        
         const newState = !dawState.muted[channel];
-        await fetch(`/api/daw/track/${channel}/mute`, {
+        
+        const response = await fetch(`/api/daw/track/${channel}/mute`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ muted: newState })
         });
-        // WebSocket aggiornerà automaticamente il UI
+        
+        const data = await response.json();
+        
+        // Aggiorna lo stato locale
+        if (data.status === 'ok') {
+            dawState.muted[channel] = data.muted;
+            
+            // Forza il repaint del DOM (critico per dispositivi touch)
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    dawUpdateUI();
+                });
+            });
+        }
+        
+        setTimeout(() => {
+            muteInProgress[channel] = false;
+        }, 300);
+        
     } catch (e) {
         console.error('Mute error:', e);
+        muteInProgress[channel] = false;
     }
 }
 
