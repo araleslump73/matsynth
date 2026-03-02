@@ -935,6 +935,16 @@ def daw_toggle_metronome():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/full_density_map')
+def daw_full_density_map():
+    """Ritorna la mappa di densità completa per tutte le tracce."""
+    try:
+        density = daw.get_full_density_map()
+        return jsonify({"status": "ok", "map": density})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/track/<int:channel>/activity')
 def daw_track_activity(channel):
     """Restituisce intervalli di attività note per una traccia nel range visibile."""

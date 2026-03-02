@@ -596,10 +596,11 @@ let muteInProgress = {};  // Track which MUTE buttons are being processed
 let trackView = {
     startTime: 0,
     zoomLevel: 60,
-    intervals: {},            // full-range intervals per track
+    density: {},              // slot densities per track
+    meta: { slotBeats: 0.125, totalBeats: 0, beatsPerMeasure: 4 },
+    liveActivity: {},
     lastTrackCounts: {},
     rafId: null,
-    lastFetchTs: 0,
     tapes: {},                // offscreen “virtual strip” per track
     tapeScale: 40,            // px per beat on the offscreen tape
     totalBars: 200,           // logical tape length
@@ -612,6 +613,7 @@ let trackView = {
         momentumId: null
     }
 };
+let densityRefreshTimer = null;
 
 // Initialize DAW tracks
 function initDAW() {
@@ -680,6 +682,20 @@ function dawInitWebSocket() {
         dawState = data;
         dawUpdateUI();
     });
+
+    dawSocket.on('daw_tick', (tick) => {
+        dawHandleTick(tick);
+    });
+
+    dawSocket.on('record_activity', (data) => {
+        if (!data || !Array.isArray(data.channels)) return;
+        data.channels.forEach(({ channel, channel_id, count }) => {
+            const ch = (channel !== undefined ? channel : channel_id);
+            if (ch === undefined) return;
+            trackView.liveActivity[ch] = count || 0;
+            renderTrackTape(ch);
+        });
+    });
 }
 
 // Carica lo stato iniziale (una sola volta)
@@ -691,10 +707,101 @@ async function dawLoadInitialState() {
         if (data.status === 'ok') {
             dawState = data.data;
             dawUpdateUI();
+            await refreshDensityMap(true);
             console.log('DAW initialized with WebSocket real-time updates');
         }
     } catch (e) {
         console.error('DAW init error:', e);
+    }
+}
+
+function scheduleDensityRefresh() {
+    if (densityRefreshTimer) return;
+    densityRefreshTimer = setTimeout(async () => {
+        densityRefreshTimer = null;
+        await refreshDensityMap(true);
+    }, 150);
+}
+
+function dawUpdateTimelineUI() {
+    if (!dawState) return;
+    const timelineSpan = document.getElementById('daw-timeline');
+    const barBadge = document.getElementById('daw-bar-counter');
+    const beatsPerMeasure = dawState.beats_per_measure || 4;
+    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+    const timeSeconds = dawState.timeline_position || 0;
+
+    if (timelineSpan) {
+        const minutes = Math.floor(timeSeconds / 60);
+        const seconds = Math.floor(timeSeconds % 60);
+        const deciseconds = Math.floor((timeSeconds % 1) * 10);
+        timelineSpan.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+        timelineSpan.classList.remove('bg-dark', 'bg-info', 'bg-danger');
+        if (dawState.is_recording) {
+            timelineSpan.classList.add('bg-danger');
+        } else if (dawState.is_playing) {
+            timelineSpan.classList.add('bg-info');
+        } else {
+            timelineSpan.classList.add('bg-dark');
+        }
+    }
+
+    if (barBadge && beatDuration > 0) {
+        const totalBeats = timeSeconds / beatDuration;
+        const currentBar = Math.max(1, Math.floor(totalBeats / beatsPerMeasure) + 1);
+        barBadge.textContent = `Bar ${currentBar}`;
+    }
+
+    ensureRenderLoop();
+    renderAllTracks();
+}
+
+function dawHandleTick(tick) {
+    if (!tick || !dawState) return;
+
+    const prevRecording = !!dawState.is_recording;
+    const prevPlaying = !!dawState.is_playing;
+
+    if (typeof tick.t === 'number') {
+        dawState.timeline_position = tick.t;
+    } else if (typeof tick.timeline_position === 'number') {
+        dawState.timeline_position = tick.timeline_position;
+    }
+
+    if (typeof tick.is_recording === 'boolean') {
+        dawState.is_recording = tick.is_recording;
+    }
+    if (typeof tick.is_playing === 'boolean') {
+        dawState.is_playing = tick.is_playing;
+    }
+    if (typeof tick.bpm === 'number') {
+        dawState.bpm = tick.bpm;
+    }
+    if (typeof tick.beats_per_measure === 'number') {
+        dawState.beats_per_measure = tick.beats_per_measure;
+    }
+
+    let countsChanged = false;
+    if (tick.track_counts) {
+        dawState.track_counts = tick.track_counts;
+        trackView.lastTrackCounts = { ...tick.track_counts };
+        countsChanged = true;
+
+        if (tick.track_durations) {
+            dawState.track_durations = tick.track_durations;
+        }
+        if (typeof tick.max_duration === 'number') {
+            dawState.max_duration = tick.max_duration;
+        }
+
+        scheduleDensityRefresh();
+    }
+
+    const stateChanged = countsChanged || prevRecording !== dawState.is_recording || prevPlaying !== dawState.is_playing;
+    if (stateChanged) {
+        dawUpdateUI();
+    } else {
+        dawUpdateTimelineUI();
     }
 }
 
@@ -736,6 +843,7 @@ function dawUpdateUI() {
     // Update BPM
     document.getElementById('daw-bpm').value = dawState.bpm;
     const beatsPerMeasure = dawState.beats_per_measure || 4;
+    trackView.meta.beatsPerMeasure = beatsPerMeasure;
     if (tsSelect && tsSelect.value !== String(beatsPerMeasure)) {
         tsSelect.value = String(beatsPerMeasure);
     }
@@ -777,6 +885,10 @@ function dawUpdateUI() {
     } else {
         timelineSpan.classList.remove('bg-danger', 'bg-info');
         timelineSpan.classList.add('bg-dark');
+    }
+
+    if (!dawState.is_recording) {
+        trackView.liveActivity = {};
     }
     
     // Calculate total events
@@ -885,8 +997,8 @@ function dawUpdateUI() {
         zoomSlider.value = trackView.zoomLevel;
     }
 
-    // Aggiorna cache counts e fetch intervalli se servono
-    fetchTrackIntervalsIfNeeded(true);
+    // Aggiorna cache counts e refresh heatmap se servono
+    refreshDensityMapIfNeeded(false);
     ensureRenderLoop();
 }
 
@@ -933,12 +1045,6 @@ function onCanvasPointerMove(e) {
     clampStartTimeToTape();
 
     trackView.drag.velocity = dx / dt; // px per ms
-
-    // Throttle fetch to ~120ms
-    if (now - trackView.lastFetchTs > 120) {
-        fetchTrackIntervalsIfNeeded(true);
-        trackView.lastFetchTs = now;
-    }
     ensureRenderLoop();
 }
 
@@ -965,11 +1071,6 @@ function startMomentum() {
         trackView.startTime = Math.max(0, trackView.startTime - deltaBeats);
         clampStartTimeToTape();
 
-        if (now - trackView.lastFetchTs > 150) {
-            fetchTrackIntervalsIfNeeded(true);
-            trackView.lastFetchTs = now;
-        }
-
         v *= friction;
         if (Math.abs(v) < minVel) {
             trackView.drag.momentumId = null;
@@ -985,9 +1086,14 @@ function startMomentum() {
 }
 
 function getTotalBeats() {
-    const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : (trackView.lastBeatsPerMeasure || 4);
+    const beatsPerMeasure = dawState
+        ? (dawState.beats_per_measure || trackView.meta.beatsPerMeasure || 4)
+        : (trackView.meta.beatsPerMeasure || trackView.lastBeatsPerMeasure || 4);
     trackView.lastBeatsPerMeasure = beatsPerMeasure;
-    return trackView.totalBars * beatsPerMeasure;
+    const totalBeats = (trackView.meta.totalBeats && trackView.meta.totalBeats > 0)
+        ? trackView.meta.totalBeats
+        : trackView.totalBars * beatsPerMeasure;
+    return totalBeats;
 }
 
 function clampStartTimeToTape() {
@@ -998,10 +1104,11 @@ function clampStartTimeToTape() {
 }
 
 function ensureTape(ch, height) {
-    const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : 4;
+    const beatsPerMeasure = dawState ? (dawState.beats_per_measure || trackView.meta.beatsPerMeasure || 4) : (trackView.meta.beatsPerMeasure || 4);
     if (trackView.lastBeatsPerMeasure !== beatsPerMeasure) {
         trackView.tapes = {};
-        trackView.intervals = {};
+        trackView.density = {};
+        trackView.liveActivity = {};
         trackView.lastTrackCounts = {};
         trackView.lastBeatsPerMeasure = beatsPerMeasure;
     }
@@ -1047,44 +1154,47 @@ function renderTrackTape(ch) {
         ctx.stroke();
     }
 
-    const intervals = trackView.intervals[ch] || [];
-    const slotBeats = 0.125;
+    const density = trackView.density[ch] || [];
+    const slotBeats = trackView.meta.slotBeats || 0.125;
     const slotWidthPx = slotBeats * trackView.tapeScale;
-    const slotCount = Math.ceil(totalBeats / slotBeats);
-    const slots = new Uint8Array(slotCount);
-    for (const [s, e] of intervals) {
-        const sClamped = Math.max(0, s);
-        const eClamped = Math.min(totalBeats, e);
-        if (eClamped <= sClamped) continue;
-        const startSlot = Math.max(0, Math.floor(sClamped / slotBeats));
-        const endSlot = Math.min(slotCount, Math.ceil(eClamped / slotBeats));
-        for (let slot = startSlot; slot < endSlot; slot++) {
-            slots[slot] = 1;
+    const muted = dawState && dawState.muted && dawState.muted[ch];
+    const slotHeight = height - 6;
+    const slotY = 3;
+
+    let maxVal = 0;
+    for (const v of density) {
+        if (v > maxVal) maxVal = v;
+    }
+
+    if (maxVal > 0) {
+        for (let i = 0; i < density.length; i++) {
+            const val = density[i] || 0;
+            if (!val) continue;
+            const ratio = Math.min(1, val / maxVal);
+            const hue = 120 - (120 * ratio); // green to red
+            const alpha = (0.35 + 0.55 * ratio) * (muted ? 0.5 : 1);
+            ctx.fillStyle = `hsla(${hue}, 100%, 55%, ${alpha})`;
+            const x = i * slotWidthPx;
+            ctx.fillRect(x, slotY, slotWidthPx, slotHeight);
         }
     }
 
-    const muted = dawState && dawState.muted && dawState.muted[ch];
-    ctx.fillStyle = muted ? 'rgba(90, 90, 90, 0.5)' : '#50FA7B';
-    const slotHeight = height - 6;
-    const slotY = 3;
-    for (let slot = 0; slot < slotCount; slot++) {
-        if (!slots[slot]) continue;
-        const x = slot * slotWidthPx;
-        ctx.fillRect(x, slotY, slotWidthPx, slotHeight);
+    const live = trackView.liveActivity[ch] || 0;
+    if (live > 0) {
+        ctx.fillStyle = 'rgba(255, 99, 71, 0.7)';
+        ctx.fillRect(0, 0, tape.width, 3);
     }
 }
 
 function dawViewSetStart(val) {
     trackView.startTime = Math.max(0, parseFloat(val) || 0);
     clampStartTimeToTape();
-    fetchTrackIntervalsIfNeeded(true);
     ensureRenderLoop();
 }
 
 function dawViewSetZoom(val) {
     trackView.zoomLevel = Math.max(1, parseFloat(val) || trackView.zoomLevel);
     clampStartTimeToTape();
-    fetchTrackIntervalsIfNeeded(true);
     ensureRenderLoop();
 }
 
@@ -1105,33 +1215,49 @@ function stopRenderLoop() {
     }
 }
 
-function fetchTrackIntervalsIfNeeded(force = false) {
+async function refreshDensityMap(force = false) {
     if (!dawState) return;
-    const totalBeats = getTotalBeats();
-    const now = performance.now();
-    const shouldRefetchAll = force || (dawState.is_recording && now - trackView.lastFetchTs > 500);
-    if (shouldRefetchAll) {
-        trackView.lastFetchTs = now;
+    try {
+        const res = await fetch('/api/daw/full_density_map');
+        const data = await res.json();
+        if (data.status === 'ok' && data.map) {
+            const map = data.map;
+            trackView.meta = {
+                slotBeats: map.slot_beats || 0.125,
+                totalBeats: map.total_beats || 0,
+                beatsPerMeasure: map.beats_per_measure || (dawState ? dawState.beats_per_measure : 4)
+            };
+            trackView.density = map.tracks || {};
+            trackView.totalBars = Math.max(4, Math.ceil((trackView.meta.totalBeats || (trackView.meta.beatsPerMeasure * 4)) / (trackView.meta.beatsPerMeasure || 4)));
+            trackView.lastBeatsPerMeasure = trackView.meta.beatsPerMeasure || trackView.lastBeatsPerMeasure;
+            trackView.tapes = {};
+            trackView.liveActivity = {};
+            trackView.lastTrackCounts = { ...(dawState.track_counts || {}) };
+            clampStartTimeToTape();
+            renderAllTracks();
+        }
+    } catch (e) {
+        console.error('Density map fetch error:', e);
+    }
+}
+
+function refreshDensityMapIfNeeded(force = false) {
+    if (!dawState) return;
+    const counts = dawState.track_counts || {};
+    let changed = force;
+    if (!changed) {
+        for (let ch = 0; ch < 16; ch++) {
+            const prev = trackView.lastTrackCounts[ch] || 0;
+            const current = counts[ch] || 0;
+            if (current !== prev) {
+                changed = true;
+                break;
+            }
+        }
     }
 
-    for (let ch = 0; ch < 16; ch++) {
-        const count = dawState.track_counts ? (dawState.track_counts[ch] || 0) : 0;
-        const prev = trackView.lastTrackCounts[ch] || 0;
-        const hasData = dawState.has_data ? dawState.has_data[ch] : false;
-        const needs = shouldRefetchAll || count !== prev || hasData;
-        if (!needs) continue;
-        fetch(`/api/daw/track/${ch}/activity?start=0&end=${totalBeats}`)
-            .then(r => r.json())
-            .then(data => {
-                if (data.status === 'ok') {
-                    const intervals = data.intervals || [];
-                    trackView.intervals[ch] = intervals;
-                    trackView.lastTrackCounts[ch] = count;
-                    renderTrackTape(ch);
-                }
-            })
-            .catch(err => console.error('Track fetch error', ch, err));
-    }
+    if (!changed) return;
+    return refreshDensityMap(true);
 }
 
 function renderAllTracks() {
@@ -1155,7 +1281,6 @@ function renderAllTracks() {
             const canvasHalf = width * 0.5;
             if (playheadX > canvasHalf) {
                 trackView.startTime = Math.max(0, playheadBeat - (canvasHalf / trackView.zoomLevel));
-                fetchTrackIntervalsIfNeeded(true);
             }
         }
 
@@ -1199,7 +1324,7 @@ function renderAllTracks() {
 
 window.addEventListener('resize', () => {
     clampStartTimeToTape();
-    fetchTrackIntervalsIfNeeded(true);
+    refreshDensityMapIfNeeded(false);
     ensureRenderLoop();
 });
 

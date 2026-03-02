@@ -5,6 +5,7 @@ Ottimizzato per Raspberry Pi Zero 2W con bassa latenza e CPU overhead minimo
 
 import mido
 import time
+import math
 import threading
 from collections import defaultdict
 
@@ -26,6 +27,7 @@ class MultiTrackDAW:
         self.bpm = bpm
         self.beat_duration = 60.0 / bpm  # durata di un beat in secondi
         self.beats_per_measure = 4       # 4/4 di default
+        self.slot_beats = 0.125          # risoluzione densità (1/8 di beat)
         self.socketio = socketio  # WebSocket per notifiche real-time
         
         # Storage tracce: {channel_id: [(beat_position, midi_msg), ...]}
@@ -53,6 +55,11 @@ class MultiTrackDAW:
         self.update_thread = None  # Thread per aggiornamenti periodici via WebSocket
         self.stop_event = threading.Event()
         self.metronome_stop_event = threading.Event()
+
+        # Conteggi attivi e densità
+        self.active_notes = {i: 0 for i in range(16)}
+        self._last_tick_counts = {i: 0 for i in range(16)}
+        self._last_counts_emit_ts = 0.0
         
         # Porte MIDI
         self.midi_input = None
@@ -122,15 +129,62 @@ class MultiTrackDAW:
         """Loop che emette aggiornamenti periodici via WebSocket"""
         while True:
             try:
-                # Emetti aggiornamento solo se registrazione o playback attivi
-                if self.is_recording or self.is_playing:
-                    self._emit_state_change()
-                    time.sleep(0.5)  # Aggiorna ogni 500ms durante attività
+                if (self.is_recording or self.is_playing) and self.socketio:
+                    # Tick leggero per timeline/playhead (payload minimo)
+                    tick_payload = {
+                        't': self.timeline_position,
+                        'is_playing': self.is_playing,
+                        'is_recording': self.is_recording,
+                        'bpm': self.bpm,
+                        'beats_per_measure': self.beats_per_measure
+                    }
+
+                    # Invia track_counts solo se sono cambiati (limita il payload)
+                    counts_changed = False
+                    counts = {}
+                    for ch in range(16):
+                        cnt = len(self.tracks[ch])
+                        counts[ch] = cnt
+                        if cnt != self._last_tick_counts.get(ch, 0):
+                            counts_changed = True
+                            self._last_tick_counts[ch] = cnt
+
+                    now = time.time()
+                    if counts_changed and (now - self._last_counts_emit_ts) >= 0.25:
+                        track_durations = {}
+                        max_duration = 0.0
+                        for ch in range(16):
+                            if self.tracks[ch]:
+                                last_beat = self.tracks[ch][-1][0]
+                                duration = last_beat * self.beat_duration
+                                track_durations[ch] = duration
+                                max_duration = max(max_duration, duration)
+
+                        tick_payload['track_counts'] = counts
+                        tick_payload['track_durations'] = track_durations
+                        tick_payload['max_duration'] = max_duration
+                        self._last_counts_emit_ts = now
+
+                    try:
+                        self.socketio.emit('daw_tick', tick_payload, namespace='/')
+                    except Exception as e:
+                        print(f"[DAW] Errore emit daw_tick: {e}")
+
+                    # Eventi di attività note solo durante la registrazione
+                    if self.is_recording:
+                        snapshot = [{'channel': ch, 'count': cnt} for ch, cnt in self.active_notes.items() if cnt > 0]
+                        try:
+                            if snapshot:
+                                self.socketio.emit('record_activity', {'channels': snapshot}, namespace='/')
+                        except Exception as e:
+                            print(f"[DAW] Errore emit record_activity: {e}")
+
+                    time.sleep(0.05 if self.is_recording else 0.1)
                 else:
-                    time.sleep(1.0)  # Check meno frequente quando idle
+                    time.sleep(0.5)
             except Exception as e:
                 print(f"[DAW] Errore in update loop: {e}")
-                time.sleep(1.0)
+                time.sleep(0.5)
     
     def start_recording(self, channel=None):
         """
@@ -185,6 +239,9 @@ class MultiTrackDAW:
         # Se ci sono altre tracce con dati (non in registrazione), avvia anche la riproduzione
         has_other_tracks = any(self.has_data[ch] for ch in range(16) if ch not in recording_channels)
         
+        for ch in range(16):
+            self.active_notes[ch] = 0
+
         self.is_recording = True
         self.stop_event.clear()
         
@@ -224,6 +281,9 @@ class MultiTrackDAW:
         
         self.is_recording = False
         self.stop_event.set()
+
+        for ch in range(16):
+            self.active_notes[ch] = 0
         
         if self.record_thread:
             self.record_thread.join(timeout=1.0)
@@ -331,13 +391,16 @@ class MultiTrackDAW:
         self.tracks[channel] = []
         self.has_data[channel] = False
         print(f"[DAW] Traccia {channel} cancellata")
+        self._emit_state_change()
         return True
     
     def clear_all_tracks(self):
         """Cancella tutte le tracce"""
         for ch in range(16):
-            self.clear_track(ch)
+            self.tracks[ch] = []
+            self.has_data[ch] = False
         print("[DAW] Tutte le tracce cancellate")
+        self._emit_state_change()
         return True
     
     def set_bpm(self, bpm):
@@ -436,6 +499,72 @@ class MultiTrackDAW:
                 merged[-1][1] = max(merged[-1][1], e)
 
         return merged
+
+    def _build_intervals_full(self, events):
+        """Costruisce intervalli completi (start, end) in beat per tutte le note."""
+        if not events:
+            return [], 0.0
+
+        active_notes = {}
+        intervals = []
+        max_beat = 0.0
+
+        for beat_position, msg_bytes in events:
+            max_beat = max(max_beat, beat_position)
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+            except Exception:
+                continue
+
+            if msg.type == 'note_on' and msg.velocity > 0:
+                active_notes[msg.note] = beat_position
+            elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
+                if msg.note in active_notes:
+                    start = active_notes.pop(msg.note)
+                    intervals.append((start, beat_position))
+
+        for start in active_notes.values():
+            intervals.append((start, max_beat))
+
+        intervals.sort(key=lambda iv: iv[0])
+        return intervals, max_beat
+
+    def get_full_density_map(self):
+        """Ritorna la mappa di densità (slot di 1/8 beat) per tutte le tracce."""
+        slot = self.slot_beats
+        beats_per_measure = self.beats_per_measure
+
+        all_intervals = {}
+        total_beats = 0.0
+        for ch in range(16):
+            intervals, max_beat = self._build_intervals_full(self.tracks.get(ch))
+            all_intervals[ch] = intervals
+            total_beats = max(total_beats, max_beat)
+
+        if total_beats <= 0:
+            total_beats = beats_per_measure * 4  # fallback 4 misure
+
+        slots_count = max(1, math.ceil(total_beats / slot))
+        density = {}
+
+        for ch in range(16):
+            arr = [0] * slots_count
+            intervals = all_intervals[ch]
+            for start, end in intervals:
+                if end <= start:
+                    continue
+                s_slot = max(0, int(math.floor(start / slot)))
+                e_slot = min(slots_count, int(math.ceil(end / slot)))
+                for idx in range(s_slot, e_slot):
+                    arr[idx] += 1
+            density[ch] = arr
+
+        return {
+            'slot_beats': slot,
+            'total_beats': total_beats,
+            'beats_per_measure': beats_per_measure,
+            'tracks': density
+        }
     
     def toggle_metronome(self):
         """Toggle metronomo on/off"""
@@ -558,6 +687,12 @@ class MultiTrackDAW:
                         
                         # Salva evento in formato tuple leggera (beat, msg_bytes)
                         self.tracks[msg.channel].append((beat_position, msg.bytes()))
+
+                        # Aggiorna conteggio note attive per streaming leggero
+                        if msg.type == 'note_on' and msg.velocity > 0:
+                            self.active_notes[msg.channel] += 1
+                        elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                            self.active_notes[msg.channel] = max(0, self.active_notes[msg.channel] - 1)
                         
                         # NON fare thru a FluidSynth - è già collegato direttamente alla tastiera
                         # Il monitoring real-time avviene tramite la connessione diretta aconnect
@@ -572,6 +707,7 @@ class MultiTrackDAW:
                     self.tracks[channel].sort(key=lambda x: x[0])
                     self.has_data[channel] = True
                     print(f"[DAW] Registrati {len(self.tracks[channel])} eventi su canale {channel}")
+                self.active_notes[channel] = 0
                 
         except Exception as e:
             print(f"[DAW] Errore nel loop di registrazione: {e}")
