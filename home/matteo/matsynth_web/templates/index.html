@@ -1233,6 +1233,10 @@ async function refreshDensityMap(force = false) {
             trackView.tapes = {};
             trackView.liveActivity = {};
             trackView.lastTrackCounts = { ...(dawState.track_counts || {}) };
+            // Rebuild every offscreen tape so the density stays visible after stopping recording
+            for (let ch = 0; ch < 16; ch++) {
+                renderTrackTape(ch);
+            }
             clampStartTimeToTape();
             renderAllTracks();
         }
