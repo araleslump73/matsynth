@@ -966,7 +966,10 @@ function dawUpdateUI() {
     }
     
     // Update total events badge
-    document.getElementById('daw-events-total').innerText = totalEvents;
+    const totalBadge = document.getElementById('daw-events-total');
+    if (totalBadge) {
+        totalBadge.innerText = totalEvents;
+    }
     
     // Update status
     const statusDiv = document.getElementById('daw-status');
@@ -1270,25 +1273,42 @@ function renderAllTracks() {
     const width = getCanvasWidth();
     const visibleBeats = trackView.zoomLevel > 0 ? width / trackView.zoomLevel : 0;
     const totalBeats = getTotalBeats();
-    const maxStart = Math.max(0, totalBeats - visibleBeats);
-    if (trackView.startTime > maxStart) {
-        trackView.startTime = maxStart;
-    }
-    const windowStart = trackView.startTime;
-    const windowEnd = windowStart + visibleBeats;
-    const beatsPerMeasure = dawState.beats_per_measure || 4;
+    const currentBeat = beatDuration > 0 ? (dawState.timeline_position / beatDuration) : 0;
+    const halfWindowBeats = visibleBeats * 0.5;
+    
+    // During recording, extend maxStart to allow infinite scrolling
+    const effectiveTotalBeats = dawState.is_recording 
+        ? Math.max(totalBeats, currentBeat + halfWindowBeats)
+        : totalBeats;
+    const maxStart = Math.max(0, effectiveTotalBeats - visibleBeats);
 
-    // auto-scroll durante play/rec
-        if ((dawState.is_playing || dawState.is_recording) && beatDuration > 0) {
-            const playheadBeat = dawState.timeline_position / beatDuration;
-            const playheadX = (playheadBeat - windowStart) * trackView.zoomLevel;
-            const canvasHalf = width * 0.5;
-            if (playheadX > canvasHalf) {
-                trackView.startTime = Math.max(0, playheadBeat - (canvasHalf / trackView.zoomLevel));
-            }
+    const shouldFollow = (dawState.is_playing || dawState.is_recording) && beatDuration > 0 && !trackView.drag.active;
+
+    let playheadX = 0;
+    let tapeStartTime = 0;
+
+    if (shouldFollow) {
+        if (currentBeat < halfWindowBeats) {
+            // Fase 1: inizio traccia. Nastro fermo, playhead si muove.
+            tapeStartTime = 0;
+            playheadX = currentBeat * trackView.zoomLevel;
+        } else if (!dawState.is_recording && currentBeat > totalBeats - halfWindowBeats) {
+            // Fase 3: fine traccia (solo playback). Nastro al massimo, playhead si muove verso destra.
+            tapeStartTime = maxStart;
+            playheadX = (currentBeat - tapeStartTime) * trackView.zoomLevel;
+        } else {
+            // Fase 2: playhead al centro, nastro che scorre.
+            tapeStartTime = currentBeat - halfWindowBeats;
+            playheadX = width * 0.5;
         }
-
-    clampStartTimeToTape();
+        tapeStartTime = Math.min(Math.max(0, tapeStartTime), maxStart);
+        trackView.startTime = tapeStartTime;
+    } else {
+        // Modalità libera (utente sta scrollando o DAW in stop)
+        clampStartTimeToTape();
+        tapeStartTime = trackView.startTime;
+        playheadX = (currentBeat - tapeStartTime) * trackView.zoomLevel;
+    }
 
     for (let ch = 0; ch < 16; ch++) {
         const canvas = document.getElementById(`track-canvas-${ch}`);
@@ -1297,6 +1317,9 @@ function renderAllTracks() {
         const w = canvas.clientWidth || canvas.width;
         if (canvas.width !== w) canvas.width = w;
 
+        if (!trackView.tapes[ch]) {
+            renderTrackTape(ch);
+        }
         const tape = trackView.tapes[ch];
         const vctx = canvas.getContext('2d');
         vctx.clearRect(0, 0, w, h);
@@ -1304,22 +1327,19 @@ function renderAllTracks() {
         vctx.fillRect(0, 0, w, h);
 
         if (tape) {
-            const sourceWidth = Math.max(1, visibleBeats * trackView.tapeScale);
-            const maxSx = Math.max(0, tape.width - sourceWidth);
-            const sx = Math.max(0, Math.min(windowStart * trackView.tapeScale, maxSx));
+            const sx = tapeStartTime * trackView.tapeScale;
+            const sourceWidth = visibleBeats * trackView.tapeScale;
             vctx.drawImage(tape, sx, 0, sourceWidth, tape.height, 0, 0, w, h);
         }
 
-        // playhead overlay
+        // playhead overlay (fixed when following)
         if ((dawState.is_playing || dawState.is_recording) && beatDuration > 0) {
-            const playheadBeat = dawState.timeline_position / beatDuration;
-            const px = (playheadBeat - windowStart) * trackView.zoomLevel;
-            if (px >= 0 && px <= w) {
+            if (playheadX >= 0 && playheadX <= w) {
                 vctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
                 vctx.lineWidth = 2;
                 vctx.beginPath();
-                vctx.moveTo(px, 0);
-                vctx.lineTo(px, h);
+                vctx.moveTo(playheadX, 0);
+                vctx.lineTo(playheadX, h);
                 vctx.stroke();
             }
         }
