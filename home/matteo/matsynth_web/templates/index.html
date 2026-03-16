@@ -7,6 +7,7 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
 <body class="container py-4">
     <div class="text-center mb-4">
@@ -29,11 +30,113 @@
     </div>
 
     <!-- Presets button -->
-    <div class="row g-2 mb-4">
+    <div class="row g-2 mb-3">
         <div class="col-12">
             <a href="/presets" class="btn btn-outline-warning fw-bold w-100" style="padding: 10px; border: 2px solid rgba(255, 193, 7, 0.5);">
                 <i class="fas fa-save"></i> PRESETS
             </a>
+        </div>
+    </div>
+
+    <!-- DAW Multi-Track Recorder -->
+    <div class="card mb-4" style="border: 2px solid rgba(255, 60, 120, 0.6); background: rgba(20, 20, 30, 0.95);">
+        <div class="card-header-custom" style="background: linear-gradient(135deg, #c2185b, #d81b60);">
+            <i class="fas fa-record-vinyl"></i>
+            <h6 class="mb-0" style="color: white;">MICRO-DAW RECORDER</h6>
+        </div>
+        <div class="p-3">
+            <!-- Transport Controls -->
+            <div class="row g-2 mb-2">
+                <div class="col-3">
+                    <button id="daw-play" class="btn btn-success w-100 btn-sm fw-bold" onclick="dawPlay()" style="padding: 8px;">
+                        <i class="fas fa-play"></i> PLAY
+                    </button>
+                </div>
+                <div class="col-3">
+                    <button id="daw-rec" class="btn btn-outline-danger w-100 btn-sm fw-bold" onclick="dawRecord()" style="padding: 8px;">
+                        <i class="fas fa-circle"></i> REC
+                    </button>
+                </div>
+                <div class="col-3">
+                    <button id="daw-stop" class="btn btn-secondary w-100 btn-sm fw-bold" onclick="dawStop()" style="padding: 8px;">
+                        <i class="fas fa-stop"></i> STOP
+                    </button>
+                </div>
+                <div class="col-3">
+                    <button id="daw-rewind" class="btn btn-info w-100 btn-sm fw-bold" onclick="dawRewind()" style="padding: 8px;">
+                        <i class="fas fa-undo"></i> RWD
+                    </button>
+                </div>
+            </div>
+            <div class="row g-2 mb-3">
+                <div class="col-6">
+                    <div class="d-flex align-items-center">
+                        <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">BPM:</label>
+                        <input type="number" id="daw-bpm" class="form-control form-control-sm" value="120" min="30" max="300"
+                               onchange="dawSetBPM(this.value)" style="width: 70px; padding: 4px 6px; font-size: 0.85rem;">
+                        <button id="daw-metronome" class="btn btn-outline-light btn-sm ms-2" onclick="dawToggleMetronome()" 
+                                style="padding: 4px 8px; font-size: 0.75rem;" title="Metronomo">
+                            <i class="fas fa-stopwatch"></i>
+                        </button>
+                        <select id="daw-ts-select" class="form-select form-select-sm ms-2" style="width: 80px; font-size: 0.8rem;"
+                                onchange="dawSetTimeSignature(this.value)">
+                            <option value="4">4/4</option>
+                            <option value="3">3/4</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="col-6">
+                    <div class="d-flex align-items-center justify-content-end">
+                        <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">
+                            <i class="fas fa-clock"></i> TIME:
+                        </label>
+                        <span id="daw-timeline" class="badge bg-dark" style="font-size: 0.9rem; font-family: monospace; padding: 6px 10px;">
+                            00:00.0
+                        </span>
+                        <span id="daw-time-signature" class="badge bg-secondary ms-2" style="font-size: 0.8rem;">4/4</span>
+                        <span id="daw-bar-counter" class="badge bg-secondary ms-2" style="font-size: 0.8rem;">Bar 1</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Status Display -->
+            <div id="daw-status" class="alert alert-dark py-2 mb-3 text-center" style="font-size: 0.85rem; display: none; border: 1px solid rgba(255,255,255,0.2);">
+                <span id="daw-status-text">Ready</span>
+            </div>
+
+            <!-- Timeline view controls -->
+            <div class="row g-2 mb-2">
+                <div class="col-12">
+                    <label class="text-muted" style="font-size: 0.75rem;">Zoom (px/beat)</label>
+                    <input type="range" id="daw-zoom-range" class="form-range" min="10" max="200" step="5" value="60" oninput="dawViewSetZoom(this.value)">
+                </div>
+            </div>
+
+            <!-- Channel Strips (Compact Table) -->
+            <div style="max-height: 320px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; background: rgba(0,0,0,0.3);">
+                <table class="table table-sm table-dark mb-0" style="font-size: 0.75rem;">
+                    <thead style="position: sticky; top: 0; background: #1a1a1a; z-index: 10; border-bottom: 2px solid #c2185b;">
+                        <tr>
+                            <th style="width: 6%;">CH</th>
+                            <th style="width: 12%;">REC</th>
+                            <th style="width: 12%;">MUTE</th>
+                            <th style="width: 48%;">Timeline</th>
+                            <th style="width: 10%;">Events</th>
+                            <th style="width: 12%;">Clear</th>
+                        </tr>
+                    </thead>
+                    <tbody id="daw-tracks">
+                        <!-- Tracks will be generated by JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Clear All Button -->
+            <div class="mt-3">
+                <button class="btn btn-outline-danger w-100 btn-sm" onclick="dawClearAll()">
+                    <i class="fas fa-trash-alt"></i> CLEAR ALL TRACKS
+                </button>
+            </div>
         </div>
     </div>
 
@@ -196,7 +299,12 @@
                     populateDropdown(document.getElementById(`select-ch-${i}`));
                 }
                 
-                syncWithSynth();
+                // Carica lo stato salvato dai file
+                await loadSavedChannelState();
+                
+                // Poi sincronizza con lo stato REALE di FluidSynth
+                // (sovrascrive eventuali differenze tra stato salvato e realtà)
+                await syncWithSynth();
             } catch(e) { console.error("Setup Error:", e); }
         }
 
@@ -213,6 +321,40 @@
                 opt.innerText = inst;
                 dropdown.appendChild(opt);
             });
+        }
+
+        async function loadSavedChannelState() {
+            try {
+                // Carica lo stato salvato (che include le selezioni dei canali)
+                const resState = await fetch('/get_state');
+                const state = await resState.json();
+                
+                console.log("Ripristino stato canali salvati:", state.channels);
+                
+                // Applica le selezioni salvate ai dropdown
+                if (state.channels) {
+                    for (let chan in state.channels) {
+                        const channelData = state.channels[chan];
+                        const bank = channelData.bank;
+                        const prog = channelData.program;
+                        const value = `${bank},${prog}`;
+                        
+                        const dropdown = document.getElementById(`select-ch-${chan}`);
+                        if (dropdown) {
+                            // Cerca l'opzione corrispondente nel dropdown
+                            for (let option of dropdown.options) {
+                                if (option.value === value) {
+                                    dropdown.value = value;
+                                    console.log(`✓ Ripristinato canale ${chan}: ${option.text}`);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error("Errore caricamento stato canali:", e);
+            }
         }
 
         // Change Channel for Sliders
@@ -443,10 +585,1070 @@ async function changeSF2(filename) {
 fetchSF2List();
 
 
+// ==========================================
+// DAW MULTI-TRACK RECORDER JAVASCRIPT
+// ==========================================
+
+let dawState = null;
+let dawSocket = null;  // WebSocket connection
+let armInProgress = {};  // Track which ARM buttons are being processed
+let muteInProgress = {};  // Track which MUTE buttons are being processed
+let trackView = {
+    startTime: 0,
+    zoomLevel: 60,
+    density: {},              // slot densities per track
+    meta: { slotBeats: 0.125, totalBeats: 0, beatsPerMeasure: 4 },
+    liveActivity: {},
+    lastTrackCounts: {},
+    rafId: null,
+    tapes: {},                // offscreen “virtual strip” per track
+    tapeScale: 40,            // px per beat on the offscreen tape
+    totalBars: 200,           // logical tape length
+    lastBeatsPerMeasure: 4,
+    drag: {
+        active: false,
+        lastX: 0,
+        lastT: 0,
+        velocity: 0,
+        momentumId: null
+    }
+};
+let densityRefreshTimer = null;
+
+// Initialize DAW tracks
+function initDAW() {
+    const tbody = document.getElementById('daw-tracks');
+    tbody.innerHTML = '';
+    
+    for (let i = 0; i < 16; i++) {
+        const row = document.createElement('tr');
+        row.id = `daw-track-${i}`;
+        row.style.transition = 'background-color 0.2s';
+        
+        row.innerHTML = `
+            <td class="text-center fw-bold" style="color: ${i === 9 ? '#ff9800' : '#00d4ff'};">${i + 1}</td>
+            <td>
+                <button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(${i})" 
+                        id="arm-btn-${i}" style="padding: 3px 6px; font-size: 0.7rem;">
+                    <i class="fas fa-circle"></i>
+                </button>
+            </td>
+            <td>
+                <button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(${i})" 
+                        id="mute-btn-${i}" style="padding: 3px 6px; font-size: 0.7rem;">
+                    <i class="fas fa-volume-mute"></i>
+                </button>
+            </td>
+            <td>
+                <canvas id="track-canvas-${i}" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas>
+            </td>
+            <td class="text-center">
+                <span id="events-${i}" class="badge bg-secondary" style="font-size: 0.65rem;">0</span>
+            </td>
+            <td>
+                <button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(${i})" 
+                        id="clear-btn-${i}" style="padding: 3px 6px; font-size: 0.7rem;">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </td>
+        `;
+        
+        tbody.appendChild(row);
+    }
+    attachCanvasDragHandlers();
+    
+    // Inizializza WebSocket per aggiornamenti real-time
+    dawInitWebSocket();
+    
+    // Carica lo stato iniziale
+    dawLoadInitialState();
+}
+
+// Inizializza connessione WebSocket
+function dawInitWebSocket() {
+    dawSocket = io();
+    
+    dawSocket.on('connect', () => {
+        console.log('[WebSocket] Connesso al server');
+    });
+    
+    dawSocket.on('disconnect', () => {
+        console.log('[WebSocket] Disconnesso dal server');
+    });
+    
+    // Ascolta aggiornamenti di stato in real-time
+    dawSocket.on('daw_state_update', (data) => {
+        console.log('[WebSocket] State update ricevuto');
+        dawState = data;
+        dawUpdateUI();
+    });
+
+    dawSocket.on('daw_tick', (tick) => {
+        dawHandleTick(tick);
+    });
+
+    dawSocket.on('record_activity', (data) => {
+        if (!data || !Array.isArray(data.channels)) return;
+        data.channels.forEach(({ channel, channel_id, count }) => {
+            const ch = (channel !== undefined ? channel : channel_id);
+            if (ch === undefined) return;
+            trackView.liveActivity[ch] = count || 0;
+            renderTrackTape(ch);
+        });
+    });
+}
+
+// Carica lo stato iniziale (una sola volta)
+async function dawLoadInitialState() {
+    try {
+        const res = await fetch('/api/daw/state');
+        const data = await res.json();
+        
+        if (data.status === 'ok') {
+            dawState = data.data;
+            dawUpdateUI();
+            await refreshDensityMap(true);
+            console.log('DAW initialized with WebSocket real-time updates');
+        }
+    } catch (e) {
+        console.error('DAW init error:', e);
+    }
+}
+
+function scheduleDensityRefresh() {
+    if (densityRefreshTimer) return;
+    densityRefreshTimer = setTimeout(async () => {
+        densityRefreshTimer = null;
+        await refreshDensityMap(true);
+    }, 150);
+}
+
+function dawUpdateTimelineUI() {
+    if (!dawState) return;
+    const timelineSpan = document.getElementById('daw-timeline');
+    const barBadge = document.getElementById('daw-bar-counter');
+    const beatsPerMeasure = dawState.beats_per_measure || 4;
+    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+    const timeSeconds = dawState.timeline_position || 0;
+
+    if (timelineSpan) {
+        const minutes = Math.floor(timeSeconds / 60);
+        const seconds = Math.floor(timeSeconds % 60);
+        const deciseconds = Math.floor((timeSeconds % 1) * 10);
+        timelineSpan.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+        timelineSpan.classList.remove('bg-dark', 'bg-info', 'bg-danger');
+        if (dawState.is_recording) {
+            timelineSpan.classList.add('bg-danger');
+        } else if (dawState.is_playing) {
+            timelineSpan.classList.add('bg-info');
+        } else {
+            timelineSpan.classList.add('bg-dark');
+        }
+    }
+
+    if (barBadge && beatDuration > 0) {
+        const totalBeats = timeSeconds / beatDuration;
+        const currentBar = Math.max(1, Math.floor(totalBeats / beatsPerMeasure) + 1);
+        barBadge.textContent = `Bar ${currentBar}`;
+    }
+
+    ensureRenderLoop();
+    renderAllTracks();
+}
+
+function dawHandleTick(tick) {
+    if (!tick || !dawState) return;
+
+    const prevRecording = !!dawState.is_recording;
+    const prevPlaying = !!dawState.is_playing;
+
+    if (typeof tick.t === 'number') {
+        dawState.timeline_position = tick.t;
+    } else if (typeof tick.timeline_position === 'number') {
+        dawState.timeline_position = tick.timeline_position;
+    }
+
+    if (typeof tick.is_recording === 'boolean') {
+        dawState.is_recording = tick.is_recording;
+    }
+    if (typeof tick.is_playing === 'boolean') {
+        dawState.is_playing = tick.is_playing;
+    }
+    if (typeof tick.bpm === 'number') {
+        dawState.bpm = tick.bpm;
+    }
+    if (typeof tick.beats_per_measure === 'number') {
+        dawState.beats_per_measure = tick.beats_per_measure;
+    }
+
+    let countsChanged = false;
+    if (tick.track_counts) {
+        dawState.track_counts = tick.track_counts;
+        trackView.lastTrackCounts = { ...tick.track_counts };
+        countsChanged = true;
+
+        if (tick.track_durations) {
+            dawState.track_durations = tick.track_durations;
+        }
+        if (typeof tick.max_duration === 'number') {
+            dawState.max_duration = tick.max_duration;
+        }
+
+        scheduleDensityRefresh();
+    }
+
+    const stateChanged = countsChanged || prevRecording !== dawState.is_recording || prevPlaying !== dawState.is_playing;
+    if (stateChanged) {
+        dawUpdateUI();
+    } else {
+        dawUpdateTimelineUI();
+    }
+}
+
+// Update UI based on state
+function dawUpdateUI() {
+    if (!dawState) return;
+    
+    // Update transport buttons
+    const playBtn = document.getElementById('daw-play');
+    const recBtn = document.getElementById('daw-rec');
+    const stopBtn = document.getElementById('daw-stop');
+    const tsSelect = document.getElementById('daw-ts-select');
+    const tsBadge = document.getElementById('daw-time-signature');
+    const barBadge = document.getElementById('daw-bar-counter');
+    
+    if (dawState.is_playing) {
+        playBtn.classList.remove('btn-success');
+        playBtn.classList.add('btn-warning');
+        playBtn.innerHTML = '<i class="fas fa-pause"></i> PLAYING';
+    } else {
+        playBtn.classList.remove('btn-warning');
+        playBtn.classList.add('btn-success');
+        playBtn.innerHTML = '<i class="fas fa-play"></i> PLAY';
+    }
+    
+    // Update REC button
+    if (dawState.is_recording) {
+        recBtn.classList.remove('btn-outline-danger');
+        recBtn.classList.add('btn-danger');
+        recBtn.innerHTML = '<i class="fas fa-circle"></i> RECORDING';
+        recBtn.style.animation = 'pulse 1s infinite';
+    } else {
+        recBtn.classList.remove('btn-danger');
+        recBtn.classList.add('btn-outline-danger');
+        recBtn.innerHTML = '<i class="fas fa-circle"></i> REC';
+        recBtn.style.animation = 'none';
+    }
+    
+    // Update BPM
+    document.getElementById('daw-bpm').value = dawState.bpm;
+    const beatsPerMeasure = dawState.beats_per_measure || 4;
+    trackView.meta.beatsPerMeasure = beatsPerMeasure;
+    if (tsSelect && tsSelect.value !== String(beatsPerMeasure)) {
+        tsSelect.value = String(beatsPerMeasure);
+    }
+    if (tsBadge) {
+        tsBadge.textContent = `${beatsPerMeasure}/4`;
+    }
+    if (barBadge) {
+        const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+        const totalBeats = beatDuration > 0 ? (dawState.timeline_position / beatDuration) : 0;
+        const currentBar = Math.max(1, Math.floor(totalBeats / beatsPerMeasure) + 1);
+        barBadge.textContent = `Bar ${currentBar}`;
+    }
+    
+    // Update metronome button
+    const metronomeBtn = document.getElementById('daw-metronome');
+    if (dawState.metronome_enabled) {
+        metronomeBtn.classList.remove('btn-outline-light');
+        metronomeBtn.classList.add('btn-warning');
+    } else {
+        metronomeBtn.classList.remove('btn-warning');
+        metronomeBtn.classList.add('btn-outline-light');
+    }
+    
+    // Update Timeline display (mm:ss.d format)
+    const timelineSpan = document.getElementById('daw-timeline');
+    const timeSeconds = dawState.timeline_position || 0;
+    const minutes = Math.floor(timeSeconds / 60);
+    const seconds = Math.floor(timeSeconds % 60);
+    const deciseconds = Math.floor((timeSeconds % 1) * 10);
+    timelineSpan.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+    
+    // Change color based on state
+    if (dawState.is_recording) {
+        timelineSpan.classList.remove('bg-dark', 'bg-info');
+        timelineSpan.classList.add('bg-danger');
+    } else if (dawState.is_playing) {
+        timelineSpan.classList.remove('bg-dark', 'bg-danger');
+        timelineSpan.classList.add('bg-info');
+    } else {
+        timelineSpan.classList.remove('bg-danger', 'bg-info');
+        timelineSpan.classList.add('bg-dark');
+    }
+
+    if (!dawState.is_recording) {
+        trackView.liveActivity = {};
+    }
+    
+    // Calculate total events
+    let totalEvents = 0;
+    
+    // Update tracks
+    for (let i = 0; i < 16; i++) {
+        const row = document.getElementById(`daw-track-${i}`);
+        const armBtn = document.getElementById(`arm-btn-${i}`);
+        const muteBtn = document.getElementById(`mute-btn-${i}`);
+        const eventBadge = document.getElementById(`events-${i}`);
+        const progressBar = document.getElementById(`progress-${i}`);
+        const eventCount = dawState.track_counts[i] || 0;
+        
+        totalEvents += eventCount;
+        
+        // ARM button - Rimuovi TUTTE le classi prima di aggiungere quella corretta
+        armBtn.classList.remove('btn-outline-danger', 'btn-danger');
+        if (dawState.armed[i]) {
+            armBtn.classList.add('btn-danger');
+            armBtn.style.fontWeight = '700';
+        } else {
+            armBtn.classList.add('btn-outline-danger');
+            armBtn.style.fontWeight = '400';
+        }
+        
+        // MUTE button - Rimuovi TUTTE le classi prima di aggiungere quella corretta
+        muteBtn.classList.remove('btn-outline-warning', 'btn-warning');
+        if (dawState.muted[i]) {
+            muteBtn.classList.add('btn-warning');
+        } else {
+            muteBtn.classList.add('btn-outline-warning');
+        }
+        
+        // Event count
+        eventBadge.innerText = eventCount;
+        if (eventCount > 0) {
+            eventBadge.className = 'badge bg-success';
+            eventBadge.style.fontSize = '0.65rem';
+        } else {
+            eventBadge.className = 'badge bg-secondary';
+            eventBadge.style.fontSize = '0.65rem';
+        }
+        
+        // Progress bar (shows temporal progress/duration)
+        const trackDuration = dawState.track_durations ? dawState.track_durations[i] : 0;
+        const maxDuration = dawState.max_duration || 1;
+        
+        if (progressBar) {
+            if (dawState.is_recording && dawState.armed[i]) {
+                const displayMax = Math.max(maxDuration, dawState.timeline_position || 1);
+                const progress = (dawState.timeline_position / displayMax) * 100;
+                progressBar.style.width = Math.min(100, progress) + '%';
+                progressBar.className = 'progress-bar bg-danger progress-bar-striped progress-bar-animated';
+            } else if (dawState.is_playing && trackDuration > 0 && !dawState.muted[i]) {
+                const progress = maxDuration > 0 ? (dawState.timeline_position / maxDuration) * 100 : 0;
+                progressBar.style.width = Math.min(100, progress) + '%';
+                progressBar.className = 'progress-bar bg-warning progress-bar-striped progress-bar-animated';
+            } else if (trackDuration > 0) {
+                const relativeWidth = maxDuration > 0 ? (trackDuration / maxDuration) * 100 : 100;
+                progressBar.style.width = relativeWidth + '%';
+                progressBar.className = dawState.muted[i] ? 'progress-bar bg-secondary' : 'progress-bar bg-success';
+            } else {
+                progressBar.style.width = '0%';
+                progressBar.className = 'progress-bar bg-info';
+            }
+        }
+        
+        // Highlight recording track
+        if (dawState.is_recording && dawState.armed[i]) {
+            row.style.background = 'rgba(244, 67, 54, 0.15)';
+        } else {
+            row.style.background = '';
+        }
+    }
+    
+    // Update total events badge
+    const totalBadge = document.getElementById('daw-events-total');
+    if (totalBadge) {
+        totalBadge.innerText = totalEvents;
+    }
+    
+    // Update status
+    const statusDiv = document.getElementById('daw-status');
+    const statusText = document.getElementById('daw-status-text');
+    
+    if (dawState.is_recording) {
+        statusDiv.style.display = 'block';
+        statusDiv.className = 'alert alert-danger py-2 mb-3 text-center';
+        const armedCh = Object.keys(dawState.armed).filter(k => dawState.armed[k]).map(k => parseInt(k) + 1);
+        statusText.innerHTML = `<i class="fas fa-circle fa-pulse"></i> RECORDING Channel ${armedCh.join(', ')}`;
+    } else if (dawState.is_playing) {
+        statusDiv.style.display = 'block';
+        statusDiv.className = 'alert alert-success py-2 mb-3 text-center';
+        statusText.innerHTML = '<i class="fas fa-play"></i> PLAYING...';
+    } else {
+        statusDiv.style.display = 'none';
+    }
+    // Aggiorna range start/zoom limits e sincronizza slider
+    const zoomSlider = document.getElementById('daw-zoom-range');
+    const canvasWidth = getCanvasWidth();
+    const visibleBeats = trackView.zoomLevel > 0 ? canvasWidth / trackView.zoomLevel : 0;
+    const totalBeats = getTotalBeats();
+    const maxStart = Math.max(0, totalBeats - visibleBeats);
+    if (trackView.startTime > maxStart) {
+        trackView.startTime = maxStart;
+    }
+    if (zoomSlider) {
+        zoomSlider.value = trackView.zoomLevel;
+    }
+
+    // Aggiorna cache counts e refresh heatmap se servono
+    refreshDensityMapIfNeeded(false);
+    ensureRenderLoop();
+}
+
+// Rendering helper per le tracce (canvas)
+function getCanvasWidth() {
+    const canvasSample = document.querySelector('canvas[id^="track-canvas-"]');
+    return canvasSample ? canvasSample.clientWidth : 400;
+}
+
+function attachCanvasDragHandlers() {
+    const canvases = document.querySelectorAll('canvas[id^="track-canvas-"]');
+    canvases.forEach(canvas => {
+        canvas.style.touchAction = 'none';
+        canvas.addEventListener('pointerdown', onCanvasPointerDown);
+        canvas.addEventListener('pointermove', onCanvasPointerMove);
+        canvas.addEventListener('pointerup', onCanvasPointerUp);
+        canvas.addEventListener('pointercancel', onCanvasPointerUp);
+        canvas.addEventListener('pointerleave', onCanvasPointerUp);
+    });
+}
+
+function onCanvasPointerDown(e) {
+    if (trackView.drag.momentumId) {
+        cancelAnimationFrame(trackView.drag.momentumId);
+        trackView.drag.momentumId = null;
+    }
+    trackView.drag.active = true;
+    trackView.drag.lastX = e.clientX;
+    trackView.drag.lastT = performance.now();
+    trackView.drag.velocity = 0;
+    e.target.setPointerCapture(e.pointerId);
+}
+
+function onCanvasPointerMove(e) {
+    if (!trackView.drag.active) return;
+    const now = performance.now();
+    const dx = e.clientX - trackView.drag.lastX;
+    const dt = Math.max(1, now - trackView.drag.lastT);
+    trackView.drag.lastX = e.clientX;
+    trackView.drag.lastT = now;
+
+    const deltaBeats = dx / trackView.zoomLevel;
+    trackView.startTime = Math.max(0, trackView.startTime - deltaBeats);
+    clampStartTimeToTape();
+
+    trackView.drag.velocity = dx / dt; // px per ms
+    ensureRenderLoop();
+}
+
+function onCanvasPointerUp(e) {
+    if (!trackView.drag.active) return;
+    trackView.drag.active = false;
+    e.target.releasePointerCapture(e.pointerId);
+    startMomentum();
+}
+
+function startMomentum() {
+    const friction = 0.92;
+    const minVel = 0.02; // px/ms
+    let v = trackView.drag.velocity;
+    let lastT = performance.now();
+
+    const step = () => {
+        const now = performance.now();
+        const dt = Math.max(1, now - lastT);
+        lastT = now;
+
+        const dx = v * dt;
+        const deltaBeats = dx / trackView.zoomLevel;
+        trackView.startTime = Math.max(0, trackView.startTime - deltaBeats);
+        clampStartTimeToTape();
+
+        v *= friction;
+        if (Math.abs(v) < minVel) {
+            trackView.drag.momentumId = null;
+            return;
+        }
+        trackView.drag.momentumId = requestAnimationFrame(step);
+    };
+
+    if (Math.abs(v) >= minVel) {
+        trackView.drag.momentumId = requestAnimationFrame(step);
+    }
+    ensureRenderLoop();
+}
+
+function getTotalBeats() {
+    const beatsPerMeasure = dawState
+        ? (dawState.beats_per_measure || trackView.meta.beatsPerMeasure || 4)
+        : (trackView.meta.beatsPerMeasure || trackView.lastBeatsPerMeasure || 4);
+    trackView.lastBeatsPerMeasure = beatsPerMeasure;
+    const totalBeats = (trackView.meta.totalBeats && trackView.meta.totalBeats > 0)
+        ? trackView.meta.totalBeats
+        : trackView.totalBars * beatsPerMeasure;
+    return totalBeats;
+}
+
+function clampStartTimeToTape() {
+    const canvasWidth = getCanvasWidth();
+    const visibleBeats = trackView.zoomLevel > 0 ? canvasWidth / trackView.zoomLevel : 0;
+    const maxStart = Math.max(0, getTotalBeats() - visibleBeats);
+    trackView.startTime = Math.min(Math.max(0, trackView.startTime), maxStart);
+}
+
+function ensureTape(ch, height) {
+    const beatsPerMeasure = dawState ? (dawState.beats_per_measure || trackView.meta.beatsPerMeasure || 4) : (trackView.meta.beatsPerMeasure || 4);
+    if (trackView.lastBeatsPerMeasure !== beatsPerMeasure) {
+        trackView.tapes = {};
+        trackView.density = {};
+        trackView.liveActivity = {};
+        trackView.lastTrackCounts = {};
+        trackView.lastBeatsPerMeasure = beatsPerMeasure;
+    }
+    const totalBeats = getTotalBeats();
+    const width = Math.max(1, Math.ceil(totalBeats * trackView.tapeScale));
+    let tape = trackView.tapes[ch];
+    const needsNew = !tape || tape.width !== width || tape.height !== height;
+    if (needsNew) {
+        if (typeof OffscreenCanvas !== 'undefined') {
+            tape = new OffscreenCanvas(width, height);
+        } else {
+            tape = document.createElement('canvas');
+            tape.width = width;
+            tape.height = height;
+        }
+        trackView.tapes[ch] = tape;
+    }
+    return tape;
+}
+
+function renderTrackTape(ch) {
+    const canvas = document.getElementById(`track-canvas-${ch}`);
+    if (!canvas) return;
+    const height = canvas.height;
+    const totalBeats = getTotalBeats();
+    const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : 4;
+    const tape = ensureTape(ch, height);
+    const ctx = tape.getContext('2d');
+
+    ctx.clearRect(0, 0, tape.width, tape.height);
+    ctx.fillStyle = 'rgba(25, 25, 35, 0.9)';
+    ctx.fillRect(0, 0, tape.width, tape.height);
+
+    // griglia completa basata sul time signature
+    ctx.lineWidth = 1;
+    for (let b = 0; b <= totalBeats; b++) {
+        const x = b * trackView.tapeScale;
+        if (x > tape.width) break;
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.strokeStyle = (b % beatsPerMeasure === 0) ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)';
+        ctx.stroke();
+    }
+
+    const density = trackView.density[ch] || [];
+    const slotBeats = trackView.meta.slotBeats || 0.125;
+    const slotWidthPx = slotBeats * trackView.tapeScale;
+    const muted = dawState && dawState.muted && dawState.muted[ch];
+    const slotHeight = height - 6;
+    const slotY = 3;
+
+    let maxVal = 0;
+    for (const v of density) {
+        if (v > maxVal) maxVal = v;
+    }
+
+    if (maxVal > 0) {
+        for (let i = 0; i < density.length; i++) {
+            const val = density[i] || 0;
+            if (!val) continue;
+            const ratio = Math.min(1, val / maxVal);
+            const hue = 120 - (120 * ratio); // green to red
+            const alpha = (0.35 + 0.55 * ratio) * (muted ? 0.5 : 1);
+            ctx.fillStyle = `hsla(${hue}, 100%, 55%, ${alpha})`;
+            const x = i * slotWidthPx;
+            ctx.fillRect(x, slotY, slotWidthPx, slotHeight);
+        }
+    }
+
+    const live = trackView.liveActivity[ch] || 0;
+    if (live > 0) {
+        ctx.fillStyle = 'rgba(255, 99, 71, 0.7)';
+        ctx.fillRect(0, 0, tape.width, 3);
+    }
+}
+
+function dawViewSetStart(val) {
+    trackView.startTime = Math.max(0, parseFloat(val) || 0);
+    clampStartTimeToTape();
+    ensureRenderLoop();
+}
+
+function dawViewSetZoom(val) {
+    trackView.zoomLevel = Math.max(1, parseFloat(val) || trackView.zoomLevel);
+    clampStartTimeToTape();
+    ensureRenderLoop();
+}
+
+function ensureRenderLoop() {
+    if (trackView.rafId === null) {
+        const loop = () => {
+            renderAllTracks();
+            trackView.rafId = requestAnimationFrame(loop);
+        };
+        trackView.rafId = requestAnimationFrame(loop);
+    }
+}
+
+function stopRenderLoop() {
+    if (trackView.rafId !== null) {
+        cancelAnimationFrame(trackView.rafId);
+        trackView.rafId = null;
+    }
+}
+
+async function refreshDensityMap(force = false) {
+    if (!dawState) return;
+    try {
+        const res = await fetch('/api/daw/full_density_map');
+        const data = await res.json();
+        if (data.status === 'ok' && data.map) {
+            const map = data.map;
+            trackView.meta = {
+                slotBeats: map.slot_beats || 0.125,
+                totalBeats: map.total_beats || 0,
+                beatsPerMeasure: map.beats_per_measure || (dawState ? dawState.beats_per_measure : 4)
+            };
+            trackView.density = map.tracks || {};
+            trackView.totalBars = Math.max(4, Math.ceil((trackView.meta.totalBeats || (trackView.meta.beatsPerMeasure * 4)) / (trackView.meta.beatsPerMeasure || 4)));
+            trackView.lastBeatsPerMeasure = trackView.meta.beatsPerMeasure || trackView.lastBeatsPerMeasure;
+            trackView.tapes = {};
+            trackView.liveActivity = {};
+            trackView.lastTrackCounts = { ...(dawState.track_counts || {}) };
+            // Rebuild every offscreen tape so the density stays visible after stopping recording
+            for (let ch = 0; ch < 16; ch++) {
+                renderTrackTape(ch);
+            }
+            clampStartTimeToTape();
+            renderAllTracks();
+        }
+    } catch (e) {
+        console.error('Density map fetch error:', e);
+    }
+}
+
+function refreshDensityMapIfNeeded(force = false) {
+    if (!dawState) return;
+    const counts = dawState.track_counts || {};
+    let changed = force;
+    if (!changed) {
+        for (let ch = 0; ch < 16; ch++) {
+            const prev = trackView.lastTrackCounts[ch] || 0;
+            const current = counts[ch] || 0;
+            if (current !== prev) {
+                changed = true;
+                break;
+            }
+        }
+    }
+
+    if (!changed) return;
+    return refreshDensityMap(true);
+}
+
+function renderAllTracks() {
+    if (!dawState) return;
+    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+    const width = getCanvasWidth();
+    const visibleBeats = trackView.zoomLevel > 0 ? width / trackView.zoomLevel : 0;
+    const totalBeats = getTotalBeats();
+    const currentBeat = beatDuration > 0 ? (dawState.timeline_position / beatDuration) : 0;
+    const halfWindowBeats = visibleBeats * 0.5;
+    
+    // During recording, extend maxStart to allow infinite scrolling
+    const effectiveTotalBeats = dawState.is_recording 
+        ? Math.max(totalBeats, currentBeat + halfWindowBeats)
+        : totalBeats;
+    const maxStart = Math.max(0, effectiveTotalBeats - visibleBeats);
+
+    const shouldFollow = (dawState.is_playing || dawState.is_recording) && beatDuration > 0 && !trackView.drag.active;
+
+    let playheadX = 0;
+    let tapeStartTime = 0;
+
+    if (shouldFollow) {
+        if (currentBeat < halfWindowBeats) {
+            // Fase 1: inizio traccia. Nastro fermo, playhead si muove.
+            tapeStartTime = 0;
+            playheadX = currentBeat * trackView.zoomLevel;
+        } else if (!dawState.is_recording && currentBeat > totalBeats - halfWindowBeats) {
+            // Fase 3: fine traccia (solo playback). Nastro al massimo, playhead si muove verso destra.
+            tapeStartTime = maxStart;
+            playheadX = (currentBeat - tapeStartTime) * trackView.zoomLevel;
+        } else {
+            // Fase 2: playhead al centro, nastro che scorre.
+            tapeStartTime = currentBeat - halfWindowBeats;
+            playheadX = width * 0.5;
+        }
+        tapeStartTime = Math.min(Math.max(0, tapeStartTime), maxStart);
+        trackView.startTime = tapeStartTime;
+    } else {
+        // Modalità libera (utente sta scrollando o DAW in stop)
+        clampStartTimeToTape();
+        tapeStartTime = trackView.startTime;
+        playheadX = (currentBeat - tapeStartTime) * trackView.zoomLevel;
+    }
+
+    for (let ch = 0; ch < 16; ch++) {
+        const canvas = document.getElementById(`track-canvas-${ch}`);
+        if (!canvas) continue;
+        const h = canvas.height;
+        const w = canvas.clientWidth || canvas.width;
+        if (canvas.width !== w) canvas.width = w;
+
+        if (!trackView.tapes[ch]) {
+            renderTrackTape(ch);
+        }
+        const tape = trackView.tapes[ch];
+        const vctx = canvas.getContext('2d');
+        vctx.clearRect(0, 0, w, h);
+        vctx.fillStyle = 'rgba(25, 25, 35, 0.9)';
+        vctx.fillRect(0, 0, w, h);
+
+        if (tape) {
+            const sx = tapeStartTime * trackView.tapeScale;
+            const sourceWidth = visibleBeats * trackView.tapeScale;
+            vctx.drawImage(tape, sx, 0, sourceWidth, tape.height, 0, 0, w, h);
+        }
+
+        // playhead overlay (fixed when following)
+        if ((dawState.is_playing || dawState.is_recording) && beatDuration > 0) {
+            if (playheadX >= 0 && playheadX <= w) {
+                vctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+                vctx.lineWidth = 2;
+                vctx.beginPath();
+                vctx.moveTo(playheadX, 0);
+                vctx.lineTo(playheadX, h);
+                vctx.stroke();
+            }
+        }
+    }
+}
+
+window.addEventListener('resize', () => {
+    clampStartTimeToTape();
+    refreshDensityMapIfNeeded(false);
+    ensureRenderLoop();
+});
+
+// Transport Controls
+async function dawPlay() {
+    try {
+        // Assicurati che dawState sia caricato
+        if (!dawState) {
+            await dawLoadInitialState();
+        }
+        
+        if (dawState.is_playing) {
+            // Stop playback
+            await fetch('/api/daw/play/stop', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' } 
+            });
+        } else {
+            // Start playback
+            await fetch('/api/daw/play/start', { 
+                method: 'POST', 
+                headers: { 'Content-Type': 'application/json' } 
+            });
+        }
+        // WebSocket aggiornerà automaticamente il UI
+    } catch (e) {
+        console.error('Play error:', e);
+        alert('Error during playback!');
+    }
+}
+
+async function dawStop() {
+    try {
+        await fetch('/api/daw/stop_all', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' } 
+        });
+        
+        // WebSocket aggiornerà automaticamente il UI
+        console.log('DAW stopped');
+    } catch (e) {
+        console.error('Stop error:', e);
+    }
+}
+
+async function dawRewind() {
+    try {
+        await fetch('/api/daw/rewind', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' } 
+        });
+        // WebSocket aggiornerà automaticamente il UI
+    } catch (e) {
+        console.error('Rewind error:', e);
+    }
+}
+
+async function dawSetBPM(bpm) {
+    try {
+        const res = await fetch('/api/daw/bpm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ bpm: parseInt(bpm) })
+        });
+        
+        const data = await res.json();
+        if (data.status !== 'ok') {
+            alert(data.message);
+            document.getElementById('daw-bpm').value = dawState.bpm;
+        }
+    } catch (e) {
+        console.error('BPM error:', e);
+    }
+}
+
+async function dawSetTimeSignature(beatsPerMeasure) {
+    try {
+        const res = await fetch('/api/daw/time_signature', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ beats_per_measure: parseInt(beatsPerMeasure) })
+        });
+        const data = await res.json();
+        if (data.status !== 'ok') {
+            throw new Error(data.message || 'Errore time signature');
+        }
+    } catch (e) {
+        console.error('Time signature error:', e);
+        // Ripristina il valore attuale dello stato se fallisce
+        if (dawState) {
+            const select = document.getElementById('daw-ts-select');
+            if (select) select.value = String(dawState.beats_per_measure || 4);
+        }
+        alert('Impossibile impostare il time signature');
+    }
+}
+
+async function dawToggleMetronome() {
+    try {
+        const res = await fetch('/api/daw/metronome/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        
+        const data = await res.json();
+        if (data.status === 'ok') {
+            console.log('[DAW] Metronome:', data.enabled);
+        }
+    } catch (e) {
+        console.error('Metronome error:', e);
+    }
+}
+
+// Track Controls
+async function dawToggleArm(channel) {
+    try {
+        // Previeni doppi touch
+        if (armInProgress[channel]) {
+            return;
+        }
+        armInProgress[channel] = true;
+        
+        if (!dawState) {
+            await dawLoadInitialState();
+        }
+        
+        const currentlyArmed = dawState.armed[channel];
+        const currentlyRecording = dawState.is_recording;
+        
+        // Non permettere disarm durante la registrazione
+        if (currentlyRecording && currentlyArmed) {
+            alert('Stop recording first before disarming tracks');
+            armInProgress[channel] = false;
+            return;
+        }
+        
+        // Toggle arm state
+        const newState = !currentlyArmed;
+        
+        const response = await fetch(`/api/daw/track/${channel}/arm`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ armed: newState })
+        });
+        
+        const data = await response.json();
+        
+        // Aggiorna lo stato locale
+        if (data.status === 'ok') {
+            dawState.armed[channel] = data.armed;
+            
+            // Forza il repaint del DOM (critico per dispositivi touch)
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    dawUpdateUI();
+                });
+            });
+        }
+        
+        setTimeout(() => {
+            armInProgress[channel] = false;
+        }, 300);
+        
+    } catch (e) {
+        console.error('Arm error:', e);
+        armInProgress[channel] = false;
+    }
+}
+
+async function dawToggleMute(channel) {
+    try {
+        // Previeni doppi touch
+        if (muteInProgress[channel]) {
+            return;
+        }
+        muteInProgress[channel] = true;
+        
+        const newState = !dawState.muted[channel];
+        
+        const response = await fetch(`/api/daw/track/${channel}/mute`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ muted: newState })
+        });
+        
+        const data = await response.json();
+        
+        // Aggiorna lo stato locale
+        if (data.status === 'ok') {
+            dawState.muted[channel] = data.muted;
+            renderTrackTape(channel);
+            
+            // Forza il repaint del DOM (critico per dispositivi touch)
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    dawUpdateUI();
+                });
+            });
+        }
+        
+        setTimeout(() => {
+            muteInProgress[channel] = false;
+        }, 300);
+        
+    } catch (e) {
+        console.error('Mute error:', e);
+        muteInProgress[channel] = false;
+    }
+}
+
+async function dawRecord() {
+    try {
+        // Assicurati che dawState sia caricato
+        if (!dawState) {
+            console.log('[DAW] dawState is null, loading initial state...');
+            await dawLoadInitialState();
+        }
+        
+        const currentlyRecording = dawState.is_recording;
+        
+        if (!currentlyRecording) {
+            // Start recording
+            console.log('[DAW] Starting global recording...');
+            
+            // Check if any track is armed (dawState.armed is an object, not array)
+            const armedTracks = Object.values(dawState.armed).filter(armed => armed).length;
+            if (armedTracks === 0) {
+                alert('Please ARM at least one track before recording');
+                return;
+            }
+            
+            console.log('[DAW] Armed tracks:', armedTracks);
+            console.log('[DAW] Armed state:', dawState.armed);
+            
+            const res = await fetch('/api/daw/record/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            
+            const data = await res.json();
+            console.log('[DAW] Start recording response:', data);
+            
+            if (data.status !== 'ok') {
+                alert(data.message);
+            }
+            // WebSocket aggiornerà automaticamente il UI
+        } else {
+            // Stop recording
+            console.log('[DAW] Stopping global recording...');
+            
+            const res = await fetch('/api/daw/record/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            
+            const data = await res.json();
+            console.log('[DAW] Stop recording response:', data);
+            // WebSocket aggiornerà automaticamente il UI
+        }
+        
+        console.log('[DAW] REC operation completed');
+    } catch (e) {
+        console.error('Record error:', e);
+    }
+}
+
+async function dawClearTrack(channel) {
+    if (!confirm(`Clear track ${channel + 1}?`)) return;
+    
+    try {
+        await fetch(`/api/daw/track/${channel}/clear`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        // WebSocket aggiornerà automaticamente il UI
+    } catch (e) {
+        console.error('Clear track error:', e);
+    }
+}
+
+async function dawClearAll() {
+    if (!confirm('Clear ALL tracks? This cannot be undone!')) return;
+    
+    try {
+        await fetch('/api/daw/clear_all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        // WebSocket aggiornerà automaticamente il UI
+    } catch (e) {
+        console.error('Clear all error:', e);
+    }
+}
+
 
         // Clean event listeners
         window.addEventListener('load', () => {
              // No special action needed for native sliders
+             initDAW();  // Initialize DAW on page load
         });
 
         window.onload = setupMixer;

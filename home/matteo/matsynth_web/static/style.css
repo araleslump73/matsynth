@@ -126,6 +126,28 @@ body {
 }
 
 /* Buttons */
+.btn:hover,
+.btn:focus {
+    background-color: var(--bs-btn-bg);
+    color: var(--bs-btn-color);
+    border-color: var(--bs-btn-border-color);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.18);
+    transform: none;
+}
+
+/* Soft, variant-aware hover outlines */
+.btn-success:hover,
+.btn-success:focus { box-shadow: 0 0 0 2px rgba(40, 167, 69, 0.35); }
+
+.btn-info:hover,
+.btn-info:focus { box-shadow: 0 0 0 2px rgba(23, 162, 184, 0.35); }
+
+.btn-warning:hover,
+.btn-warning:focus { box-shadow: 0 0 0 2px rgba(255, 193, 7, 0.35); }
+
+.btn-secondary:hover,
+.btn-secondary:focus { box-shadow: 0 0 0 2px rgba(108, 117, 125, 0.35); }
+
 .btn-custom {
     background: linear-gradient(135deg, #00ff88, #00d4ff);
     border: none;
@@ -139,9 +161,9 @@ body {
 }
 
 .btn-custom:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 6px 20px rgba(0, 255, 136, 0.5);
-    background: linear-gradient(135deg, #00d4ff, #00ff88);
+    transform: none;
+    box-shadow: 0 0 0 2px rgba(0, 255, 136, 0.4);
+    background: linear-gradient(135deg, #00ff88, #00d4ff);
 }
 
 .btn-custom:active {
@@ -165,10 +187,27 @@ body {
 }
 
 .btn-back:hover {
-    background: rgba(0, 255, 136, 0.2);
+    background: rgba(0, 255, 136, 0.1);
     border-color: #00ff88;
     color: #00ff88;
-    transform: translateY(-2px);
+    box-shadow: 0 0 0 2px rgba(0, 255, 136, 0.4);
+    transform: none;
+}
+
+/* Recorder buttons: keep background stable on hover, show only outline */
+.btn-outline-danger:hover,
+.btn-outline-danger:focus {
+    background-color: transparent !important;
+    color: #dc3545;
+    border-color: #ff6b81;
+    box-shadow: 0 0 0 2px rgba(255, 107, 129, 0.5);
+}
+
+.btn-danger:hover,
+.btn-danger:focus {
+    background-color: #dc3545;
+    border-color: #ff6b81;
+    box-shadow: 0 0 0 2px rgba(255, 107, 129, 0.5);
 }
 
 /* Badges */
@@ -597,4 +636,10 @@ input[type=range].vertical-slider::-webkit-slider-thumb {
 
 .presets-list::-webkit-scrollbar-thumb:hover {
     background: linear-gradient(135deg, #00ff88, #ff00e5);
+}
+/* Touch helpers: keep tap highlight off but leave hover visuals intact (already softened above) */
+@media (hover: none) and (pointer: coarse) {
+    * {
+        -webkit-tap-highlight-color: transparent !important;
+    }
 }

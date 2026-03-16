@@ -1,12 +1,15 @@
 from flask import Flask, render_template, request, jsonify
+from flask_socketio import SocketIO, emit
 import socket
 import os
 import json
 import time
 import subprocess
 import threading
+from daw_recorder import MultiTrackDAW
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Configurazione
 SF2_DIR = "/usr/share/sounds/sf2/"
@@ -15,17 +18,31 @@ FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
 sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
+STATE_LOCK = threading.Lock()
+_INITIALIZED = False
 
 # Crea la directory dei preset se non esiste
 if not os.path.exists(PRESETS_DIR):
     os.makedirs(PRESETS_DIR)
 
+# Inizializza il sistema DAW Multi-Track
+daw = MultiTrackDAW(bpm=120, socketio=socketio)
+
+def _write_state_atomic(state: dict):
+    """Scrive lo stato in modo atomico per evitare file troncati su scritture concorrenti."""
+    tmp_path = STATE_FILE + '.tmp'
+    with open(tmp_path, 'w') as f:
+        json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, STATE_FILE)
+
 def save_state(key, value):
     try:
-        state = get_last_state()
-        state[key] = value
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f)
+        with STATE_LOCK:
+            state = get_last_state()
+            state[key] = value
+            _write_state_atomic(state)
     except Exception as e:
         print(f"Errore salvataggio stato: {e}")
 
@@ -34,8 +51,14 @@ def get_last_state():
         try:
             with open(STATE_FILE, 'r') as f:
                 return json.load(f)
-        except:
-            pass
+        except Exception as e:
+            # Se il file è corrotto, rinomina e riparti dai default
+            try:
+                corrupted_path = STATE_FILE + f".corrupt_{int(time.time())}"
+                os.rename(STATE_FILE, corrupted_path)
+                print(f"File stato corrotto, backup in {corrupted_path}: {e}")
+            except Exception as e2:
+                print(f"Impossibile rinominare file stato corrotto: {e2}")
     return {"gain": 1.0, "reverb.level": 0.4, "chorus.level": 0.4, "font": "GeneralUser-GS.sf2"}
 
 def send_fluid(command):
@@ -95,6 +118,63 @@ def restore_settings():
     send_fluid(f"set synth.reverb.level {rev}")
     send_fluid(f"set synth.chorus.level {cho}")
 
+    # Se abbiamo un font salvato, prova a caricarlo
+    font_name = state.get('font')
+    if font_name:
+        path = os.path.join(SF2_DIR, font_name)
+        if os.path.exists(path):
+            # scarica tutti i font correnti e carica quello salvato
+            raw_fonts = send_fluid("fonts")
+            for line in raw_fonts.split('\n'):
+                parts = line.strip().split()
+                if parts and parts[0].isdigit():
+                    send_fluid(f"unload {parts[0]}")
+            res = send_fluid(f"load {path}")
+            print(f"Ripristino font {font_name}: {res}")
+            # Aggiorna l'ID attivo del font
+            global sf_id
+            sf_id = get_active_sf_id()
+        else:
+            print(f"Font salvato non trovato: {path}")
+
+    # Applica banche, programmi e CC salvati per ogni canale
+    saved_channels = state.get('channels', {})
+    for ch_str, ch_data in saved_channels.items():
+        try:
+            ch = int(ch_str)
+        except ValueError:
+            continue
+        bank = ch_data.get('bank')
+        prog = ch_data.get('program')
+        if bank is not None and prog is not None:
+            send_fluid(f"select {ch} {sf_id} {bank} {prog}")
+        # Applica CC se presenti
+        cc_map = {
+            'volume': ('7', ch_data.get('volume')),
+            'attack': ('73', ch_data.get('attack')),
+            'release': ('72', ch_data.get('release')),
+            'decay': ('75', ch_data.get('decay')),
+            'cutoff': ('74', ch_data.get('cutoff')),
+            'resonance': ('71', ch_data.get('resonance')),
+        }
+        for _, cc_info in cc_map.items():
+            cc_num, cc_val = cc_info
+            if cc_val is not None:
+                send_fluid(f"cc {ch} {cc_num} {cc_val}")
+
+
+def startup_init_once():
+    global _INITIALIZED, sf_id
+    if _INITIALIZED:
+        return
+    _INITIALIZED = True
+    # Piccola attesa per permettere a FluidSynth di essere pronto
+    time.sleep(2)
+    restore_settings()
+    # Aggiorna l'ID attivo del font dopo il ripristino
+    sf_id = get_active_sf_id()
+    print(f"Soundfont ID caricato all'avvio: {sf_id}")
+
 @app.route('/')
 def index():
     files = [f for f in os.listdir(SF2_DIR) if f.endswith(('.sf2', '.sf3'))] if os.path.exists(SF2_DIR) else []
@@ -151,19 +231,20 @@ def select_prog(chan, bank, prog):
     send_fluid(comando)
     
     # Salva lo stato del canale per il preset
-    state = get_last_state()
-    if 'channels' not in state:
-        state['channels'] = {}
-    
-    state['channels'][str(chan)] = {
-        'bank': bank,
-        'program': prog
-    }
-    
-    print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
-    
-    with open(STATE_FILE, 'w') as f:
-        json.dump(state, f)
+    with STATE_LOCK:
+        state = get_last_state()
+        if 'channels' not in state:
+            state['channels'] = {}
+        
+        # Preserva i dati esistenti del canale (CC, ecc.)
+        if str(chan) not in state['channels']:
+            state['channels'][str(chan)] = {}
+        
+        state['channels'][str(chan)]['bank'] = bank
+        state['channels'][str(chan)]['program'] = prog
+        
+        print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
+        _write_state_atomic(state)
     
     return "OK"
 
@@ -184,25 +265,24 @@ def control(chan, cc, val):
     # Salva i CC importanti per i preset
     # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=75
     if cc in [7, 71, 72, 73, 74, 75]:
-        state = get_last_state()
-        if 'channels' not in state:
-            state['channels'] = {}
-        if str(chan) not in state['channels']:
-            state['channels'][str(chan)] = {}
-        
-        # Mappa i CC ai nomi
-        cc_names = {
-            7: 'volume',
-            71: 'resonance',
-            72: 'release',
-            73: 'attack',
-            74: 'cutoff',
-            75: 'decay'
-        }
-        state['channels'][str(chan)][cc_names[cc]] = val
-        
-        with open(STATE_FILE, 'w') as f:
-            json.dump(state, f)
+        with STATE_LOCK:
+            state = get_last_state()
+            if 'channels' not in state:
+                state['channels'] = {}
+            if str(chan) not in state['channels']:
+                state['channels'][str(chan)] = {}
+            
+            # Mappa i CC ai nomi
+            cc_names = {
+                7: 'volume',
+                71: 'resonance',
+                72: 'release',
+                73: 'attack',
+                74: 'cutoff',
+                75: 'decay'
+            }
+            state['channels'][str(chan)][cc_names[cc]] = val
+            _write_state_atomic(state)
     
     return "OK"
 
@@ -612,10 +692,273 @@ def save_hardware():
     return jsonify({"status": "ok"})
 
 
+# ==========================================
+# DAW MULTI-TRACK RECORDER API
+# ==========================================
+
+@app.route('/api/daw/state', methods=['GET'])
+def daw_get_state():
+    """Ottiene lo stato completo del DAW"""
+    try:
+        state = daw.get_state()
+        return jsonify({"status": "ok", "data": state})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/record/start', methods=['POST'])
+def daw_start_recording():
+    """Avvia la registrazione su tutti i canali armati"""
+    try:
+        data = request.json or {}
+        channel = data.get('channel', None)
+        
+        print(f"[DAW API] === START RECORDING REQUEST ===")
+        print(f"[DAW API] request.json: {request.json}")
+        print(f"[DAW API] data: {data}")
+        print(f"[DAW API] channel param: {channel}")
+        print(f"[DAW API] daw.armed dict: {daw.armed}")
+        
+        # Trova i canali armati
+        armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
+        print(f"[DAW API] armed_channels list: {armed_channels}")
+        
+        if not armed_channels:
+            print(f"[DAW API] ERRORE: Nessun canale armato!")
+            return jsonify({
+                "status": "error", 
+                "message": "Nessun canale armato. Attiva ARM su almeno un canale."
+            }), 400
+        
+        if channel is not None:
+            # Registrazione su canale specifico (backward compatibility)
+            print(f"[DAW API] Richiesta start recording su canale {channel}")
+            if not daw.armed.get(channel):
+                print(f"[DAW API] ERRORE: Canale {channel} non armato!")
+                return jsonify({
+                    "status": "error", 
+                    "message": f"Canale {channel} non è armato. Attiva ARM prima di registrare."
+                }), 400
+            success = daw.start_recording(channel)
+        else:
+            # Registrazione su tutti i canali armati (nuovo workflow)
+            print(f"[DAW API] Richiesta start recording su canali armati: {armed_channels}")
+            print(f"[DAW API] Stato is_recording: {daw.is_recording}")
+            success = daw.start_recording()
+        
+        print(f"[DAW API] start_recording ritorna: {success}")
+        
+        if success:
+            return jsonify({"status": "ok", "message": f"Registrazione avviata su canali {armed_channels}"})
+        else:
+            print(f"[DAW API] ERRORE: Impossibile avviare registrazione")
+            return jsonify({"status": "error", "message": "Impossibile avviare registrazione"}), 400
+            
+    except Exception as e:
+        print(f"[DAW API] ECCEZIONE in start_recording: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/record/stop', methods=['POST'])
+def daw_stop_recording():
+    """Ferma la registrazione in corso"""
+    try:
+        success = daw.stop_recording()
+        
+        if success:
+            return jsonify({"status": "ok", "message": "Registrazione fermata"})
+        else:
+            return jsonify({"status": "error", "message": "Nessuna registrazione in corso"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/play/start', methods=['POST'])
+def daw_start_playback():
+    """Avvia la riproduzione di tutte le tracce"""
+    try:
+        success = daw.start_playback()
+        
+        if success:
+            return jsonify({"status": "ok", "message": "Riproduzione avviata"})
+        else:
+            return jsonify({"status": "error", "message": "Nessuna traccia da riprodurre o già in riproduzione"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/play/stop', methods=['POST'])
+def daw_stop_playback():
+    """Ferma la riproduzione"""
+    try:
+        success = daw.stop_playback()
+        
+        if success:
+            return jsonify({"status": "ok", "message": "Riproduzione fermata"})
+        else:
+            return jsonify({"status": "error", "message": "Nessuna riproduzione in corso"}), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/stop_all', methods=['POST'])
+def daw_stop_all():
+    """Ferma tutto: registrazione e riproduzione"""
+    try:
+        daw.stop_all()
+        return jsonify({"status": "ok", "message": "Tutto fermato"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/rewind', methods=['POST'])
+def daw_rewind():
+    """Riporta la timeline a 00:00:00"""
+    try:
+        daw.rewind()
+        return jsonify({"status": "ok", "message": "Timeline resettata"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/arm', methods=['POST'])
+def daw_arm_track(channel):
+    """Arma/disarma una traccia per la registrazione"""
+    try:
+        data = request.json
+        armed = data.get('armed', True)
+        
+        success = daw.arm_track(channel, armed)
+        
+        print(f"[DAW API] Traccia {channel} {'armata' if armed else 'disarmata'} - success={success}")
+        print(f"[DAW API] Stato armed aggiornato: {daw.armed[channel]}")
+        
+        return jsonify({
+            "status": "ok", 
+            "message": f"Traccia {channel} {'armata' if armed else 'disarmata'}",
+            "armed": daw.armed[channel]  # Ritorna lo stato effettivo
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/mute', methods=['POST'])
+def daw_mute_track(channel):
+    """Muta/smuta una traccia"""
+    try:
+        data = request.json
+        muted = data.get('muted', True)
+        
+        daw.mute_track(channel, muted)
+        
+        return jsonify({
+            "status": "ok", 
+            "message": f"Traccia {channel} {'mutata' if muted else 'smutata'}",
+            "muted": daw.muted[channel]  # Ritorna lo stato effettivo
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/clear', methods=['POST'])
+def daw_clear_track(channel):
+    """Cancella una traccia specifica"""
+    try:
+        daw.clear_track(channel)
+        return jsonify({"status": "ok", "message": f"Traccia {channel} cancellata"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clear_all', methods=['POST'])
+def daw_clear_all():
+    """Cancella tutte le tracce"""
+    try:
+        daw.clear_all_tracks()
+        return jsonify({"status": "ok", "message": "Tutte le tracce cancellate"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/bpm', methods=['POST'])
+def daw_set_bpm():
+    """Imposta il tempo (BPM)"""
+    try:
+        data = request.json
+        bpm = data.get('bpm', 120)
+        
+        success = daw.set_bpm(bpm)
+        
+        if success:
+            return jsonify({"status": "ok", "message": f"BPM impostato a {bpm}"})
+        else:
+            return jsonify({
+                "status": "error", 
+                "message": "Impossibile cambiare BPM durante registrazione/riproduzione"
+            }), 400
+            
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/time_signature', methods=['POST'])
+def daw_set_time_signature():
+    """Imposta il numeratore della misura (3/4 o 4/4)."""
+    try:
+        data = request.json or {}
+        beats_per_measure = int(data.get('beats_per_measure', 4))
+        success = daw.set_time_signature(beats_per_measure)
+        if success:
+            return jsonify({"status": "ok", "beats_per_measure": beats_per_measure})
+        else:
+            return jsonify({"status": "error", "message": "Time signature non supportato"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/metronome/toggle', methods=['POST'])
+def daw_toggle_metronome():
+    """Toggle metronomo on/off"""
+    try:
+        enabled = daw.toggle_metronome()
+        return jsonify({
+            "status": "ok", 
+            "message": f"Metronomo {'abilitato' if enabled else 'disabilitato'}",
+            "enabled": enabled
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/full_density_map')
+def daw_full_density_map():
+    """Ritorna la mappa di densità completa per tutte le tracce."""
+    try:
+        density = daw.get_full_density_map()
+        return jsonify({"status": "ok", "map": density})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/activity')
+def daw_track_activity(channel):
+    """Restituisce intervalli di attività note per una traccia nel range visibile."""
+    try:
+        start = float(request.args.get('start', 0.0))
+        end = float(request.args.get('end', start + 16.0))
+        intervals = daw.get_track_activity(channel, start, end)
+        return jsonify({"status": "ok", "intervals": intervals})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+startup_init_once()
+
 if __name__ == '__main__':
-    time.sleep(2)
-    restore_settings()
-    # Inizializza l'ID del soundfont all'avvio
-    sf_id = get_active_sf_id()
-    print(f"Soundfont ID caricato: {sf_id}")
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=False)
+    print("Starting server with WebSocket support...")
+    socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)
