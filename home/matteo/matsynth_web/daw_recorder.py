@@ -356,10 +356,8 @@ class MultiTrackDAW:
         self.timeline_position = 0.0
         self._emit_state_change()  # Notifica via WebSocket
         
-        return True
-        
-        print("[DAW] Timeline resettata")
-        return True
+        return True        
+
     
     def arm_track(self, channel, armed=True):
         """
