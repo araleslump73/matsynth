@@ -577,7 +577,7 @@ def api_presets_apply():
             if 'release' in ch_data:
                 send_fluid(f"cc {chan} 72 {ch_data['release']}")
             if 'decay' in ch_data:
-                send_fluid(f"cc {chan} 76 {ch_data['decay']}")
+                send_fluid(f"cc {chan} 75 {ch_data['decay']}")
             if 'cutoff' in ch_data:
                 send_fluid(f"cc {chan} 74 {ch_data['cutoff']}")
             if 'resonance' in ch_data:
