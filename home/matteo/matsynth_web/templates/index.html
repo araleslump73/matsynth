@@ -68,27 +68,6 @@
                     </button>
                 </div>
             </div>
-            <!-- Selection Markers -->
-            <div class="row g-2 mb-2">
-                <div class="col-3">
-                    <button id="daw-mark-in" class="btn btn-outline-warning w-100 btn-sm fw-bold" onclick="dawMarkIn()" style="padding: 6px; font-size: 0.75rem;">
-                        <i class="fas fa-arrow-right"></i> IN
-                    </button>
-                </div>
-                <div class="col-3">
-                    <button id="daw-mark-out" class="btn btn-outline-warning w-100 btn-sm fw-bold" onclick="dawMarkOut()" style="padding: 6px; font-size: 0.75rem;">
-                        <i class="fas fa-arrow-left"></i> OUT
-                    </button>
-                </div>
-                <div class="col-3">
-                    <button id="daw-clear-sel" class="btn btn-outline-danger w-100 btn-sm fw-bold" onclick="dawClearSelection()" style="padding: 6px; font-size: 0.75rem;" disabled>
-                        <i class="fas fa-eraser"></i> CLEAR
-                    </button>
-                </div>
-                <div class="col-3 d-flex align-items-center">
-                    <span id="daw-sel-range" class="text-muted" style="font-size: 0.7rem; font-family: monospace;">No sel</span>
-                </div>
-            </div>
             <div class="row g-2 mb-3">
                 <div class="col-6">
                     <div class="d-flex align-items-center">
@@ -138,10 +117,35 @@
             </div>
 
             <!-- Timeline view controls -->
-            <div class="row g-2 mb-2">
-                <div class="col-12">
-                    <label class="text-muted" style="font-size: 0.75rem;">Zoom (px/beat)</label>
-                    <input type="range" id="daw-zoom-range" class="form-range" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
+            <div class="row g-2 mb-2 align-items-center">
+                <div class="col">
+                    <div class="d-flex align-items-center">
+                        <label class="text-muted me-2 mb-0" style="font-size: 0.75rem; white-space: nowrap;">Zoom</label>
+                        <input type="range" id="daw-zoom-range" class="form-range" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
+                    </div>
+                </div>
+                <div class="col-auto">
+                    <button id="daw-select-mode" class="btn btn-sm" onclick="dawToggleSelectMode()"
+                            style="padding: 4px 10px; font-size: 0.75rem; border: 1px solid rgba(255,255,255,0.3); color: #aaa; background: transparent;"
+                            title="Select mode: drag on timeline to select a range">
+                        <i class="fas fa-i-cursor"></i> SEL
+                    </button>
+                </div>
+            </div>
+            <!-- Selection action bar (shown only when selection exists) -->
+            <div id="daw-sel-bar" class="mb-2 d-flex align-items-center justify-content-between" style="display: none !important; background: rgba(255,200,50,0.1); border: 1px solid rgba(255,200,50,0.3); border-radius: 6px; padding: 5px 10px; font-size: 0.78rem;">
+                <span style="color: #ffc832; font-family: monospace;">
+                    <i class="fas fa-grip-lines-vertical"></i>
+                    CH <span id="daw-sel-ch">1</span> &nbsp;
+                    <span id="daw-sel-range">—</span>
+                </span>
+                <div>
+                    <button class="btn btn-sm btn-outline-light me-1" onclick="dawCancelSelection()" style="padding: 2px 8px; font-size: 0.72rem;">
+                        <i class="fas fa-times"></i>
+                    </button>
+                    <button class="btn btn-sm btn-danger" onclick="dawDeleteSelection()" style="padding: 2px 10px; font-size: 0.72rem;">
+                        <i class="fas fa-trash"></i> DELETE
+                    </button>
                 </div>
             </div>
 
@@ -593,6 +597,7 @@ let densityRefreshTimer = null;
 let recordStartPosition = null;  // saved position before recording
 let selectionInBeat = null;   // mark-in beat position
 let selectionOutBeat = null;  // mark-out beat position
+let selectMode = false;       // drag-to-select mode toggle
 
 // Initialize DAW tracks
 function initDAW() {
@@ -1061,6 +1066,17 @@ function onCanvasPointerDown(e) {
     trackView.drag.lastT = performance.now();
     trackView.drag.velocity = 0;
     e.target.setPointerCapture(e.pointerId);
+
+    // In select mode, start selection from click position
+    if (selectMode && dawState && !dawState.is_playing && !dawState.is_recording) {
+        const rect = trackView.drag.canvasRect;
+        const clickX = e.clientX - rect.left;
+        const beat = trackView.startTime + (clickX / trackView.zoomLevel);
+        trackView.drag.selStartBeat = snapToGrid(beat);
+        selectionInBeat = trackView.drag.selStartBeat;
+        selectionOutBeat = null;
+        renderAllTracks();
+    }
 }
 
 function onCanvasPointerMove(e) {
@@ -1069,6 +1085,22 @@ function onCanvasPointerMove(e) {
     const dx = e.clientX - trackView.drag.lastX;
     const dt = Math.max(1, now - trackView.drag.lastT);
     if (Math.abs(e.clientX - trackView.drag.startX) > 5) trackView.drag.didDrag = true;
+
+    // Select mode: update selection range
+    if (selectMode && trackView.drag.selStartBeat != null && dawState && !dawState.is_playing && !dawState.is_recording) {
+        const rect = trackView.drag.canvasRect;
+        const curX = e.clientX - rect.left;
+        const curBeat = snapToGrid(trackView.startTime + (curX / trackView.zoomLevel));
+        const anchor = trackView.drag.selStartBeat;
+        selectionInBeat = Math.min(anchor, curBeat);
+        selectionOutBeat = Math.max(anchor, curBeat);
+        ensureRenderLoop();
+        // Don't scroll in select mode
+        trackView.drag.lastX = e.clientX;
+        trackView.drag.lastT = now;
+        return;
+    }
+
     trackView.drag.lastX = e.clientX;
     trackView.drag.lastT = now;
 
@@ -1084,6 +1116,18 @@ function onCanvasPointerUp(e) {
     if (!trackView.drag.active) return;
     trackView.drag.active = false;
     e.target.releasePointerCapture(e.pointerId);
+
+    // Select mode: finalize selection
+    if (selectMode && trackView.drag.selStartBeat != null) {
+        trackView.drag.selStartBeat = null;
+        if (trackView.drag.didDrag && selectionInBeat !== null && selectionOutBeat !== null && selectionOutBeat > selectionInBeat) {
+            updateSelectionUI();
+        } else {
+            // Click without drag in select mode = clear selection
+            dawCancelSelection();
+        }
+        return;
+    }
 
     // Click-to-seek: if no drag movement and DAW is stopped
     if (!trackView.drag.didDrag && dawState && !dawState.is_playing && !dawState.is_recording) {
@@ -1702,72 +1746,63 @@ async function dawRecord() {
     }
 }
 
-// --- Selection (Mark In / Mark Out / Clear) ---
-function updateSelectionUI() {
-    const rangeEl = document.getElementById('daw-sel-range');
-    const clearBtn = document.getElementById('daw-clear-sel');
-    const inBtn = document.getElementById('daw-mark-in');
-    const outBtn = document.getElementById('daw-mark-out');
-    if (selectionInBeat !== null && selectionOutBeat !== null) {
-        rangeEl.textContent = `${selectionInBeat.toFixed(1)} - ${selectionOutBeat.toFixed(1)}`;
-        rangeEl.classList.replace('text-muted', 'text-warning') || rangeEl.classList.add('text-warning');
-        clearBtn.disabled = false;
-    } else if (selectionInBeat !== null) {
-        rangeEl.textContent = `IN: ${selectionInBeat.toFixed(1)}`;
-        rangeEl.classList.replace('text-muted', 'text-warning') || rangeEl.classList.add('text-warning');
-        clearBtn.disabled = true;
+// --- Selection (drag-to-select on canvas) ---
+function dawToggleSelectMode() {
+    selectMode = !selectMode;
+    const btn = document.getElementById('daw-select-mode');
+    if (selectMode) {
+        btn.style.background = 'rgba(255,200,50,0.2)';
+        btn.style.color = '#ffc832';
+        btn.style.borderColor = '#ffc832';
     } else {
-        rangeEl.textContent = 'No sel';
-        rangeEl.classList.replace('text-warning', 'text-muted') || rangeEl.classList.add('text-muted');
-        clearBtn.disabled = true;
+        btn.style.background = 'transparent';
+        btn.style.color = '#aaa';
+        btn.style.borderColor = 'rgba(255,255,255,0.3)';
+        dawCancelSelection();
     }
-    inBtn.classList.toggle('active', selectionInBeat !== null);
-    outBtn.classList.toggle('active', selectionOutBeat !== null);
+    // Change cursor on all canvases
+    document.querySelectorAll('canvas[id^="track-canvas-"]').forEach(c => {
+        c.style.cursor = selectMode ? 'crosshair' : '';
+    });
+}
+
+function updateSelectionUI() {
+    const bar = document.getElementById('daw-sel-bar');
+    if (selectionInBeat !== null && selectionOutBeat !== null) {
+        const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : 4;
+        const barIn = Math.floor(selectionInBeat / beatsPerMeasure) + 1;
+        const barOut = Math.ceil(selectionOutBeat / beatsPerMeasure);
+        document.getElementById('daw-sel-ch').textContent = activeControlChannel + 1;
+        document.getElementById('daw-sel-range').textContent = `Bar ${barIn} \u2192 ${barOut}  (beat ${selectionInBeat.toFixed(1)} - ${selectionOutBeat.toFixed(1)})`;
+        bar.style.cssText = bar.style.cssText.replace('display: none !important', '');
+        bar.style.display = 'flex';
+    } else {
+        bar.style.display = 'none';
+        bar.style.cssText += '; display: none !important';
+    }
     renderAllTracks();
 }
 
-function dawMarkIn() {
-    if (!dawState) return;
-    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
-    if (beatDuration <= 0) return;
-    selectionInBeat = snapToGrid(dawState.timeline_position / beatDuration);
-    // If out is set and <= in, clear it
-    if (selectionOutBeat !== null && selectionOutBeat <= selectionInBeat) {
-        selectionOutBeat = null;
-    }
+function dawCancelSelection() {
+    selectionInBeat = null;
+    selectionOutBeat = null;
     updateSelectionUI();
 }
 
-function dawMarkOut() {
-    if (!dawState) return;
-    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
-    if (beatDuration <= 0) return;
-    selectionOutBeat = snapToGrid(dawState.timeline_position / beatDuration);
-    // If in is set and >= out, clear it
-    if (selectionInBeat !== null && selectionInBeat >= selectionOutBeat) {
-        selectionInBeat = null;
-    }
-    updateSelectionUI();
-}
-
-async function dawClearSelection() {
+async function dawDeleteSelection() {
     if (selectionInBeat === null || selectionOutBeat === null) return;
     const ch = activeControlChannel;
-    const chName = ch + 1;
-    const rangeStr = `beat ${selectionInBeat.toFixed(1)} - ${selectionOutBeat.toFixed(1)}`;
-    if (!confirm(`Clear CH ${chName} from ${rangeStr}?`)) return;
     try {
         await fetch(`/api/daw/track/${ch}/clear_range`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ start_beat: selectionInBeat, end_beat: selectionOutBeat })
         });
-        // Reset selection after clear
         selectionInBeat = null;
         selectionOutBeat = null;
         updateSelectionUI();
     } catch (e) {
-        console.error('Clear selection error:', e);
+        console.error('Delete selection error:', e);
     }
 }
 
