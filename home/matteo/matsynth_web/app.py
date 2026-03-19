@@ -959,6 +959,86 @@ def daw_track_activity(channel):
 
 startup_init_once()
 
+# ==========================================
+# SOCKETIO EVENT HANDLERS (Hybrid approach)
+# ==========================================
+
+ALLOWED_EFFECT_TYPES = {'reverb.level', 'chorus.level', 'gain'}
+
+@socketio.on('cc_update')
+def handle_cc_update(data):
+    """Handle CC messages via WebSocket for lower latency"""
+    try:
+        chan = int(data['chan'])
+        cc_num = int(data['cc'])
+        val = int(data['val'])
+        if not (0 <= chan <= 15 and 0 <= cc_num <= 127 and 0 <= val <= 127):
+            return {'status': 'error', 'message': 'Values out of range'}
+        send_fluid(f"cc {chan} {cc_num} {val}")
+        if cc_num in [7, 71, 72, 73, 74, 75]:
+            with STATE_LOCK:
+                state = get_last_state()
+                if 'channels' not in state:
+                    state['channels'] = {}
+                if str(chan) not in state['channels']:
+                    state['channels'][str(chan)] = {}
+                cc_names = {7: 'volume', 71: 'resonance', 72: 'release',
+                            73: 'attack', 74: 'cutoff', 75: 'decay'}
+                state['channels'][str(chan)][cc_names[cc_num]] = val
+                _write_state_atomic(state)
+        return {'status': 'ok'}
+    except Exception as e:
+        print(f"[WS] cc_update error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
+@socketio.on('effect_update')
+def handle_effect_update(data):
+    """Handle effect changes via WebSocket for lower latency"""
+    try:
+        etype = str(data['type'])
+        if etype not in ALLOWED_EFFECT_TYPES:
+            return {'status': 'error', 'message': f'Invalid effect type: {etype}'}
+        val = float(data['val'])
+        send_fluid(f"set synth.{etype} {val}")
+        save_state(etype, val)
+        return {'status': 'ok'}
+    except Exception as e:
+        print(f"[WS] effect_update error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
+@socketio.on('transport_cmd')
+def handle_transport_cmd(data):
+    """Handle transport commands via WebSocket for lower latency"""
+    try:
+        cmd = data.get('cmd')
+        if cmd == 'play_start':
+            success = daw.start_playback()
+        elif cmd == 'play_stop':
+            success = daw.stop_playback()
+        elif cmd == 'record_start':
+            channel = data.get('channel')
+            armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
+            if not armed_channels:
+                return {'status': 'error', 'message': 'Nessun canale armato. Attiva ARM su almeno un canale.'}
+            success = daw.start_recording(channel) if channel is not None else daw.start_recording()
+        elif cmd == 'record_stop':
+            success = daw.stop_recording()
+        elif cmd == 'stop_all':
+            daw.stop_all()
+            success = True
+        elif cmd == 'rewind':
+            daw.rewind()
+            success = True
+        else:
+            return {'status': 'error', 'message': f'Unknown command: {cmd}'}
+        return {'status': 'ok'} if success else {'status': 'error', 'message': f'{cmd} failed'}
+    except Exception as e:
+        print(f"[WS] transport_cmd error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
 if __name__ == '__main__':
     print("Starting server with WebSocket support...")
     socketio.run(app, host='0.0.0.0', port=5000, debug=False, allow_unsafe_werkzeug=True)

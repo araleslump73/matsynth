@@ -108,7 +108,7 @@
             <div class="row g-2 mb-2">
                 <div class="col-12">
                     <label class="text-muted" style="font-size: 0.75rem;">Zoom (px/beat)</label>
-                    <input type="range" id="daw-zoom-range" class="form-range" min="10" max="200" step="5" value="60" oninput="dawViewSetZoom(this.value)">
+                    <input type="range" id="daw-zoom-range" class="form-range" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
                 </div>
             </div>
 
@@ -117,12 +117,12 @@
                 <table class="table table-sm table-dark mb-0" style="font-size: 0.75rem;">
                     <thead style="position: sticky; top: 0; background: #1a1a1a; z-index: 10; border-bottom: 2px solid #c2185b;">
                         <tr>
-                            <th style="width: 6%;">CH</th>
-                            <th style="width: 12%;">REC</th>
-                            <th style="width: 12%;">MUTE</th>
-                            <th style="width: 48%;">Timeline</th>
-                            <th style="width: 10%;">Events</th>
-                            <th style="width: 12%;">Clear</th>
+                            <th style="width: 4%;">CH</th>
+                            <th style="width: 6%;">REC</th>
+                            <th style="width: 6%;">MUTE</th>
+                            <th style="width: 68%;">Timeline</th>
+                            <th style="width: 8%;">Events</th>
+                            <th style="width: 8%;">Clear</th>
                         </tr>
                     </thead>
                     <tbody id="daw-tracks">
@@ -442,11 +442,19 @@
         }
 
         function updateCC(cc, val) {
-            fetch(`/cc/${activeControlChannel}/${cc}/${val}`);
+            if (dawSocket && dawSocket.connected) {
+                dawSocket.emit('cc_update', {chan: activeControlChannel, cc: cc, val: val});
+            } else {
+                fetch(`/cc/${activeControlChannel}/${cc}/${val}`);
+            }
         }
 
         function setEff(type, val) {
-            fetch(`/set_effect/${type}/${val}`);
+            if (dawSocket && dawSocket.connected) {
+                dawSocket.emit('effect_update', {type: type, val: val});
+            } else {
+                fetch(`/set_effect/${type}/${val}`);
+            }
         }
 
 function updateGain(val) {
@@ -595,7 +603,7 @@ let armInProgress = {};  // Track which ARM buttons are being processed
 let muteInProgress = {};  // Track which MUTE buttons are being processed
 let trackView = {
     startTime: 0,
-    zoomLevel: 60,
+    zoomLevel: 10,
     density: {},              // slot densities per track
     meta: { slotBeats: 0.125, totalBeats: 0, beatsPerMeasure: 4 },
     liveActivity: {},
@@ -629,13 +637,13 @@ function initDAW() {
             <td class="text-center fw-bold" style="color: ${i === 9 ? '#ff9800' : '#00d4ff'};">${i + 1}</td>
             <td>
                 <button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(${i})" 
-                        id="arm-btn-${i}" style="padding: 3px 6px; font-size: 0.7rem;">
+                        id="arm-btn-${i}" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">
                     <i class="fas fa-circle"></i>
                 </button>
             </td>
             <td>
                 <button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(${i})" 
-                        id="mute-btn-${i}" style="padding: 3px 6px; font-size: 0.7rem;">
+                        id="mute-btn-${i}" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">
                     <i class="fas fa-volume-mute"></i>
                 </button>
             </td>
@@ -647,7 +655,7 @@ function initDAW() {
             </td>
             <td>
                 <button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(${i})" 
-                        id="clear-btn-${i}" style="padding: 3px 6px; font-size: 0.7rem;">
+                        id="clear-btn-${i}" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">
                     <i class="fas fa-trash"></i>
                 </button>
             </td>
@@ -1145,17 +1153,8 @@ function renderTrackTape(ch) {
     ctx.fillStyle = 'rgba(25, 25, 35, 0.9)';
     ctx.fillRect(0, 0, tape.width, tape.height);
 
-    // griglia completa basata sul time signature
-    ctx.lineWidth = 1;
-    for (let b = 0; b <= totalBeats; b++) {
-        const x = b * trackView.tapeScale;
-        if (x > tape.width) break;
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, height);
-        ctx.strokeStyle = (b % beatsPerMeasure === 0) ? 'rgba(255,255,255,0.18)' : 'rgba(255,255,255,0.08)';
-        ctx.stroke();
-    }
+    // NB: griglia e shading disegnati in renderAllTracks() sul canvas visibile
+    //     per restare nitidi a qualsiasi livello di zoom
 
     const density = trackView.density[ch] || [];
     const slotBeats = trackView.meta.slotBeats || 0.125;
@@ -1332,6 +1331,37 @@ function renderAllTracks() {
             vctx.drawImage(tape, sx, 0, sourceWidth, tape.height, 0, 0, w, h);
         }
 
+        // Griglia direttamente sul canvas visibile (sempre nitida)
+        const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : 4;
+        const firstBeat = Math.floor(tapeStartTime);
+        for (let b = firstBeat; b <= tapeStartTime + visibleBeats + 1; b++) {
+            const px = (b - tapeStartTime) * trackView.zoomLevel;
+            if (px < 0) continue;
+            if (px > w) break;
+            vctx.beginPath();
+            vctx.moveTo(px, 0);
+            vctx.lineTo(px, h);
+            if (b % beatsPerMeasure === 0) {
+                vctx.strokeStyle = 'rgba(210, 80, 140, 0.72)';
+                vctx.lineWidth = 2;
+            } else {
+                vctx.strokeStyle = 'rgba(255,255,255,0.25)';
+                vctx.lineWidth = 1;
+            }
+            vctx.stroke();
+        }
+
+        // Shading alternato per battuta
+        const firstBar = Math.floor(tapeStartTime / beatsPerMeasure);
+        const lastBar = Math.ceil((tapeStartTime + visibleBeats) / beatsPerMeasure);
+        for (let bar = firstBar; bar <= lastBar; bar++) {
+            const barStartBeat = bar * beatsPerMeasure;
+            const x0 = (barStartBeat - tapeStartTime) * trackView.zoomLevel;
+            const barW = beatsPerMeasure * trackView.zoomLevel;
+            vctx.fillStyle = bar % 2 === 0 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.12)';
+            vctx.fillRect(x0, 0, barW, h);
+        }
+
         // playhead overlay (fixed when following)
         if ((dawState.is_playing || dawState.is_recording) && beatDuration > 0) {
             if (playheadX >= 0 && playheadX <= w) {
@@ -1355,25 +1385,18 @@ window.addEventListener('resize', () => {
 // Transport Controls
 async function dawPlay() {
     try {
-        // Assicurati che dawState sia caricato
-        if (!dawState) {
-            await dawLoadInitialState();
-        }
-        
-        if (dawState.is_playing) {
-            // Stop playback
-            await fetch('/api/daw/play/stop', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' } 
+        if (!dawState) await dawLoadInitialState();
+
+        const cmd = dawState.is_playing ? 'play_stop' : 'play_start';
+
+        if (dawSocket && dawSocket.connected) {
+            dawSocket.emit('transport_cmd', {cmd: cmd}, (ack) => {
+                if (ack && ack.status !== 'ok') console.error('Play error:', ack.message);
             });
         } else {
-            // Start playback
-            await fetch('/api/daw/play/start', { 
-                method: 'POST', 
-                headers: { 'Content-Type': 'application/json' } 
-            });
+            const endpoint = dawState.is_playing ? '/api/daw/play/stop' : '/api/daw/play/start';
+            await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'} });
         }
-        // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Play error:', e);
         alert('Error during playback!');
@@ -1382,12 +1405,13 @@ async function dawPlay() {
 
 async function dawStop() {
     try {
-        await fetch('/api/daw/stop_all', { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' } 
-        });
-        
-        // WebSocket aggiornerà automaticamente il UI
+        if (dawSocket && dawSocket.connected) {
+            dawSocket.emit('transport_cmd', {cmd: 'stop_all'}, (ack) => {
+                if (ack && ack.status !== 'ok') console.error('Stop error:', ack.message);
+            });
+        } else {
+            await fetch('/api/daw/stop_all', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        }
         console.log('DAW stopped');
     } catch (e) {
         console.error('Stop error:', e);
@@ -1396,11 +1420,13 @@ async function dawStop() {
 
 async function dawRewind() {
     try {
-        await fetch('/api/daw/rewind', { 
-            method: 'POST', 
-            headers: { 'Content-Type': 'application/json' } 
-        });
-        // WebSocket aggiornerà automaticamente il UI
+        if (dawSocket && dawSocket.connected) {
+            dawSocket.emit('transport_cmd', {cmd: 'rewind'}, (ack) => {
+                if (ack && ack.status !== 'ok') console.error('Rewind error:', ack.message);
+            });
+        } else {
+            await fetch('/api/daw/rewind', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        }
     } catch (e) {
         console.error('Rewind error:', e);
     }
@@ -1561,55 +1587,50 @@ async function dawToggleMute(channel) {
 
 async function dawRecord() {
     try {
-        // Assicurati che dawState sia caricato
         if (!dawState) {
             console.log('[DAW] dawState is null, loading initial state...');
             await dawLoadInitialState();
         }
-        
+
         const currentlyRecording = dawState.is_recording;
-        
+
         if (!currentlyRecording) {
-            // Start recording
             console.log('[DAW] Starting global recording...');
-            
-            // Check if any track is armed (dawState.armed is an object, not array)
             const armedTracks = Object.values(dawState.armed).filter(armed => armed).length;
             if (armedTracks === 0) {
                 alert('Please ARM at least one track before recording');
                 return;
             }
-            
-            console.log('[DAW] Armed tracks:', armedTracks);
-            console.log('[DAW] Armed state:', dawState.armed);
-            
-            const res = await fetch('/api/daw/record/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({})
-            });
-            
-            const data = await res.json();
-            console.log('[DAW] Start recording response:', data);
-            
-            if (data.status !== 'ok') {
-                alert(data.message);
+
+            if (dawSocket && dawSocket.connected) {
+                dawSocket.emit('transport_cmd', {cmd: 'record_start'}, (ack) => {
+                    if (ack && ack.status !== 'ok') {
+                        console.error('[DAW] record_start error:', ack.message);
+                        alert(ack.message);
+                    }
+                });
+            } else {
+                const res = await fetch('/api/daw/record/start', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                if (data.status !== 'ok') alert(data.message);
             }
-            // WebSocket aggiornerà automaticamente il UI
         } else {
-            // Stop recording
             console.log('[DAW] Stopping global recording...');
-            
-            const res = await fetch('/api/daw/record/stop', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
-            });
-            
-            const data = await res.json();
-            console.log('[DAW] Stop recording response:', data);
-            // WebSocket aggiornerà automaticamente il UI
+            if (dawSocket && dawSocket.connected) {
+                dawSocket.emit('transport_cmd', {cmd: 'record_stop'}, (ack) => {
+                    if (ack && ack.status !== 'ok') console.error('[DAW] record_stop error:', ack.message);
+                });
+            } else {
+                await fetch('/api/daw/record/stop', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'}
+                });
+            }
         }
-        
         console.log('[DAW] REC operation completed');
     } catch (e) {
         console.error('Record error:', e);
