@@ -40,11 +40,11 @@
 
     <!-- DAW Multi-Track Recorder -->
     <div class="card mb-4" style="border: 2px solid rgba(255, 60, 120, 0.6); background: rgba(20, 20, 30, 0.95);">
-        <div class="card-header-custom" style="background: linear-gradient(135deg, #c2185b, #d81b60);">
+        <div class="card-header-custom" style="background: linear-gradient(135deg, #c2185b, #d81b60); cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#collapse-daw">
             <i class="fas fa-record-vinyl"></i>
-            <h6 class="mb-0" style="color: white;">MICRO-DAW RECORDER</h6>
+            <h6 class="mb-0" style="color: white;">MICRO-DAW RECORDER <i class="fas fa-chevron-down ms-2" style="font-size: 0.7rem;"></i></h6>
         </div>
-        <div class="p-3">
+        <div class="collapse show p-3" id="collapse-daw">
             <!-- Transport Controls -->
             <div class="row g-2 mb-2">
                 <div class="col-3">
@@ -141,11 +141,11 @@
     </div>
 
     <div class="card">
-        <div class="card-header-custom">
+        <div class="card-header-custom" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#collapse-midi">
             <i class="fas fa-sliders-h"></i>
-            <h6 class="mb-0" style="color: white;">MIDI CHANNELS</h6>
+            <h6 class="mb-0" style="color: white;">MIDI CHANNELS <i class="fas fa-chevron-down ms-2" style="font-size: 0.7rem;"></i></h6>
         </div>
-        <div class="p-3">
+        <div class="collapse show p-3" id="collapse-midi">
             <div id="mixer" class="mixer-container">
                 <div class="text-center p-3 text-muted">
                     <i class="fas fa-spinner fa-spin"></i> Initializing mixer...
@@ -154,13 +154,15 @@
         </div>
     </div>
 
-    <div class="card p-3">
-        <div class="mb-2 text-center">
-            <label class="slider-label icon-label" style="font-size: 1rem; color: #ffc107;">
+    <div class="card">
+        <div class="p-3 text-center" style="cursor: pointer; background: rgba(255,193,7,0.1); border-bottom: 1px solid rgba(255,193,7,0.2);" data-bs-toggle="collapse" data-bs-target="#collapse-controls">
+            <label class="slider-label icon-label mb-0" style="font-size: 1rem; color: #ffc107; cursor: pointer;">
                 <i class="fas fa-crosshairs"></i>
                 CHANNEL CONTROLS: <span id="target-ch-display" class="badge bg-warning text-dark ms-2" style="font-size: 1.2rem;">1</span>
+                <i class="fas fa-chevron-down ms-2" style="font-size: 0.7rem;"></i>
             </label>
         </div>
+        <div class="collapse show p-3" id="collapse-controls">
         
         <!-- VOLUME CONTROL (Horizontal) -->
         <div class="mb-3 p-3" style="background: rgba(0, 255, 136, 0.08); border-radius: 10px; border: 1px solid rgba(0, 255, 136, 0.2);">
@@ -237,6 +239,7 @@
                 </div>
             </div>
         </div>
+        </div>
     </div>
 
 <div class="card p-4 volume-card">
@@ -262,13 +265,6 @@
         <input type="range" class="form-range" min="0" max="1" step="0.05" onchange="setEff('chorus.level', this.value)">
     </div>
 
-    <div class="card p-3 border-info">
-        <label class="icon-label" style="color: #00d4ff; font-weight: 600;">
-            <i class="fas fa-folder-open"></i> SELECT SOUNDFONT
-        </label>
-        <select id="sf2-select" class="form-select" onchange="changeSF2(this.value)">
-        </select>
-    </div>
     <script>
         let instrumentData = [];
         let activeControlChannel = 0; // The channel on which CC sliders act
@@ -507,90 +503,29 @@ async function syncWithSynth() {
     }
 }
 
-async function fetchSF2List() {
+async function loadInitialState() {
     try {
-        // 1. Download the list of files
-        const resList = await fetch('/list_sf2');
-        const files = await resList.json();
-
-        const select = document.getElementById('sf2-select');
-        select.innerHTML = ""; 
-
-        files.forEach(file => {
-            let opt = document.createElement('option');
-            opt.value = file;
-            opt.innerHTML = file;
-            select.appendChild(opt);
-        });
-
-        // 2. Download the CURRENT STATE (Font, Gain, Effects)
         const resState = await fetch('/get_state');
         const state = await resState.json();
 
-        console.log("State received from server:", state); // Useful for debug
+        console.log("State received from server:", state);
 
-        // Set the correct Font in the menu
-        if (state.font) {
-            select.value = state.font;
-        }
-
-// Update the Gain (Volume)
+        // Update the Gain (Volume)
         if (state.gain) {
             const val = parseFloat(state.gain);
-
-            // 1. Update the green number
             const badge = document.getElementById('gain-value');
             if (badge) badge.innerText = val.toFixed(1);
-            
-            // 2. Update the physical Slider position
-            // Find the specific input that calls the "updateGain" function
             const slider = document.querySelector('input[oninput*="updateGain"]');
-            
-            if (slider) {
-                slider.value = val;
-            }
+            if (slider) slider.value = val;
         }
-
-
-        // (Optional) If you want to also sync effect sliders on startup:
-        // Make sure to give id="reverb-slider" and id="chorus-slider" in your HTML
-        /*
-        if (state['reverb.level']) {
-            document.querySelector('input[onchange*="reverb.level"]').value = state['reverb.level'];
-        }
-        if (state['chorus.level']) {
-            document.querySelector('input[onchange*="chorus.level"]').value = state['chorus.level'];
-        }
-        */
-
     } catch (e) {
         console.error("Initial state sync error:", e);
     }
 }
 
 
-
-async function changeSF2(filename) {
-    const select = document.getElementById('sf2-select');
-    // Disable the select to avoid double clicks
-    select.disabled = true;
-    
-    // Strong visual feedback
-    document.body.style.opacity = "0.3";
-    document.body.style.cursor = "wait";
-    
-    // Launch the command
-    await fetch(`/load_sf2/${filename}`);
-    
-    // CRUCIAL WAIT: 5 seconds to allow the Pi Zero to load the file into RAM
-    setTimeout(() => {
-        location.reload();
-    }, 5000); 
-}
-
-
 // Call the function on load
-fetchSF2List();
+loadInitialState();
 
 
 // ==========================================
@@ -1674,5 +1609,6 @@ async function dawClearAll() {
 
         window.onload = setupMixer;
     </script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
