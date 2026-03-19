@@ -1352,8 +1352,8 @@ function renderAllTracks() {
             vctx.moveTo(px, 0);
             vctx.lineTo(px, h);
             if (b % beatsPerMeasure === 0) {
-                vctx.strokeStyle = 'rgba(210, 80, 140, 0.72)';
-                vctx.lineWidth = 2;
+                vctx.strokeStyle = 'rgba(255,255,255,0.45)';
+                vctx.lineWidth = 1.5;
             } else {
                 vctx.strokeStyle = 'rgba(255,255,255,0.25)';
                 vctx.lineWidth = 1;
@@ -1368,7 +1368,7 @@ function renderAllTracks() {
             const barStartBeat = bar * beatsPerMeasure;
             const x0 = (barStartBeat - tapeStartTime) * trackView.zoomLevel;
             const barW = beatsPerMeasure * trackView.zoomLevel;
-            vctx.fillStyle = bar % 2 === 0 ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.12)';
+            vctx.fillStyle = 'rgba(255,255,255,0.04)';
             vctx.fillRect(x0, 0, barW, h);
         }
 
