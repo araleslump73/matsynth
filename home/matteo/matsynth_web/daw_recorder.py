@@ -407,6 +407,21 @@ class MultiTrackDAW:
         self._emit_state_change()
         return True
     
+    def clear_range(self, channel, start_beat, end_beat):
+        """Cancella gli eventi di una traccia nell'intervallo [start_beat, end_beat)"""
+        if channel < 0 or channel > 15:
+            return False
+        before = len(self.tracks[channel])
+        self.tracks[channel] = [
+            (b, msg) for b, msg in self.tracks[channel]
+            if b < start_beat or b >= end_beat
+        ]
+        removed = before - len(self.tracks[channel])
+        self.has_data[channel] = len(self.tracks[channel]) > 0
+        print(f"[DAW] clear_range ch={channel} [{start_beat:.2f}, {end_beat:.2f}) rimossi {removed} eventi")
+        self._emit_state_change()
+        return True
+
     def clear_all_tracks(self):
         """Cancella tutte le tracce"""
         for ch in range(16):

@@ -885,6 +885,21 @@ def daw_clear_all():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/clear_range', methods=['POST'])
+def daw_clear_range(channel):
+    """Cancella gli eventi di una traccia in un intervallo di beat"""
+    try:
+        data = request.get_json()
+        start_beat = float(data.get('start_beat', 0))
+        end_beat = float(data.get('end_beat', 0))
+        if end_beat <= start_beat:
+            return jsonify({"status": "error", "message": "end_beat deve essere > start_beat"}), 400
+        daw.clear_range(channel, start_beat, end_beat)
+        return jsonify({"status": "ok", "message": f"Range [{start_beat:.2f}, {end_beat:.2f}) cancellato su ch {channel}"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/bpm', methods=['POST'])
 def daw_set_bpm():
     """Imposta il tempo (BPM)"""

@@ -68,6 +68,27 @@
                     </button>
                 </div>
             </div>
+            <!-- Selection Markers -->
+            <div class="row g-2 mb-2">
+                <div class="col-3">
+                    <button id="daw-mark-in" class="btn btn-outline-warning w-100 btn-sm fw-bold" onclick="dawMarkIn()" style="padding: 6px; font-size: 0.75rem;">
+                        <i class="fas fa-arrow-right"></i> IN
+                    </button>
+                </div>
+                <div class="col-3">
+                    <button id="daw-mark-out" class="btn btn-outline-warning w-100 btn-sm fw-bold" onclick="dawMarkOut()" style="padding: 6px; font-size: 0.75rem;">
+                        <i class="fas fa-arrow-left"></i> OUT
+                    </button>
+                </div>
+                <div class="col-3">
+                    <button id="daw-clear-sel" class="btn btn-outline-danger w-100 btn-sm fw-bold" onclick="dawClearSelection()" style="padding: 6px; font-size: 0.75rem;" disabled>
+                        <i class="fas fa-eraser"></i> CLEAR
+                    </button>
+                </div>
+                <div class="col-3 d-flex align-items-center">
+                    <span id="daw-sel-range" class="text-muted" style="font-size: 0.7rem; font-family: monospace;">No sel</span>
+                </div>
+            </div>
             <div class="row g-2 mb-3">
                 <div class="col-6">
                     <div class="d-flex align-items-center">
@@ -570,6 +591,8 @@ let trackView = {
 };
 let densityRefreshTimer = null;
 let recordStartPosition = null;  // saved position before recording
+let selectionInBeat = null;   // mark-in beat position
+let selectionOutBeat = null;  // mark-out beat position
 
 // Initialize DAW tracks
 function initDAW() {
@@ -1372,6 +1395,31 @@ function renderAllTracks() {
             vctx.fillRect(x0, 0, barW, h);
         }
 
+        // Selection overlay
+        if (selectionInBeat !== null && selectionOutBeat !== null) {
+            const selX0 = (selectionInBeat - tapeStartTime) * trackView.zoomLevel;
+            const selX1 = (selectionOutBeat - tapeStartTime) * trackView.zoomLevel;
+            if (selX1 > 0 && selX0 < w) {
+                const sx = Math.max(0, selX0);
+                const ex = Math.min(w, selX1);
+                if (ch === activeControlChannel) {
+                    vctx.fillStyle = 'rgba(255, 200, 50, 0.25)';
+                } else {
+                    vctx.fillStyle = 'rgba(180, 180, 180, 0.12)';
+                }
+                vctx.fillRect(sx, 0, ex - sx, h);
+                // Selection edges
+                vctx.strokeStyle = 'rgba(255, 200, 50, 0.7)';
+                vctx.lineWidth = 1;
+                if (selX0 >= 0 && selX0 <= w) {
+                    vctx.beginPath(); vctx.moveTo(selX0, 0); vctx.lineTo(selX0, h); vctx.stroke();
+                }
+                if (selX1 >= 0 && selX1 <= w) {
+                    vctx.beginPath(); vctx.moveTo(selX1, 0); vctx.lineTo(selX1, h); vctx.stroke();
+                }
+            }
+        }
+
         // playhead overlay (always visible when beatDuration > 0)
         if (beatDuration > 0 && playheadX >= 0 && playheadX <= w) {
             if (dawState.is_recording) {
@@ -1651,6 +1699,75 @@ async function dawRecord() {
         console.log('[DAW] REC operation completed');
     } catch (e) {
         console.error('Record error:', e);
+    }
+}
+
+// --- Selection (Mark In / Mark Out / Clear) ---
+function updateSelectionUI() {
+    const rangeEl = document.getElementById('daw-sel-range');
+    const clearBtn = document.getElementById('daw-clear-sel');
+    const inBtn = document.getElementById('daw-mark-in');
+    const outBtn = document.getElementById('daw-mark-out');
+    if (selectionInBeat !== null && selectionOutBeat !== null) {
+        rangeEl.textContent = `${selectionInBeat.toFixed(1)} - ${selectionOutBeat.toFixed(1)}`;
+        rangeEl.classList.replace('text-muted', 'text-warning') || rangeEl.classList.add('text-warning');
+        clearBtn.disabled = false;
+    } else if (selectionInBeat !== null) {
+        rangeEl.textContent = `IN: ${selectionInBeat.toFixed(1)}`;
+        rangeEl.classList.replace('text-muted', 'text-warning') || rangeEl.classList.add('text-warning');
+        clearBtn.disabled = true;
+    } else {
+        rangeEl.textContent = 'No sel';
+        rangeEl.classList.replace('text-warning', 'text-muted') || rangeEl.classList.add('text-muted');
+        clearBtn.disabled = true;
+    }
+    inBtn.classList.toggle('active', selectionInBeat !== null);
+    outBtn.classList.toggle('active', selectionOutBeat !== null);
+    renderAllTracks();
+}
+
+function dawMarkIn() {
+    if (!dawState) return;
+    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+    if (beatDuration <= 0) return;
+    selectionInBeat = snapToGrid(dawState.timeline_position / beatDuration);
+    // If out is set and <= in, clear it
+    if (selectionOutBeat !== null && selectionOutBeat <= selectionInBeat) {
+        selectionOutBeat = null;
+    }
+    updateSelectionUI();
+}
+
+function dawMarkOut() {
+    if (!dawState) return;
+    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+    if (beatDuration <= 0) return;
+    selectionOutBeat = snapToGrid(dawState.timeline_position / beatDuration);
+    // If in is set and >= out, clear it
+    if (selectionInBeat !== null && selectionInBeat >= selectionOutBeat) {
+        selectionInBeat = null;
+    }
+    updateSelectionUI();
+}
+
+async function dawClearSelection() {
+    if (selectionInBeat === null || selectionOutBeat === null) return;
+    const ch = activeControlChannel;
+    const chName = ch + 1;
+    const rangeStr = `beat ${selectionInBeat.toFixed(1)} - ${selectionOutBeat.toFixed(1)}`;
+    if (!confirm(`Clear CH ${chName} from ${rangeStr}?`)) return;
+    try {
+        await fetch(`/api/daw/track/${ch}/clear_range`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ start_beat: selectionInBeat, end_beat: selectionOutBeat })
+        });
+        // Reset selection after clear
+        selectionInBeat = null;
+        selectionOutBeat = null;
+        updateSelectionUI();
+    } catch (e) {
+        console.error('Clear selection error:', e);
     }
 }
 
