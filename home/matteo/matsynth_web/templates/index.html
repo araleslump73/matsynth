@@ -90,11 +90,23 @@
                         <label class="me-2 mb-0 text-white" style="font-size: 0.8rem;">
                             <i class="fas fa-clock"></i> TIME:
                         </label>
-                        <span id="daw-timeline" class="badge bg-dark" style="font-size: 0.9rem; font-family: monospace; padding: 6px 10px;">
-                            00:00.0
-                        </span>
+                        <input id="daw-timeline" type="text"
+                               style="font-size: 0.9rem; font-family: monospace; padding: 6px 10px; border: 1px solid transparent; border-radius: .375rem; width: 5.5em; text-align: center; cursor: text; background: #212529; color: #fff; outline: none;"
+                               value="00:00.0"
+                               onfocus="this.dataset.editing='1'; this.style.borderColor='#0dcaf0';"
+                               onblur="dawApplyTimeInput(this); this.dataset.editing=''; this.style.borderColor='transparent';"
+                               onkeydown="if(event.key==='Enter'){this.blur();}"
+                        >
                         <span id="daw-time-signature" class="badge bg-secondary ms-2" style="font-size: 0.8rem;">4/4</span>
                         <span id="daw-bar-counter" class="badge bg-secondary ms-2" style="font-size: 0.8rem;">Bar 1</span>
+                        <select id="daw-snap-grid" class="form-select form-select-sm ms-2" style="width: 70px; font-size: 0.7rem; padding: 2px 4px;">
+                            <option value="0">Free</option>
+                            <option value="1">1</option>
+                            <option value="0.5">1/2</option>
+                            <option value="0.25">1/4</option>
+                            <option value="0.125" selected>1/8</option>
+                            <option value="0.0625">1/16</option>
+                        </select>
                     </div>
                 </div>
             </div>
@@ -557,6 +569,7 @@ let trackView = {
     }
 };
 let densityRefreshTimer = null;
+let recordStartPosition = null;  // saved position before recording
 
 // Initialize DAW tracks
 function initDAW() {
@@ -622,7 +635,15 @@ function dawInitWebSocket() {
     // Ascolta aggiornamenti di stato in real-time
     dawSocket.on('daw_state_update', (data) => {
         console.log('[WebSocket] State update ricevuto');
+        const wasRecording = dawState && dawState.is_recording;
         dawState = data;
+        // Restore position after recording stops
+        if (wasRecording && !dawState.is_recording && recordStartPosition !== null) {
+            dawState.timeline_position = recordStartPosition;
+            recordStartPosition = null;
+            // Sync restored position to server
+            dawSocket.emit('transport_cmd', {cmd: 'seek', position: dawState.timeline_position});
+        }
         dawUpdateUI();
     });
 
@@ -666,6 +687,46 @@ function scheduleDensityRefresh() {
     }, 150);
 }
 
+// Snap a beat value to the selected grid resolution
+function snapToGrid(beat) {
+    const sel = document.getElementById('daw-snap-grid');
+    const grid = sel ? parseFloat(sel.value) : 0;
+    if (!grid || grid <= 0) return beat;
+    return Math.round(beat / grid) * grid;
+}
+
+// Seek to a specific time in seconds (only when stopped)
+function dawSeekTo(seconds) {
+    if (!dawState || dawState.is_playing || dawState.is_recording) return;
+    seconds = Math.max(0, seconds);
+    // Snap to grid in beat domain
+    const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+    if (beatDuration > 0) {
+        const beat = seconds / beatDuration;
+        seconds = snapToGrid(beat) * beatDuration;
+    }
+    dawState.timeline_position = seconds;
+    dawUpdateTimelineUI();
+    if (dawSocket && dawSocket.connected) {
+        dawSocket.emit('transport_cmd', {cmd: 'seek', position: seconds});
+    }
+}
+
+// Parse time input (MM:SS.d) and seek
+function dawApplyTimeInput(input) {
+    if (!dawState || dawState.is_playing || dawState.is_recording) return;
+    const text = input.value.trim();
+    const match = text.match(/^(\d+):(\d{1,2})(?:\.(\d))?$/);
+    if (match) {
+        const mins = parseInt(match[1]);
+        const secs = parseInt(match[2]);
+        const deci = match[3] ? parseInt(match[3]) : 0;
+        dawSeekTo(mins * 60 + secs + deci * 0.1);
+    }
+    // If format is invalid, just restore the current display
+    dawUpdateTimelineUI();
+}
+
 function dawUpdateTimelineUI() {
     if (!dawState) return;
     const timelineSpan = document.getElementById('daw-timeline');
@@ -674,18 +735,17 @@ function dawUpdateTimelineUI() {
     const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
     const timeSeconds = dawState.timeline_position || 0;
 
-    if (timelineSpan) {
+    if (timelineSpan && !timelineSpan.dataset.editing) {
         const minutes = Math.floor(timeSeconds / 60);
         const seconds = Math.floor(timeSeconds % 60);
         const deciseconds = Math.floor((timeSeconds % 1) * 10);
-        timelineSpan.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
-        timelineSpan.classList.remove('bg-dark', 'bg-info', 'bg-danger');
+        timelineSpan.value = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
         if (dawState.is_recording) {
-            timelineSpan.classList.add('bg-danger');
+            timelineSpan.style.background = '#dc3545';
         } else if (dawState.is_playing) {
-            timelineSpan.classList.add('bg-info');
+            timelineSpan.style.background = '#0dcaf0';
         } else {
-            timelineSpan.classList.add('bg-dark');
+            timelineSpan.style.background = '#212529';
         }
     }
 
@@ -813,21 +873,20 @@ function dawUpdateUI() {
     // Update Timeline display (mm:ss.d format)
     const timelineSpan = document.getElementById('daw-timeline');
     const timeSeconds = dawState.timeline_position || 0;
-    const minutes = Math.floor(timeSeconds / 60);
-    const seconds = Math.floor(timeSeconds % 60);
-    const deciseconds = Math.floor((timeSeconds % 1) * 10);
-    timelineSpan.textContent = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+    if (!timelineSpan.dataset.editing) {
+        const minutes = Math.floor(timeSeconds / 60);
+        const seconds = Math.floor(timeSeconds % 60);
+        const deciseconds = Math.floor((timeSeconds % 1) * 10);
+        timelineSpan.value = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
+    }
     
     // Change color based on state
     if (dawState.is_recording) {
-        timelineSpan.classList.remove('bg-dark', 'bg-info');
-        timelineSpan.classList.add('bg-danger');
+        timelineSpan.style.background = '#dc3545';
     } else if (dawState.is_playing) {
-        timelineSpan.classList.remove('bg-dark', 'bg-danger');
-        timelineSpan.classList.add('bg-info');
+        timelineSpan.style.background = '#0dcaf0';
     } else {
-        timelineSpan.classList.remove('bg-danger', 'bg-info');
-        timelineSpan.classList.add('bg-dark');
+        timelineSpan.style.background = '#212529';
     }
 
     if (!dawState.is_recording) {
@@ -973,6 +1032,9 @@ function onCanvasPointerDown(e) {
     }
     trackView.drag.active = true;
     trackView.drag.lastX = e.clientX;
+    trackView.drag.startX = e.clientX;
+    trackView.drag.canvasRect = e.target.getBoundingClientRect();
+    trackView.drag.didDrag = false;
     trackView.drag.lastT = performance.now();
     trackView.drag.velocity = 0;
     e.target.setPointerCapture(e.pointerId);
@@ -983,6 +1045,7 @@ function onCanvasPointerMove(e) {
     const now = performance.now();
     const dx = e.clientX - trackView.drag.lastX;
     const dt = Math.max(1, now - trackView.drag.lastT);
+    if (Math.abs(e.clientX - trackView.drag.startX) > 5) trackView.drag.didDrag = true;
     trackView.drag.lastX = e.clientX;
     trackView.drag.lastT = now;
 
@@ -998,6 +1061,18 @@ function onCanvasPointerUp(e) {
     if (!trackView.drag.active) return;
     trackView.drag.active = false;
     e.target.releasePointerCapture(e.pointerId);
+
+    // Click-to-seek: if no drag movement and DAW is stopped
+    if (!trackView.drag.didDrag && dawState && !dawState.is_playing && !dawState.is_recording) {
+        const rect = trackView.drag.canvasRect;
+        const clickX = e.clientX - rect.left;
+        const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+        if (beatDuration > 0) {
+            const clickBeat = trackView.startTime + (clickX / trackView.zoomLevel);
+            dawSeekTo(clickBeat * beatDuration);
+        }
+        return;
+    }
     startMomentum();
 }
 
@@ -1297,16 +1372,20 @@ function renderAllTracks() {
             vctx.fillRect(x0, 0, barW, h);
         }
 
-        // playhead overlay (fixed when following)
-        if ((dawState.is_playing || dawState.is_recording) && beatDuration > 0) {
-            if (playheadX >= 0 && playheadX <= w) {
+        // playhead overlay (always visible when beatDuration > 0)
+        if (beatDuration > 0 && playheadX >= 0 && playheadX <= w) {
+            if (dawState.is_recording) {
                 vctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
-                vctx.lineWidth = 2;
-                vctx.beginPath();
-                vctx.moveTo(playheadX, 0);
-                vctx.lineTo(playheadX, h);
-                vctx.stroke();
+            } else if (dawState.is_playing) {
+                vctx.strokeStyle = 'rgba(255, 80, 80, 0.9)';
+            } else {
+                vctx.strokeStyle = 'rgba(0, 200, 255, 0.8)';
             }
+            vctx.lineWidth = 2;
+            vctx.beginPath();
+            vctx.moveTo(playheadX, 0);
+            vctx.lineTo(playheadX, h);
+            vctx.stroke();
         }
     }
 }
@@ -1536,6 +1615,9 @@ async function dawRecord() {
                 alert('Please ARM at least one track before recording');
                 return;
             }
+
+            // Save current position to restore after recording
+            recordStartPosition = dawState.timeline_position || 0;
 
             if (dawSocket && dawSocket.connected) {
                 dawSocket.emit('transport_cmd', {cmd: 'record_start'}, (ack) => {

@@ -1031,6 +1031,13 @@ def handle_transport_cmd(data):
         elif cmd == 'rewind':
             daw.rewind()
             success = True
+        elif cmd == 'seek':
+            position = data.get('position')
+            if position is None or not isinstance(position, (int, float)):
+                return {'status': 'error', 'message': 'Missing or invalid position'}
+            success = daw.set_position(position)
+            if not success:
+                return {'status': 'error', 'message': 'Cannot seek while playing or recording'}
         else:
             return {'status': 'error', 'message': f'Unknown command: {cmd}'}
         return {'status': 'ok'} if success else {'status': 'error', 'message': f'{cmd} failed'}

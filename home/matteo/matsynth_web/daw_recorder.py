@@ -356,7 +356,22 @@ class MultiTrackDAW:
         self.timeline_position = 0.0
         self._emit_state_change()  # Notifica via WebSocket
         
-        return True        
+        return True
+
+    def set_position(self, seconds):
+        """
+        Imposta la posizione della timeline (solo quando non in registrazione/riproduzione)
+        
+        Args:
+            seconds: posizione in secondi (>= 0)
+        Returns:
+            bool: True se posizione impostata, False altrimenti
+        """
+        if self.is_recording or self.is_playing:
+            return False
+        self.timeline_position = max(0.0, float(seconds))
+        self._emit_state_change()
+        return True
 
     
     def arm_track(self, channel, armed=True):
