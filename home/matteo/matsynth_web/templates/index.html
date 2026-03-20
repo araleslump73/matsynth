@@ -306,6 +306,17 @@
                 </div>
             </div>
 
+            <!-- MIDI File Controls -->
+            <div class="mt-2 d-flex gap-2">
+                <button class="btn btn-outline-success btn-sm flex-fill" onclick="dawExportMidi()" title="Salva come file MIDI">
+                    <i class="fas fa-download"></i> SAVE MIDI
+                </button>
+                <button class="btn btn-outline-info btn-sm flex-fill" onclick="document.getElementById('midi-file-input').click()" title="Carica file MIDI">
+                    <i class="fas fa-upload"></i> LOAD MIDI
+                </button>
+                <input type="file" id="midi-file-input" accept=".mid,.midi" style="display:none;" onchange="dawImportMidi(this)">
+            </div>
+
             <!-- Clear All Button -->
             <div class="mt-3">
                 <button class="btn btn-outline-danger w-100 btn-sm" onclick="dawClearAll()">
@@ -783,6 +794,49 @@ function dawUpdateHiddenBar() {
         badge.onclick = () => dawShowTrack(ch);
         badges.appendChild(badge);
     });
+}
+
+// MIDI File Export
+function dawExportMidi() {
+    const btn = event.currentTarget;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> SAVING...';
+    fetch('/api/daw/export_midi')
+        .then(resp => {
+            if (!resp.ok) return resp.json().then(d => { throw new Error(d.message || 'Export failed'); });
+            return resp.blob();
+        })
+        .then(blob => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'matsynth_session.mid';
+            a.click();
+            URL.revokeObjectURL(url);
+        })
+        .catch(err => alert('Export error: ' + err.message))
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = '<i class="fas fa-download"></i> SAVE MIDI';
+        });
+}
+
+// MIDI File Import
+function dawImportMidi(input) {
+    const file = input.files[0];
+    if (!file) return;
+    input.value = '';
+    const formData = new FormData();
+    formData.append('file', file);
+    fetch('/api/daw/import_midi', { method: 'POST', body: formData })
+        .then(resp => resp.json().then(d => ({ ok: resp.ok, data: d })))
+        .then(({ ok, data }) => {
+            if (!ok) throw new Error(data.message || 'Import failed');
+            dawLoadInitialState();
+            const ch = data.data.channels.map(c => c + 1).join(', ');
+            alert(`MIDI importato!\nBPM: ${data.data.bpm}\nCanali: ${ch}\nEventi: ${data.data.total_events}`);
+        })
+        .catch(err => alert('Import error: ' + err.message));
 }
 
 // Initialize DAW tracks

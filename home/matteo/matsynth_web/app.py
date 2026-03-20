@@ -1,7 +1,8 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 from flask_socketio import SocketIO, emit
 import socket
 import os
+import io
 import json
 import time
 import subprocess
@@ -1059,6 +1060,43 @@ def handle_transport_cmd(data):
     except Exception as e:
         print(f"[WS] transport_cmd error: {e}")
         return {'status': 'error', 'message': str(e)}
+
+
+@app.route('/api/daw/export_midi')
+def daw_export_midi():
+    """Esporta le tracce registrate come file MIDI"""
+    try:
+        midi_bytes = daw.export_midi()
+        if not midi_bytes:
+            return jsonify({"status": "error", "message": "Nessuna traccia da esportare"}), 400
+        buf = io.BytesIO(midi_bytes)
+        buf.seek(0)
+        return send_file(buf, mimetype='audio/midi',
+                         as_attachment=True, download_name='matsynth_session.mid')
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/import_midi', methods=['POST'])
+def daw_import_midi():
+    """Importa un file MIDI nelle tracce del DAW"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"status": "error", "message": "Nessun file inviato"}), 400
+        f = request.files['file']
+        if not f.filename:
+            return jsonify({"status": "error", "message": "File vuoto"}), 400
+        # Limita a 5MB
+        midi_bytes = f.read(5 * 1024 * 1024)
+        if len(midi_bytes) < 14:
+            return jsonify({"status": "error", "message": "File troppo piccolo o non valido"}), 400
+        merge = request.form.get('merge', 'false').lower() == 'true'
+        info = daw.import_midi(midi_bytes, merge=merge)
+        return jsonify({"status": "ok", "data": info})
+    except RuntimeError as e:
+        return jsonify({"status": "error", "message": str(e)}), 409
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 if __name__ == '__main__':

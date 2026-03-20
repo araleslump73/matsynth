@@ -4,6 +4,7 @@ Ottimizzato per Raspberry Pi Zero 2W con bassa latenza e CPU overhead minimo
 """
 
 import mido
+import io
 import time
 import math
 import threading
@@ -836,3 +837,110 @@ class MultiTrackDAW:
         
         if self.midi_output:
             self.midi_output.close()
+
+    def export_midi(self):
+        """
+        Esporta tutte le tracce con dati come file MIDI (Type 1).
+        Ritorna i bytes del file MIDI.
+        """
+        mid = mido.MidiFile(type=1, ticks_per_beat=480)
+        tempo = mido.bpm2tempo(self.bpm)
+
+        for ch in range(16):
+            events = self.tracks.get(ch)
+            if not events:
+                continue
+
+            track = mido.MidiTrack()
+            # Tempo meta solo sulla prima traccia
+            if len(mid.tracks) == 0:
+                track.append(mido.MetaMessage('set_tempo', tempo=tempo, time=0))
+                track.append(mido.MetaMessage('time_signature',
+                                              numerator=self.beats_per_measure,
+                                              denominator=4, time=0))
+            track.append(mido.MetaMessage('track_name',
+                                          name=f'Channel {ch + 1}', time=0))
+
+            sorted_events = sorted(events, key=lambda e: e[0])
+            last_tick = 0
+            for beat_pos, msg_bytes in sorted_events:
+                try:
+                    msg = mido.Message.from_bytes(msg_bytes)
+                except Exception:
+                    continue
+                abs_tick = int(round(beat_pos * 480))
+                delta = max(0, abs_tick - last_tick)
+                msg = msg.copy(time=delta)
+                track.append(msg)
+                last_tick = abs_tick
+
+            track.append(mido.MetaMessage('end_of_track', time=0))
+            mid.tracks.append(track)
+
+        buf = io.BytesIO()
+        mid.save(file=buf)
+        return buf.getvalue()
+
+    def import_midi(self, midi_bytes, merge=False):
+        """
+        Importa un file MIDI nelle tracce del DAW.
+
+        Args:
+            midi_bytes: contenuto binario del file MIDI
+            merge: se True, aggiunge agli eventi esistenti; se False, sostituisce
+        Returns:
+            dict con info su tracce importate
+        """
+        if self.is_recording or self.is_playing:
+            raise RuntimeError('Cannot import while recording or playing')
+
+        buf = io.BytesIO(midi_bytes)
+        mid = mido.MidiFile(file=buf)
+
+        # Leggi tempo dal file
+        imported_bpm = self.bpm
+        imported_ts = self.beats_per_measure
+        for track in mid.tracks:
+            for msg in track:
+                if msg.type == 'set_tempo':
+                    imported_bpm = int(round(mido.tempo2bpm(msg.tempo)))
+                elif msg.type == 'time_signature':
+                    if msg.numerator in (3, 4):
+                        imported_ts = msg.numerator
+
+        ticks_per_beat = mid.ticks_per_beat or 480
+
+        if not merge:
+            self.clear_all_tracks()
+
+        self.bpm = max(30, min(300, imported_bpm))
+        self.beat_duration = 60.0 / self.bpm
+        self.beats_per_measure = imported_ts
+
+        imported_channels = set()
+        for track in mid.tracks:
+            abs_tick = 0
+            for msg in track:
+                abs_tick += msg.time
+                if msg.is_meta:
+                    continue
+                if not hasattr(msg, 'channel'):
+                    continue
+                ch = msg.channel
+                beat_pos = abs_tick / ticks_per_beat
+                self.tracks[ch].append((beat_pos, msg.bytes()))
+                self.has_data[ch] = True
+                imported_channels.add(ch)
+
+        # Riordina le tracce per beat position
+        for ch in imported_channels:
+            self.tracks[ch].sort(key=lambda x: x[0])
+
+        self._emit_state_change()
+        print(f'[DAW] MIDI importato: BPM={self.bpm}, canali={sorted(imported_channels)}')
+        return {
+            'bpm': self.bpm,
+            'beats_per_measure': self.beats_per_measure,
+            'channels': sorted(imported_channels),
+            'total_events': sum(len(self.tracks[ch]) for ch in imported_channels)
+        }
