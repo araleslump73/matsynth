@@ -833,8 +833,15 @@ function dawImportMidi(input) {
         .then(({ ok, data }) => {
             if (!ok) throw new Error(data.message || 'Import failed');
             dawLoadInitialState();
+            // Aggiorna anche il mixer con i nuovi strumenti
+            if (typeof loadInitialState === 'function') loadInitialState();
             const ch = data.data.channels.map(c => c + 1).join(', ');
-            alert(`MIDI importato!\nBPM: ${data.data.bpm}\nCanali: ${ch}\nEventi: ${data.data.total_events}`);
+            const progs = data.data.channel_programs || {};
+            let progInfo = '';
+            for (const [c, p] of Object.entries(progs)) {
+                progInfo += `\n  CH ${parseInt(c) + 1}: Bank ${p.bank}, Prog ${p.program}`;
+            }
+            alert(`MIDI importato!\nBPM: ${data.data.bpm}\nCanali: ${ch}\nEventi: ${data.data.total_events}${progInfo ? '\n\nStrumenti:' + progInfo : ''}`);
         })
         .catch(err => alert('Import error: ' + err.message));
 }

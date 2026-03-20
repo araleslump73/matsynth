@@ -1064,9 +1064,23 @@ def handle_transport_cmd(data):
 
 @app.route('/api/daw/export_midi')
 def daw_export_midi():
-    """Esporta le tracce registrate come file MIDI"""
+    """Esporta le tracce registrate come file MIDI (con strumenti)"""
     try:
-        midi_bytes = daw.export_midi()
+        # Leggi i programmi correnti dei canali dal saved state
+        state = get_last_state()
+        saved_channels = state.get('channels', {})
+        channel_programs = {}
+        for ch_str, ch_data in saved_channels.items():
+            try:
+                ch = int(ch_str)
+            except ValueError:
+                continue
+            bank = ch_data.get('bank')
+            prog = ch_data.get('program')
+            if bank is not None and prog is not None:
+                channel_programs[ch] = {'bank': bank, 'program': prog}
+
+        midi_bytes = daw.export_midi(channel_programs=channel_programs)
         if not midi_bytes:
             return jsonify({"status": "error", "message": "Nessuna traccia da esportare"}), 400
         buf = io.BytesIO(midi_bytes)
@@ -1092,6 +1106,25 @@ def daw_import_midi():
             return jsonify({"status": "error", "message": "File troppo piccolo o non valido"}), 400
         merge = request.form.get('merge', 'false').lower() == 'true'
         info = daw.import_midi(midi_bytes, merge=merge)
+
+        # Applica gli strumenti importati a FluidSynth e salva nello stato
+        ch_progs = info.get('channel_programs', {})
+        if ch_progs:
+            with STATE_LOCK:
+                state = get_last_state()
+                if 'channels' not in state:
+                    state['channels'] = {}
+                for ch_str, prog_data in ch_progs.items():
+                    ch = int(ch_str)
+                    bank = prog_data.get('bank', 0)
+                    prog = prog_data.get('program', 0)
+                    send_fluid(f"select {ch} {sf_id} {bank} {prog}")
+                    if str(ch) not in state['channels']:
+                        state['channels'][str(ch)] = {}
+                    state['channels'][str(ch)]['bank'] = bank
+                    state['channels'][str(ch)]['program'] = prog
+                _write_state_atomic(state)
+
         return jsonify({"status": "ok", "data": info})
     except RuntimeError as e:
         return jsonify({"status": "error", "message": str(e)}), 409

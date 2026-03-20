@@ -838,13 +838,19 @@ class MultiTrackDAW:
         if self.midi_output:
             self.midi_output.close()
 
-    def export_midi(self):
+    def export_midi(self, channel_programs=None):
         """
         Esporta tutte le tracce con dati come file MIDI (Type 1).
+        Include Bank Select + Program Change per ogni canale.
+
+        Args:
+            channel_programs: dict {ch_int: {'bank': int, 'program': int}} dai settings correnti
         Ritorna i bytes del file MIDI.
         """
         mid = mido.MidiFile(type=1, ticks_per_beat=480)
         tempo = mido.bpm2tempo(self.bpm)
+        if channel_programs is None:
+            channel_programs = {}
 
         for ch in range(16):
             events = self.tracks.get(ch)
@@ -860,6 +866,17 @@ class MultiTrackDAW:
                                               denominator=4, time=0))
             track.append(mido.MetaMessage('track_name',
                                           name=f'Channel {ch + 1}', time=0))
+
+            # Inserisci Bank Select + Program Change a tick 0
+            ch_prog = channel_programs.get(ch, {})
+            bank = ch_prog.get('bank', 0)
+            prog = ch_prog.get('program', 0)
+            track.append(mido.Message('control_change', channel=ch,
+                                      control=0, value=bank, time=0))
+            track.append(mido.Message('control_change', channel=ch,
+                                      control=32, value=0, time=0))
+            track.append(mido.Message('program_change', channel=ch,
+                                      program=prog, time=0))
 
             sorted_events = sorted(events, key=lambda e: e[0])
             last_tick = 0
@@ -918,6 +935,9 @@ class MultiTrackDAW:
         self.beats_per_measure = imported_ts
 
         imported_channels = set()
+        channel_programs = {}  # {ch: {'bank': int, 'program': int}}
+        bank_msb = {}  # temporaneo per Bank Select MSB per canale
+
         for track in mid.tracks:
             abs_tick = 0
             for msg in track:
@@ -927,6 +947,22 @@ class MultiTrackDAW:
                 if not hasattr(msg, 'channel'):
                     continue
                 ch = msg.channel
+
+                # Cattura Bank Select MSB (CC 0)
+                if msg.type == 'control_change' and msg.control == 0:
+                    bank_msb[ch] = msg.value
+                    continue
+                # Ignora Bank Select LSB (CC 32)
+                if msg.type == 'control_change' and msg.control == 32:
+                    continue
+                # Cattura Program Change
+                if msg.type == 'program_change':
+                    channel_programs[ch] = {
+                        'bank': bank_msb.get(ch, 0),
+                        'program': msg.program
+                    }
+                    continue
+
                 beat_pos = abs_tick / ticks_per_beat
                 self.tracks[ch].append((beat_pos, msg.bytes()))
                 self.has_data[ch] = True
@@ -937,10 +973,11 @@ class MultiTrackDAW:
             self.tracks[ch].sort(key=lambda x: x[0])
 
         self._emit_state_change()
-        print(f'[DAW] MIDI importato: BPM={self.bpm}, canali={sorted(imported_channels)}')
+        print(f'[DAW] MIDI importato: BPM={self.bpm}, canali={sorted(imported_channels)}, programmi={channel_programs}')
         return {
             'bpm': self.bpm,
             'beats_per_measure': self.beats_per_measure,
             'channels': sorted(imported_channels),
+            'channel_programs': channel_programs,
             'total_events': sum(len(self.tracks[ch]) for ch in imported_channels)
         }
