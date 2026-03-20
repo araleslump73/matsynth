@@ -302,6 +302,9 @@ class MultiTrackDAW:
         if not any(self.has_data.values()):
             return False
         
+        # Assicura che non ci siano note bloccate prima di iniziare
+        self._send_all_notes_off()
+        
         self.is_playing = True
         self.stop_event.clear()
         # NON resettare timeline_position - riprendi da dove sei
@@ -346,6 +349,11 @@ class MultiTrackDAW:
         self._stop_metronome()  # Ferma anche il metronomo
         self._send_all_notes_off()
         self._emit_state_change()  # Notifica via WebSocket
+        return True
+
+    def panic(self):
+        """Invia All Notes Off e All Sound Off su tutti i canali (PANIC reset)"""
+        self._send_all_notes_off()
         return True
     
     def rewind(self):
@@ -431,7 +439,114 @@ class MultiTrackDAW:
         print("[DAW] Tutte le tracce cancellate")
         self._emit_state_change()
         return True
-    
+
+    # ──────────────────────────────────────────────────────────────────
+    # QUANTIZZAZIONE POST-REGISTRAZIONE
+    # Algoritmo leggero, ideale per Raspberry Pi Zero 2W
+    # ──────────────────────────────────────────────────────────────────
+
+    def _quantize_beat_pos(self, beat, grid, swing, strength):
+        """
+        Calcola la posizione quantizzata di un singolo evento in beat.
+
+        Args:
+            beat:     posizione originale in beat
+            grid:     dimensione della griglia in beat
+                      (1.0=1/4, 0.5=1/8, 0.25=1/16, 0.125=1/32, 0.0625=1/64)
+            swing:    0.0-1.0 — 0.5 = straight (no swing);
+                      >0.5 ritarda le suddivisioni dispari (shuffle);
+                      <0.5 le anticipa
+            strength: 0.0-1.0 — quanto applicare lo snap (1.0 = allineamento perfetto)
+
+        Returns:
+            float: nuova posizione in beat (>= 0)
+        """
+        if grid <= 0:
+            return beat
+        n_round = round(beat / grid)
+        target = n_round * grid
+        # Swing: sposta solo le suddivisioni dispari
+        if n_round % 2 == 1:
+            target += (swing - 0.5) * grid   # 0.5 → offset 0 (straight)
+        # Lerp tra posizione originale e target in base a strength
+        return max(0.0, beat + strength * (target - beat))
+
+    def quantize_tracks(self, channels, grid_beats, strength=1.0, swing=0.5):
+        """
+        Applica quantizzazione post-registrazione a uno o più canali MIDI.
+
+        Algoritmo:
+          - Accoppia ogni note_on con il suo note_off per conservare la durata.
+          - Quantizza il note_on; note_off = note_on_quantizzato + durata originale.
+          - Riordina gli eventi per posizione temporale.
+
+        Args:
+            channels:    lista di canali 0-15 da processare.
+                         Lista vuota = tutti i canali con dati.
+            grid_beats:  dimensione della griglia in beat.
+            strength:    0.0-1.0 (1.0 = allineamento perfetto).
+            swing:       0.0-1.0 (0.5 = straight, ciclo jazz tipico ≈ 0.67).
+
+        Returns:
+            dict {channel: n_note_quantizzate} oppure None se in play/rec.
+        """
+        if self.is_recording or self.is_playing:
+            return None
+
+        if not channels:
+            channels = [ch for ch in range(16) if self.has_data[ch]]
+
+        results = {}
+
+        for ch in channels:
+            if not self.has_data[ch] or not self.tracks[ch]:
+                continue
+
+            events = self.tracks[ch]
+            active_notes = {}   # note_num → (on_beat, on_index)
+            new_beats = {}      # event_index → nuova posizione in beat
+            modified = 0
+
+            for i, (beat, msg_bytes) in enumerate(events):
+                try:
+                    msg = mido.Message.from_bytes(msg_bytes)
+                except Exception:
+                    continue
+
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    active_notes[msg.note] = (beat, i)
+
+                elif msg.type == 'note_off' or (
+                        msg.type == 'note_on' and msg.velocity == 0):
+                    if msg.note in active_notes:
+                        on_beat, on_idx = active_notes.pop(msg.note)
+                        duration = beat - on_beat
+
+                        q_on  = self._quantize_beat_pos(
+                            on_beat, grid_beats, swing, strength)
+                        q_off = q_on + max(0.0, duration)
+
+                        new_beats[on_idx] = q_on
+                        new_beats[i]      = q_off
+                        modified += 1
+
+            if new_beats:
+                new_events = [
+                    (new_beats.get(i, beat), msg_bytes)
+                    for i, (beat, msg_bytes) in enumerate(events)
+                ]
+                new_events.sort(key=lambda x: x[0])
+                self.tracks[ch] = new_events
+
+            results[ch] = modified
+            print(f"[DAW] quantize ch={ch}: {modified} note, "
+                  f"grid={grid_beats}, str={strength:.2f}, swing={swing:.2f}")
+
+        if results:
+            self._emit_state_change()
+
+        return results
+
     def set_bpm(self, bpm):
         """
         Imposta il tempo (BPM)

@@ -54,6 +54,10 @@
                     <i class="fas fa-trash"></i> Delete Selection
                 </button>
                 <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="dawToggleQuantBar(); closeMenus()">
+                    <i class="fas fa-magic"></i> Quantize…
+                </button>
+                <div class="daw-dropdown-sep"></div>
                 <button class="daw-dropdown-item daw-dropdown-danger" onclick="dawClearAll(); closeMenus()">
                     <i class="fas fa-trash-alt"></i> Clear All Tracks
                 </button>
@@ -93,8 +97,14 @@
 
     <!-- ═══════════════════════ TRANSPORT BAR ═══════════════════ -->
     <div class="daw-transport">
-        <!-- Transport buttons -->
+        <!-- Panic button (far left) -->
         <div class="daw-transport-group">
+            <button id="daw-panic" class="daw-tbtn daw-tbtn-panic" onclick="dawPanic()" title="PANIC - All Notes Off">
+                <i class="fas fa-exclamation-triangle"></i>
+            </button>
+        </div>
+        <!-- Transport buttons -->
+        <div class="daw-transport-group daw-transport-sep">
             <button id="daw-rewind" class="daw-tbtn daw-tbtn-info" onclick="dawRewind()" title="Rewind">
                 <i class="fas fa-undo"></i>
             </button>
@@ -147,6 +157,9 @@
             <button id="daw-select-mode" class="daw-tbtn daw-tbtn-sel" onclick="dawToggleSelectMode()" title="Select mode: drag on timeline to select a range">
                 <i class="fas fa-i-cursor"></i>
             </button>
+            <button id="daw-quant-toggle" class="daw-tbtn daw-tbtn-sel" onclick="dawToggleQuantBar()" title="Quantizzazione note (post-registrazione)">
+                <i class="fas fa-magic"></i>
+            </button>
         </div>
     </div>
 
@@ -165,6 +178,72 @@
                 <i class="fas fa-trash"></i> DEL
             </button>
         </div>
+    </div>
+
+    <!-- ═══════════════════════ QUANTIZE BAR ══════════════════════ -->
+    <div id="daw-quant-bar" class="daw-quant-bar" style="display: none;">
+        <!-- Label -->
+        <span class="daw-quant-label"><i class="fas fa-magic"></i> QUANT</span>
+
+        <!-- Grid (risoluzione) -->
+        <span class="daw-tlabel">GRID</span>
+        <select id="quant-grid" class="daw-tselect" title="Risoluzione griglia di quantizzazione">
+            <option value="1">1/4</option>
+            <option value="0.5">1/8</option>
+            <option value="0.25" selected>1/16</option>
+            <option value="0.125">1/32</option>
+            <option value="0.0625">1/64</option>
+        </select>
+
+        <!-- Strength (forza) -->
+        <span class="daw-tlabel">STR</span>
+        <input type="range" id="quant-strength" class="daw-quant-slider"
+               min="0" max="100" step="5" value="100"
+               oninput="document.getElementById('quant-str-val').textContent=this.value+'%'"
+               title="Strength: 100% = note perfettamente allineate">
+        <span id="quant-str-val" class="daw-tbadge">100%</span>
+
+        <!-- Swing -->
+        <span class="daw-tlabel">SWING</span>
+        <input type="range" id="quant-swing" class="daw-quant-slider"
+               min="0" max="100" step="1" value="50"
+               oninput="document.getElementById('quant-sw-val').textContent=this.value+'%'"
+               title="Swing: 50% = straight (no shuffle);  67% = triplet swing;  >50% = shuffle">
+        <span id="quant-sw-val" class="daw-tbadge">50%</span>
+
+        <!-- Channel -->
+        <span class="daw-tlabel">CH</span>
+        <select id="quant-channel" class="daw-tselect" title="Canale da quantizzare (ALL = tutti)">
+            <option value="all">ALL</option>
+            <option value="0">1</option>
+            <option value="1">2</option>
+            <option value="2">3</option>
+            <option value="3">4</option>
+            <option value="4">5</option>
+            <option value="5">6</option>
+            <option value="6">7</option>
+            <option value="7">8</option>
+            <option value="8">9</option>
+            <option value="9">10</option>
+            <option value="10">11</option>
+            <option value="11">12</option>
+            <option value="12">13</option>
+            <option value="13">14</option>
+            <option value="14">15</option>
+            <option value="15">16</option>
+        </select>
+
+        <!-- Apply -->
+        <button id="quant-apply-btn" class="daw-tbtn daw-tbtn-quant" onclick="dawQuantize()"
+                title="Applica la quantizzazione alle note registrate">
+            <i class="fas fa-bolt"></i> APPLY
+        </button>
+
+        <!-- Close -->
+        <button class="daw-tbtn daw-tbtn-sel" onclick="dawToggleQuantBar()"
+                title="Chiudi" style="margin-left: auto;">
+            <i class="fas fa-times"></i>
+        </button>
     </div>
 
     <!-- Status Display (full-width, shown during play/record) -->
@@ -1963,6 +2042,21 @@ async function dawStop() {
     }
 }
 
+async function dawPanic() {
+    try {
+        if (dawSocket && dawSocket.connected) {
+            dawSocket.emit('transport_cmd', {cmd: 'panic'}, (ack) => {
+                if (ack && ack.status !== 'ok') console.error('Panic error:', ack.message);
+            });
+        } else {
+            await fetch('/api/daw/panic', { method: 'POST', headers: {'Content-Type': 'application/json'} });
+        }
+        console.log('DAW panic sent');
+    } catch (e) {
+        console.error('Panic error:', e);
+    }
+}
+
 async function dawRewind() {
     try {
         if (dawSocket && dawSocket.connected) {
@@ -2267,6 +2361,57 @@ async function dawClearAll() {
         // WebSocket aggiornerà automaticamente il UI
     } catch (e) {
         console.error('Clear all error:', e);
+    }
+}
+
+// ── Quantizzazione post-registrazione ─────────────────────────
+function dawToggleQuantBar() {
+    const bar = document.getElementById('daw-quant-bar');
+    const btn = document.getElementById('daw-quant-toggle');
+    const visible = bar.style.display !== 'none';
+    bar.style.display = visible ? 'none' : 'flex';
+    if (btn) btn.classList.toggle('daw-tbtn-active', !visible);
+}
+
+async function dawQuantize() {
+    const grid     = parseFloat(document.getElementById('quant-grid').value);
+    const strength = parseInt(document.getElementById('quant-strength').value, 10);
+    const swing    = parseInt(document.getElementById('quant-swing').value, 10);
+    const chVal    = document.getElementById('quant-channel').value;
+    const channels = (chVal === 'all') ? [] : [parseInt(chVal, 10)];
+
+    const btn = document.getElementById('quant-apply-btn');
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+
+    try {
+        const res = await fetch('/api/daw/quantize', {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body:    JSON.stringify({ grid, strength, swing, channels })
+        });
+        const data = await res.json();
+
+        const statusDiv  = document.getElementById('daw-status');
+        const statusText = document.getElementById('daw-status-text');
+
+        if (data.status === 'ok') {
+            if (statusDiv && statusText) {
+                statusDiv.style.display = 'block';
+                statusDiv.className = 'daw-status-bar daw-status-playing text-center';
+                statusText.innerHTML =
+                    `<i class="fas fa-magic"></i> ${data.message || 'Quantizzazione applicata'}`;
+                setTimeout(() => { statusDiv.style.display = 'none'; }, 2500);
+            }
+        } else {
+            alert('Quantize: ' + (data.message || 'Errore'));
+        }
+    } catch (e) {
+        console.error('Quantize error:', e);
+        alert('Errore di rete durante la quantizzazione.');
+    } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fas fa-bolt"></i> APPLY';
     }
 }
 

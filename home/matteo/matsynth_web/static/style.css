@@ -248,6 +248,7 @@ body.container {
 .daw-tbtn-play  { background: rgba(0,200,100,0.15); color: #00c864; border: 1px solid rgba(0,200,100,0.3); }
 .daw-tbtn-rec   { background: rgba(220,53,69,0.12); color: #dc3545; border: 1px solid rgba(220,53,69,0.3); }
 .daw-tbtn-stop  { background: rgba(108,117,125,0.15); color: #aaa; border: 1px solid rgba(108,117,125,0.3); }
+.daw-tbtn-panic { background: rgba(255,140,0,0.15); color: #ff8c00; border: 1px solid rgba(255,140,0,0.4); }
 .daw-tbtn-info  { background: rgba(0,180,220,0.12); color: #00b4dc; border: 1px solid rgba(0,180,220,0.3); }
 .daw-tbtn-metro { background: rgba(255,255,255,0.06); color: #888; border: 1px solid rgba(255,255,255,0.12); }
 .daw-tbtn-sel   { background: transparent; color: #888; border: 1px solid rgba(255,255,255,0.15); }
@@ -334,6 +335,68 @@ body.container {
     padding: 4px 12px;
     flex-shrink: 0;
 }
+
+/* ═══════════════════════ QUANTIZE BAR ════════════════════════ */
+.daw-quant-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 5px;
+    background: rgba(138, 43, 226, 0.07);
+    border-bottom: 1px solid rgba(168, 85, 247, 0.22);
+    padding: 5px 10px;
+    flex-shrink: 0;
+}
+
+.daw-quant-label {
+    font-size: 0.60rem;
+    font-weight: 700;
+    color: #a855f7;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    white-space: nowrap;
+    margin-right: 4px;
+    opacity: 0.9;
+}
+
+.daw-quant-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    width: 72px;
+    border-radius: 2px;
+    background: rgba(168, 85, 247, 0.25);
+    outline: none;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.daw-quant-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: #a855f7;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+.daw-quant-slider::-webkit-slider-thumb:hover  { background: #c084fc; }
+.daw-quant-slider::-moz-range-thumb {
+    width: 13px; height: 13px;
+    border-radius: 50%;
+    background: #a855f7;
+    border: none;
+    cursor: pointer;
+}
+
+.daw-tbtn-quant {
+    background: rgba(138, 43, 226, 0.18) !important;
+    color: #a855f7 !important;
+    border: 1px solid rgba(168, 85, 247, 0.45) !important;
+    font-weight: 600;
+    white-space: nowrap;
+    letter-spacing: 0.5px;
+}
+.daw-tbtn-quant:hover { filter: brightness(1.25); }
 
 /* ═══════════════════════ MAIN AREA ═══════════════════════ */
 .daw-main {

@@ -822,6 +822,16 @@ def daw_stop_all():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/panic', methods=['POST'])
+def daw_panic():
+    """Invia All Notes Off e All Sound Off su tutti i canali MIDI"""
+    try:
+        daw.panic()
+        return jsonify({"status": "ok", "message": "PANIC inviato"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/rewind', methods=['POST'])
 def daw_rewind():
     """Riporta la timeline a 00:00:00"""
@@ -956,6 +966,61 @@ def daw_toggle_metronome():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/quantize', methods=['POST'])
+def daw_quantize():
+    """Applica quantizzazione post-registrazione alle tracce DAW."""
+    try:
+        data = request.json or {}
+
+        # Canali: lista di int 0-15, oppure vuota = tutti
+        channels_raw = data.get('channels', [])
+        if not channels_raw:
+            channels = []
+        else:
+            channels = [int(c) for c in channels_raw
+                        if 0 <= int(c) <= 15]
+
+        # Griglia in beat (validi: 1.0, 0.5, 0.25, 0.125, 0.0625)
+        grid = float(data.get('grid', 0.25))
+        valid_grids = {1.0, 0.5, 0.25, 0.125, 0.0625}
+        if grid not in valid_grids:
+            return jsonify({"status": "error",
+                            "message": "Valore griglia non valido"}), 400
+
+        # Strength 0-100 → 0.0-1.0
+        strength = max(0.0, min(1.0, float(data.get('strength', 100)) / 100.0))
+
+        # Swing 0-100 → 0.0-1.0  (50 = straight)
+        swing = max(0.0, min(1.0, float(data.get('swing', 50)) / 100.0))
+
+        result = daw.quantize_tracks(channels, grid, strength, swing)
+
+        if result is None:
+            return jsonify({
+                "status": "error",
+                "message": "Impossibile quantizzare durante la registrazione o il playback"
+            }), 409
+
+        if not result:
+            return jsonify({
+                "status": "ok",
+                "message": "Nessuna traccia con dati da quantizzare",
+                "events_modified": 0,
+                "channels_processed": []
+            })
+
+        total = sum(result.values())
+        return jsonify({
+            "status": "ok",
+            "channels_processed": list(result.keys()),
+            "events_modified": total,
+            "message": f"Quantizzazione: {total} note su {len(result)} tracce"
+        })
+    except Exception as e:
+        print(f"[DAW] quantize error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/full_density_map')
 def daw_full_density_map():
     """Ritorna la mappa di densità completa per tutte le tracce."""
@@ -1048,6 +1113,9 @@ def handle_transport_cmd(data):
             success = daw.stop_recording()
         elif cmd == 'stop_all':
             daw.stop_all()
+            success = True
+        elif cmd == 'panic':
+            daw.panic()
             success = True
         elif cmd == 'rewind':
             daw.rewind()
