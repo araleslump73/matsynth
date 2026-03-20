@@ -3,150 +3,181 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MatSynth Multitimbric</title>
+    <title>MatSynth DAW</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/style.css">
     <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
 </head>
-<body class="container py-4">
-    <div class="text-center mb-4">
-        <h1 class="logo-title">MATSYNTH</h1>
-        <p class="subtitle"><i class="fas fa-music"></i> Multitimbric Synthesizer Controller</p>
+<body class="daw-app">
+
+    <!-- ═══════════════════════ TITLE BAR ═══════════════════════ -->
+    <div class="daw-titlebar">
+        <span class="daw-logo">MATSYNTH</span>
+        <span id="daw-session-title" class="daw-session-title">Nuovo progetto</span>
     </div>
 
-    <!-- Settings and Refresh buttons in two columns -->
-    <div class="row g-2 mb-2">
-        <div class="col-6">
-            <a href="/settings" class="btn btn-outline-info fw-bold w-100" style="padding: 8px;">
-                <i class="fas fa-cog"></i> Settings
-            </a>
+    <!-- ═══════════════════════ MENU BAR ═══════════════════════ -->
+    <nav class="daw-menubar">
+        <!-- File menu -->
+        <div class="daw-menu-item" id="menu-file" onclick="toggleMenu('menu-file')">
+            <i class="fas fa-folder me-1"></i> File
+            <div class="daw-dropdown" id="dropdown-file">
+                <button class="daw-dropdown-item" onclick="dawNewProject(); closeMenus()">
+                    <i class="fas fa-file"></i> New Project
+                </button>
+                <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="dawQuickSaveMidi(); closeMenus()">
+                    <i class="fas fa-save"></i> Save <span class="daw-shortcut">Ctrl+S</span>
+                </button>
+                <button class="daw-dropdown-item" onclick="dawSaveAsMidi(); closeMenus()">
+                    <i class="fas fa-clone"></i> Save As…
+                </button>
+                <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="dawOpenMidiManager(); closeMenus()">
+                    <i class="fas fa-folder-open"></i> Open / Manage Files
+                </button>
+                <button class="daw-dropdown-item" onclick="document.getElementById('midi-file-input').click(); closeMenus()">
+                    <i class="fas fa-upload"></i> Import from PC
+                </button>
+                <input type="file" id="midi-file-input" accept=".mid,.midi" style="display:none;" onchange="dawUploadMidi(this)">
+            </div>
         </div>
-        <div class="col-6">
-            <button class="btn btn-custom w-100" onclick="syncWithSynth()" style="padding: 8px;">
-                <i class="fas fa-sync-alt"></i> Refresh
+        <!-- Edit menu -->
+        <div class="daw-menu-item" id="menu-edit" onclick="toggleMenu('menu-edit')">
+            <i class="fas fa-edit me-1"></i> Edit
+            <div class="daw-dropdown" id="dropdown-edit">
+                <button class="daw-dropdown-item" onclick="dawToggleSelectMode(); closeMenus()">
+                    <i class="fas fa-i-cursor"></i> Select Mode
+                </button>
+                <button class="daw-dropdown-item" onclick="dawDeleteSelection(); closeMenus()">
+                    <i class="fas fa-trash"></i> Delete Selection
+                </button>
+                <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item daw-dropdown-danger" onclick="dawClearAll(); closeMenus()">
+                    <i class="fas fa-trash-alt"></i> Clear All Tracks
+                </button>
+            </div>
+        </div>
+        <!-- View menu -->
+        <div class="daw-menu-item" id="menu-view" onclick="toggleMenu('menu-view')">
+            <i class="fas fa-eye me-1"></i> View
+            <div class="daw-dropdown" id="dropdown-view">
+                <button class="daw-dropdown-item" onclick="dawShowAllTracks(); closeMenus()">
+                    <i class="fas fa-eye"></i> Show All Tracks
+                </button>
+                <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="togglePanel('panel-mixer'); closeMenus()">
+                    <i class="fas fa-crosshairs"></i> Channel Mixer
+                </button>
+                <button class="daw-dropdown-item" onclick="togglePanel('panel-fx'); closeMenus()">
+                    <i class="fas fa-sliders-h"></i> Master FX
+                </button>
+            </div>
+        </div>
+        <!-- Settings & Presets as direct links -->
+        <a href="/settings" class="daw-menu-item daw-menu-link">
+            <i class="fas fa-cog me-1"></i> Settings
+        </a>
+        <a href="/presets" class="daw-menu-item daw-menu-link">
+            <i class="fas fa-star me-1"></i> Presets
+        </a>
+        <!-- Right side: sync + status pill -->
+        <div class="ms-auto d-flex align-items-center gap-2 pe-2">
+            <div id="daw-status-pill" class="daw-status-pill" style="display:none;"></div>
+            <button class="daw-menu-sync" onclick="syncWithSynth()" title="Sync with synth">
+                <i class="fas fa-sync-alt"></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- ═══════════════════════ TRANSPORT BAR ═══════════════════ -->
+    <div class="daw-transport">
+        <!-- Transport buttons -->
+        <div class="daw-transport-group">
+            <button id="daw-rewind" class="daw-tbtn daw-tbtn-info" onclick="dawRewind()" title="Rewind">
+                <i class="fas fa-undo"></i>
+            </button>
+            <button id="daw-play" class="daw-tbtn daw-tbtn-play" onclick="dawPlay()" title="Play / Pause">
+                <i class="fas fa-play"></i>
+            </button>
+            <button id="daw-rec" class="daw-tbtn daw-tbtn-rec" onclick="dawRecord()" title="Record">
+                <i class="fas fa-circle"></i>
+            </button>
+            <button id="daw-stop" class="daw-tbtn daw-tbtn-stop" onclick="dawStop()" title="Stop">
+                <i class="fas fa-stop"></i>
+            </button>
+        </div>
+        <!-- BPM + Metronome -->
+        <div class="daw-transport-group daw-transport-sep">
+            <label class="daw-tlabel">BPM</label>
+            <input type="number" id="daw-bpm" class="daw-tnumber" value="120" min="30" max="300"
+                   onchange="dawSetBPM(this.value)">
+            <button id="daw-metronome" class="daw-tbtn daw-tbtn-metro" onclick="dawToggleMetronome()" title="Metronome">
+                <i class="fas fa-stopwatch"></i>
+            </button>
+            <select id="daw-ts-select" class="daw-tselect" onchange="dawSetTimeSignature(this.value)" title="Time signature">
+                <option value="4">4/4</option>
+                <option value="3">3/4</option>
+            </select>
+        </div>
+        <!-- TIME display -->
+        <div class="daw-transport-group daw-transport-sep">
+            <label class="daw-tlabel"><i class="fas fa-clock"></i></label>
+            <input id="daw-timeline" type="text" class="daw-timedisp"
+                   value="00:00.0"
+                   onfocus="this.dataset.editing='1'; this.style.borderColor='#0dcaf0';"
+                   onblur="dawApplyTimeInput(this); this.dataset.editing=''; this.style.borderColor='transparent';"
+                   onkeydown="if(event.key==='Enter'){this.blur();}">
+            <span id="daw-time-signature" class="daw-tbadge">4/4</span>
+            <span id="daw-bar-counter" class="daw-tbadge">Bar 1</span>
+        </div>
+        <!-- Zoom + Snap + SEL -->
+        <div class="daw-transport-group daw-transport-sep daw-transport-flex">
+            <label class="daw-tlabel">Zoom</label>
+            <input type="range" id="daw-zoom-range" class="daw-zoom-slider" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
+            <select id="daw-snap-grid" class="daw-tselect" title="Snap grid">
+                <option value="0">Free</option>
+                <option value="1">1</option>
+                <option value="0.5">1/2</option>
+                <option value="0.25">1/4</option>
+                <option value="0.125" selected>1/8</option>
+                <option value="0.0625">1/16</option>
+            </select>
+            <button id="daw-select-mode" class="daw-tbtn daw-tbtn-sel" onclick="dawToggleSelectMode()" title="Select mode: drag on timeline to select a range">
+                <i class="fas fa-i-cursor"></i>
             </button>
         </div>
     </div>
 
-    <!-- Presets button -->
-    <div class="row g-2 mb-3">
-        <div class="col-12">
-            <a href="/presets" class="btn btn-outline-warning fw-bold w-100" style="padding: 10px; border: 2px solid rgba(255, 193, 7, 0.5);">
-                <i class="fas fa-save"></i> PRESETS
-            </a>
+    <!-- Selection action bar (shown only when selection exists) -->
+    <div id="daw-sel-bar" class="daw-sel-bar" style="display: none !important;">
+        <span style="color: #ffc832; font-family: monospace; font-size: 0.78rem;">
+            <i class="fas fa-grip-lines-vertical"></i>
+            CH <span id="daw-sel-ch">1</span> &nbsp;
+            <span id="daw-sel-range">—</span>
+        </span>
+        <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-light" onclick="dawCancelSelection()" style="padding: 2px 8px; font-size: 0.72rem;">
+                <i class="fas fa-times"></i>
+            </button>
+            <button class="btn btn-sm btn-danger" onclick="dawDeleteSelection()" style="padding: 2px 10px; font-size: 0.72rem;">
+                <i class="fas fa-trash"></i> DEL
+            </button>
         </div>
     </div>
 
-    <!-- DAW Multi-Track Recorder -->
-    <div class="card mb-4" style="border: 2px solid rgba(255, 60, 120, 0.6); background: rgba(20, 20, 30, 0.95);">
-        <div class="card-header-custom" style="background: linear-gradient(135deg, #c2185b, #d81b60); cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#collapse-daw">
-            <i class="fas fa-record-vinyl"></i>
-            <h6 class="mb-0" style="color: white;">MICRO-DAW RECORDER <i class="fas fa-chevron-down ms-2" style="font-size: 0.7rem;"></i></h6>
-        </div>
-        <div class="collapse show p-3" id="collapse-daw">
-            <!-- Transport Controls -->
-            <div class="row g-2 mb-2">
-                <div class="col-3">
-                    <button id="daw-play" class="btn btn-success w-100 btn-sm fw-bold" onclick="dawPlay()" style="padding: 8px;">
-                        <i class="fas fa-play"></i> PLAY
-                    </button>
-                </div>
-                <div class="col-3">
-                    <button id="daw-rec" class="btn btn-outline-danger w-100 btn-sm fw-bold" onclick="dawRecord()" style="padding: 8px;">
-                        <i class="fas fa-circle"></i> REC
-                    </button>
-                </div>
-                <div class="col-3">
-                    <button id="daw-stop" class="btn btn-secondary w-100 btn-sm fw-bold" onclick="dawStop()" style="padding: 8px;">
-                        <i class="fas fa-stop"></i> STOP
-                    </button>
-                </div>
-                <div class="col-3">
-                    <button id="daw-rewind" class="btn btn-info w-100 btn-sm fw-bold" onclick="dawRewind()" style="padding: 8px;">
-                        <i class="fas fa-undo"></i> RWD
-                    </button>
-                </div>
-            </div>
-            <!-- BPM row -->
-            <div class="d-flex align-items-center flex-wrap gap-2 mb-2 justify-content-end">
-                <label class="mb-0 text-white" style="font-size: 0.8rem; white-space: nowrap;">BPM:</label>
-                <input type="number" id="daw-bpm" class="form-control form-control-sm" value="120" min="30" max="300"
-                       onchange="dawSetBPM(this.value)" style="width: 68px; padding: 4px 6px; font-size: 0.85rem; flex-shrink: 0;">
-                <button id="daw-metronome" class="btn btn-outline-light btn-sm" onclick="dawToggleMetronome()" 
-                        style="padding: 4px 8px; font-size: 0.75rem; flex-shrink: 0;" title="Metronomo">
-                    <i class="fas fa-stopwatch"></i>
-                </button>
-                <select id="daw-ts-select" class="form-select form-select-sm" style="width: 68px; font-size: 0.8rem; flex-shrink: 0;"
-                        onchange="dawSetTimeSignature(this.value)">
-                    <option value="4">4/4</option>
-                    <option value="3">3/4</option>
-                </select>
-            </div>
-            <!-- TIME row -->
-            <div class="d-flex align-items-center flex-wrap gap-2 mb-3 justify-content-end">
-                <label class="mb-0 text-white" style="font-size: 0.8rem; white-space: nowrap; flex-shrink: 0;">
-                    <i class="fas fa-clock"></i> TIME:
-                </label>
-                <input id="daw-timeline" type="text"
-                       style="font-size: 0.9rem; font-family: monospace; padding: 6px 10px; border: 1px solid transparent; border-radius: .375rem; width: 6em; text-align: center; cursor: text; background: #212529; color: #fff; outline: none; flex-shrink: 0;"
-                       value="00:00.0"
-                       onfocus="this.dataset.editing='1'; this.style.borderColor='#0dcaf0';"
-                       onblur="dawApplyTimeInput(this); this.dataset.editing=''; this.style.borderColor='transparent';"
-                       onkeydown="if(event.key==='Enter'){this.blur();}"
-                >
-                <span id="daw-time-signature" class="badge bg-secondary" style="font-size: 0.8rem; flex-shrink: 0;">4/4</span>
-                <span id="daw-bar-counter" class="badge bg-secondary" style="font-size: 0.8rem; flex-shrink: 0;">Bar 1</span>
-                <select id="daw-snap-grid" class="form-select form-select-sm" style="width: 68px; font-size: 0.7rem; padding: 2px 4px; flex-shrink: 0;">
-                    <option value="0">Free</option>
-                    <option value="1">1</option>
-                    <option value="0.5">1/2</option>
-                    <option value="0.25">1/4</option>
-                    <option value="0.125" selected>1/8</option>
-                    <option value="0.0625">1/16</option>
-                </select>
-            </div>
+    <!-- Status Display (full-width, shown during play/record) -->
+    <div id="daw-status" class="daw-status-bar" style="display: none;">
+        <span id="daw-status-text">Ready</span>
+    </div>
 
-            <!-- Status Display -->
-            <div id="daw-status" class="alert alert-dark py-2 mb-3 text-center" style="font-size: 0.85rem; display: none; border: 1px solid rgba(255,255,255,0.2);">
-                <span id="daw-status-text">Ready</span>
-            </div>
+    <!-- ═══════════════════════ MAIN DAW AREA ══════════════════════ -->
+    <div class="daw-main">
 
-            <!-- Timeline view controls -->
-            <div class="row g-2 mb-2 align-items-center">
-                <div class="col">
-                    <div class="d-flex align-items-center">
-                        <label class="text-muted me-2 mb-0" style="font-size: 0.75rem; white-space: nowrap;">Zoom</label>
-                        <input type="range" id="daw-zoom-range" class="form-range" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
-                    </div>
-                </div>
-                <div class="col-auto">
-                    <button id="daw-select-mode" class="btn btn-sm" onclick="dawToggleSelectMode()"
-                            style="padding: 4px 10px; font-size: 0.75rem; border: 1px solid rgba(255,255,255,0.3); color: #aaa; background: transparent;"
-                            title="Select mode: drag on timeline to select a range">
-                        <i class="fas fa-i-cursor"></i> SEL
-                    </button>
-                </div>
-            </div>
-            <!-- Selection action bar (shown only when selection exists) -->
-            <div id="daw-sel-bar" class="mb-2 d-flex align-items-center justify-content-between" style="display: none !important; background: rgba(255,200,50,0.1); border: 1px solid rgba(255,200,50,0.3); border-radius: 6px; padding: 5px 10px; font-size: 0.78rem;">
-                <span style="color: #ffc832; font-family: monospace;">
-                    <i class="fas fa-grip-lines-vertical"></i>
-                    CH <span id="daw-sel-ch">1</span> &nbsp;
-                    <span id="daw-sel-range">—</span>
-                </span>
-                <div>
-                    <button class="btn btn-sm btn-outline-light me-1" onclick="dawCancelSelection()" style="padding: 2px 8px; font-size: 0.72rem;">
-                        <i class="fas fa-times"></i>
-                    </button>
-                    <button class="btn btn-sm btn-danger" onclick="dawDeleteSelection()" style="padding: 2px 10px; font-size: 0.72rem;">
-                        <i class="fas fa-trash"></i> DELETE
-                    </button>
-                </div>
-            </div>
-
-            <!-- Channel Strips (Compact Table) -->
-            <div style="max-height: 320px; overflow-y: auto; border: 1px solid rgba(255,255,255,0.15); border-radius: 6px; background: rgba(0,0,0,0.3);">
+        <!-- Channel Strips (Compact Table) -->
+        <div class="daw-tracks-panel">
+            <div style="overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; background: rgba(0,0,0,0.3);">
                 <table class="table table-sm table-dark mb-0" style="font-size: 0.75rem;">
                     <thead style="position: sticky; top: 0; background: #1a1a1a; z-index: 10; border-bottom: 2px solid #c2185b;">
                         <tr>
@@ -309,51 +340,33 @@
             </div>
 
             <!-- Hidden Tracks Bar -->
-            <div id="daw-hidden-bar" class="mt-2" style="display: none; background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.25); border-radius: 6px; padding: 5px 10px; font-size: 0.75rem;">
+            <div id="daw-hidden-bar" style="display: none; background: rgba(0,212,255,0.08); border: 1px solid rgba(0,212,255,0.25); border-radius: 4px; padding: 2px 8px; font-size: 0.68rem; margin-top: 3px; flex-shrink: 0;">
                 <div class="d-flex align-items-center flex-wrap gap-1">
                     <span style="color: #0dcaf0; white-space: nowrap;"><i class="fas fa-eye-slash"></i> Hidden:</span>
                     <span id="daw-hidden-badges" class="d-flex flex-wrap gap-1"></span>
-                    <button class="btn btn-sm btn-outline-info ms-auto" onclick="dawShowAllTracks()" style="padding: 1px 8px; font-size: 0.7rem;">
-                        <i class="fas fa-eye"></i> SHOW ALL
+                    <button class="btn btn-sm btn-outline-info ms-auto" onclick="dawShowAllTracks()" style="padding: 0 6px; font-size: 0.65rem; line-height: 1.4;">
+                        <i class="fas fa-eye"></i> ALL
                     </button>
                 </div>
             </div>
 
-            <!-- MIDI File Controls -->
-            <div class="mt-2 d-flex align-items-center justify-content-between mb-1" style="min-height:18px;">
-                <span style="font-size:0.68rem; color:#777;"><i class="fas fa-file-audio me-1"></i>Sessione:</span>
-                <span id="daw-session-label" style="font-size:0.68rem; color:#aaa; font-style:italic; text-align:right; max-width:70%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Nuovo progetto</span>
-            </div>
-            <div class="d-flex gap-2">
-                <button id="daw-save-btn" class="btn btn-outline-success btn-sm flex-fill" onclick="dawQuickSaveMidi()" title="Salva (sovrascrive se già salvato)">
-                    <i class="fas fa-save"></i> SAVE
-                </button>
-                <button class="btn btn-outline-secondary btn-sm" onclick="dawSaveAsMidi()" title="Salva con nuovo nome" style="padding: 0 10px; font-size:0.75rem;">
-                    <i class="fas fa-clone"></i> AS
-                </button>
-                <button class="btn btn-outline-info btn-sm flex-fill" onclick="dawOpenMidiManager()" title="Gestione file MIDI">
-                    <i class="fas fa-folder-open"></i> FILES
-                </button>
-            </div>
+        </div><!-- end .daw-tracks-panel -->
+    </div><!-- end .daw-main -->
 
-            <!-- Clear All Button -->
-            <div class="mt-3">
-                <button class="btn btn-outline-danger w-100 btn-sm" onclick="dawClearAll()">
-                    <i class="fas fa-trash-alt"></i> CLEAR ALL TRACKS
-                </button>
-            </div>
-        </div>
+    <!-- ═══════════════════════ RESIZE HANDLE ══════════════════════ -->
+    <div id="daw-resize-handle" class="daw-resize-handle" title="Trascina per ridimensionare · Doppio click per ripristinare">
+        <span class="daw-resize-dots"></span>
     </div>
 
-    <div class="card">
-        <div class="p-3 text-center" style="cursor: pointer; background: rgba(255,193,7,0.1); border-bottom: 1px solid rgba(255,193,7,0.2);" data-bs-toggle="collapse" data-bs-target="#collapse-controls">
-            <label class="slider-label icon-label mb-0" style="font-size: 1rem; color: #ffc107; cursor: pointer;">
-                <i class="fas fa-crosshairs"></i>
-                CHANNEL CONTROLS: <span id="target-ch-display" class="badge bg-warning text-dark ms-2" style="font-size: 1.2rem;">1</span>
-                <i class="fas fa-chevron-down ms-2" style="font-size: 0.7rem;"></i>
-            </label>
+    <!-- ═══════════════════════ BOTTOM PANELS ══════════════════════ -->
+
+    <!-- Channel Controls Panel -->
+    <div id="panel-mixer" class="daw-panel">
+        <div class="daw-panel-header" onclick="togglePanel('panel-mixer')">
+            <span><i class="fas fa-crosshairs me-2"></i>CHANNEL CONTROLS: <span id="target-ch-display" class="badge bg-warning text-dark ms-1" style="font-size: 1rem;">1</span></span>
+            <i class="fas fa-chevron-down daw-panel-chevron"></i>
         </div>
-        <div class="collapse show p-3" id="collapse-controls">
+        <div class="daw-panel-body" id="panel-mixer-body">
         
         <!-- VOLUME CONTROL (Horizontal) -->
         <div class="mb-3 p-3" style="background: rgba(0, 255, 136, 0.08); border-radius: 10px; border: 1px solid rgba(0, 255, 136, 0.2);">
@@ -430,31 +443,48 @@
                 </div>
             </div>
         </div>
+        </div><!-- end panel-mixer-body -->
+    </div><!-- end panel-mixer -->
+
+    <!-- Master FX Panel -->
+    <div id="panel-fx" class="daw-panel">
+        <div class="daw-panel-header" onclick="togglePanel('panel-fx')">
+            <span><i class="fas fa-sliders-h me-2"></i>MASTER FX</span>
+            <i class="fas fa-chevron-down daw-panel-chevron"></i>
         </div>
-    </div>
+        <div class="daw-panel-body" id="panel-fx-body">
 
-<div class="card p-4 volume-card">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <label class="icon-label mb-0" style="color: #00ff88; font-size: 1.1rem; font-weight: 600;">
-            <i class="fas fa-volume-up"></i> MASTER VOLUME
-        </label>
-        <span id="gain-value" class="badge-custom">1.0</span>
-    </div>
-    <input type="range" class="form-range" min="0" max="3" step="0.1" value="1" 
-           oninput="updateGain(this.value)">
-    <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
-        <span><i class="fas fa-volume-mute"></i> MUTE</span>
-        <span><i class="fas fa-volume-down"></i> NORMAL</span>
-        <span><i class="fas fa-volume-up"></i> BOOST</span>
-    </div>
-</div>
+        <!-- MASTER VOLUME -->
+        <div class="mb-3 p-3" style="background: rgba(0, 255, 136, 0.08); border-radius: 10px; border: 1px solid rgba(0, 255, 136, 0.2);">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="icon-label mb-0" style="color: #00ff88; font-size: 0.9rem;">
+                    <i class="fas fa-volume-up"></i> MASTER VOLUME
+                </label>
+                <span id="gain-value" class="badge-custom">1.0</span>
+            </div>
+            <input type="range" class="form-range" min="0" max="3" step="0.1" value="1" 
+                   oninput="updateGain(this.value)">
+            <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
+                <span><i class="fas fa-volume-mute"></i> MUTE</span>
+                <span><i class="fas fa-volume-down"></i> NORMAL</span>
+                <span><i class="fas fa-volume-up"></i> BOOST</span>
+            </div>
+        </div>
 
-    <div class="card p-3">
-        <label class="slider-label icon-label mb-2"><i class="fas fa-water"></i> MASTER REVERB</label>
-        <input type="range" class="form-range mb-3" min="0" max="1" step="0.05" onchange="setEff('reverb.level', this.value)">
-        <label class="slider-label icon-label mb-2"><i class="fas fa-broadcast-tower"></i> MASTER CHORUS</label>
-        <input type="range" class="form-range" min="0" max="1" step="0.05" onchange="setEff('chorus.level', this.value)">
-    </div>
+        <!-- REVERB + CHORUS -->
+        <div class="row g-3">
+            <div class="col-6">
+                <label class="slider-label icon-label mb-2"><i class="fas fa-water"></i> MASTER REVERB</label>
+                <input type="range" class="form-range" min="0" max="1" step="0.05" onchange="setEff('reverb.level', this.value)">
+            </div>
+            <div class="col-6">
+                <label class="slider-label icon-label mb-2"><i class="fas fa-broadcast-tower"></i> MASTER CHORUS</label>
+                <input type="range" class="form-range" min="0" max="1" step="0.05" onchange="setEff('chorus.level', this.value)">
+            </div>
+        </div>
+
+        </div><!-- end panel-fx-body -->
+    </div><!-- end panel-fx -->
 
     <script>
         let instrumentData = [];
@@ -644,10 +674,11 @@ function updateGain(val) {
 
  
 async function syncWithSynth() {
-    const btn = document.querySelector('button[onclick="syncWithSynth()"]');
-    const originalHTML = btn.innerHTML;
-    btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> SYNCING...';
-    btn.disabled = true;
+    const syncBtn = document.querySelector('.daw-menu-sync');
+    if (syncBtn) {
+        syncBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+        syncBtn.disabled = true;
+    }
 
     try {
         const res = await fetch('/refresh_status');
@@ -677,8 +708,10 @@ async function syncWithSynth() {
     } catch (e) {
         console.error("Sync Error:", e);
     } finally {
-        btn.innerHTML = '<i class="fas fa-sync-alt"></i> Refresh';
-        btn.disabled = false;
+        if (syncBtn) {
+            syncBtn.innerHTML = '<i class="fas fa-sync-alt"></i>';
+            syncBtn.disabled = false;
+        }
     }
 }
 
@@ -852,24 +885,48 @@ let currentMidiSessionName = null;
 
 function dawSetSessionName(name) {
     currentMidiSessionName = name || null;
-    const label = document.getElementById('daw-session-label');
-    const btn = document.getElementById('daw-save-btn');
-    if (label) {
-        if (currentMidiSessionName) {
-            label.textContent = currentMidiSessionName;
-            label.style.color = '#00d4ff';
-            label.style.fontStyle = 'normal';
-        } else {
-            label.textContent = 'Nuovo progetto';
-            label.style.color = '#aaa';
-            label.style.fontStyle = 'italic';
-        }
+    // Update title bar session label
+    const titleLabel = document.getElementById('daw-session-title');
+    if (titleLabel) {
+        titleLabel.textContent = currentMidiSessionName || 'Nuovo progetto';
+        titleLabel.style.color = currentMidiSessionName ? '#00d4ff' : '#555';
+        titleLabel.style.fontStyle = currentMidiSessionName ? 'normal' : 'italic';
     }
+    const btn = document.getElementById('daw-save-btn');
     if (btn) {
         btn.title = currentMidiSessionName
             ? `Salva → "${currentMidiSessionName}"`
             : 'Salva (chiede il nome)';
     }
+}
+
+function dawNewProject() {
+    if (!confirm('Start a new project? Unsaved changes will be lost.')) return;
+    dawClearAll();
+}
+
+// ── Menu helpers ──────────────────────────────────────────────
+function toggleMenu(menuId) {
+    const allMenus = document.querySelectorAll('.daw-menu-item');
+    allMenus.forEach(m => {
+        if (m.id !== menuId) m.classList.remove('open');
+    });
+    document.getElementById(menuId).classList.toggle('open');
+}
+
+function closeMenus() {
+    document.querySelectorAll('.daw-menu-item').forEach(m => m.classList.remove('open'));
+}
+
+document.addEventListener('click', (e) => {
+    if (!e.target.closest('.daw-menu-item')) closeMenus();
+});
+
+// ── Panel toggle ──────────────────────────────────────────────
+function togglePanel(panelId) {
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    panel.classList.toggle('collapsed');
 }
 
 // SAVE: direct if name known, ask if new project
@@ -1142,10 +1199,13 @@ function dawUpdateTimelineUI() {
         timelineSpan.value = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${deciseconds}`;
         if (dawState.is_recording) {
             timelineSpan.style.background = '#dc3545';
+            timelineSpan.style.color = '#fff';
         } else if (dawState.is_playing) {
             timelineSpan.style.background = '#0dcaf0';
+            timelineSpan.style.color = '#0a0a12';
         } else {
-            timelineSpan.style.background = '#212529';
+            timelineSpan.style.background = 'rgba(0,0,0,0.5)';
+            timelineSpan.style.color = '#00d4ff';
         }
     }
 
@@ -1221,26 +1281,24 @@ function dawUpdateUI() {
     const barBadge = document.getElementById('daw-bar-counter');
     
     if (dawState.is_playing) {
-        playBtn.classList.remove('btn-success');
-        playBtn.classList.add('btn-warning');
-        playBtn.innerHTML = '<i class="fas fa-pause"></i> PLAYING';
+        playBtn.classList.add('playing');
+        playBtn.innerHTML = '<i class="fas fa-pause"></i>';
+        playBtn.title = 'Pause';
     } else {
-        playBtn.classList.remove('btn-warning');
-        playBtn.classList.add('btn-success');
-        playBtn.innerHTML = '<i class="fas fa-play"></i> PLAY';
+        playBtn.classList.remove('playing');
+        playBtn.innerHTML = '<i class="fas fa-play"></i>';
+        playBtn.title = 'Play';
     }
     
     // Update REC button
     if (dawState.is_recording) {
-        recBtn.classList.remove('btn-outline-danger');
-        recBtn.classList.add('btn-danger');
-        recBtn.innerHTML = '<i class="fas fa-circle"></i> RECORDING';
-        recBtn.style.animation = 'pulse 1s infinite';
+        recBtn.classList.add('recording');
+        recBtn.innerHTML = '<i class="fas fa-circle"></i>';
+        recBtn.title = 'Recording';
     } else {
-        recBtn.classList.remove('btn-danger');
-        recBtn.classList.add('btn-outline-danger');
-        recBtn.innerHTML = '<i class="fas fa-circle"></i> REC';
-        recBtn.style.animation = 'none';
+        recBtn.classList.remove('recording');
+        recBtn.innerHTML = '<i class="fas fa-circle"></i>';
+        recBtn.title = 'Record';
     }
     
     // Update BPM
@@ -1263,11 +1321,9 @@ function dawUpdateUI() {
     // Update metronome button
     const metronomeBtn = document.getElementById('daw-metronome');
     if (dawState.metronome_enabled) {
-        metronomeBtn.classList.remove('btn-outline-light');
-        metronomeBtn.classList.add('btn-warning');
+        metronomeBtn.classList.add('daw-tbtn-active');
     } else {
-        metronomeBtn.classList.remove('btn-warning');
-        metronomeBtn.classList.add('btn-outline-light');
+        metronomeBtn.classList.remove('daw-tbtn-active');
     }
     
     // Update Timeline display (mm:ss.d format)
@@ -1283,10 +1339,13 @@ function dawUpdateUI() {
     // Change color based on state
     if (dawState.is_recording) {
         timelineSpan.style.background = '#dc3545';
+        timelineSpan.style.color = '#fff';
     } else if (dawState.is_playing) {
         timelineSpan.style.background = '#0dcaf0';
+        timelineSpan.style.color = '#0a0a12';
     } else {
-        timelineSpan.style.background = '#212529';
+        timelineSpan.style.background = 'rgba(0,0,0,0.5)';
+        timelineSpan.style.color = '#00d4ff';
     }
 
     if (!dawState.is_recording) {
@@ -1380,18 +1439,22 @@ function dawUpdateUI() {
     // Update status
     const statusDiv = document.getElementById('daw-status');
     const statusText = document.getElementById('daw-status-text');
+    const statusPill = document.getElementById('daw-status-pill');
     
     if (dawState.is_recording) {
         statusDiv.style.display = 'block';
-        statusDiv.className = 'alert alert-danger py-2 mb-3 text-center';
+        statusDiv.className = 'daw-status-bar daw-status-recording text-center';
         const armedCh = Object.keys(dawState.armed).filter(k => dawState.armed[k]).map(k => parseInt(k) + 1);
         statusText.innerHTML = `<i class="fas fa-circle fa-pulse"></i> RECORDING Channel ${armedCh.join(', ')}`;
+        if (statusPill) { statusPill.style.display = 'block'; statusPill.className = 'daw-status-pill daw-pill-rec'; statusPill.innerHTML = '<i class="fas fa-circle fa-pulse"></i> REC'; }
     } else if (dawState.is_playing) {
         statusDiv.style.display = 'block';
-        statusDiv.className = 'alert alert-success py-2 mb-3 text-center';
+        statusDiv.className = 'daw-status-bar daw-status-playing text-center';
         statusText.innerHTML = '<i class="fas fa-play"></i> PLAYING...';
+        if (statusPill) { statusPill.style.display = 'block'; statusPill.className = 'daw-status-pill daw-pill-play'; statusPill.innerHTML = '<i class="fas fa-play"></i> PLAY'; }
     } else {
         statusDiv.style.display = 'none';
+        if (statusPill) { statusPill.style.display = 'none'; }
     }
     // Aggiorna range start/zoom limits e sincronizza slider
     const zoomSlider = document.getElementById('daw-zoom-range');
@@ -2127,13 +2190,9 @@ function dawToggleSelectMode() {
     selectMode = !selectMode;
     const btn = document.getElementById('daw-select-mode');
     if (selectMode) {
-        btn.style.background = 'rgba(255,200,50,0.2)';
-        btn.style.color = '#ffc832';
-        btn.style.borderColor = '#ffc832';
+        btn.classList.add('daw-tbtn-active');
     } else {
-        btn.style.background = 'transparent';
-        btn.style.color = '#aaa';
-        btn.style.borderColor = 'rgba(255,255,255,0.3)';
+        btn.classList.remove('daw-tbtn-active');
         dawCancelSelection();
     }
     // Change cursor on all canvases
@@ -2217,7 +2276,66 @@ async function dawClearAll() {
              setupMixer();           // Populate instrument dropdowns
              setupChCellHandlers();  // Long-press handlers for CH cells
              initDAW();              // Initialize DAW on page load
+             initRecorderResize();   // Drag-to-resize recorder area
         });
+
+        function initRecorderResize() {
+            const handle = document.getElementById('daw-resize-handle');
+            const main   = document.querySelector('.daw-main');
+            if (!handle || !main) return;
+
+            let isDragging = false;
+            let startY = 0;
+            let startH = 0;
+
+            function applyHeight(h) {
+                main.style.setProperty('flex', `0 0 ${h}px`, 'important');
+                main.style.setProperty('height', `${h}px`, 'important');
+            }
+
+            function resetHeight() {
+                main.style.removeProperty('flex');
+                main.style.removeProperty('height');
+            }
+
+            // Mouse
+            handle.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                startY = e.clientY;
+                startH = main.getBoundingClientRect().height;
+                document.body.style.cursor = 'ns-resize';
+                document.body.style.userSelect = 'none';
+                e.preventDefault();
+            });
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                applyHeight(Math.max(60, startH + (e.clientY - startY)));
+            });
+            document.addEventListener('mouseup', () => {
+                if (!isDragging) return;
+                isDragging = false;
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+            });
+
+            // Touch
+            handle.addEventListener('touchstart', (e) => {
+                isDragging = true;
+                startY = e.touches[0].clientY;
+                startH = main.getBoundingClientRect().height;
+                e.preventDefault();
+            }, { passive: false });
+            document.addEventListener('touchmove', (e) => {
+                if (!isDragging) return;
+                applyHeight(Math.max(60, startH + (e.touches[0].clientY - startY)));
+            }, { passive: false });
+            document.addEventListener('touchend', () => { isDragging = false; });
+
+            // Double-click → reset to auto
+            handle.addEventListener('dblclick', () => {
+                resetHeight();
+            });
+        }
     </script>
 <!-- MIDI File Manager Modal -->
 <div id="midi-manager-modal" class="modal-overlay" style="display:none;" onclick="dawCloseMidiManager(event)">
