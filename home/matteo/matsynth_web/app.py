@@ -18,6 +18,7 @@ FLUID_HOST = "127.0.0.1"
 FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
+MIDI_DIR = '/home/matteo/matsynth_web/midi/'  # Directory per i file MIDI salvati
 sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
 STATE_LOCK = threading.Lock()
 _INITIALIZED = False
@@ -25,6 +26,10 @@ _INITIALIZED = False
 # Crea la directory dei preset se non esiste
 if not os.path.exists(PRESETS_DIR):
     os.makedirs(PRESETS_DIR)
+
+# Crea la directory MIDI se non esiste
+if not os.path.exists(MIDI_DIR):
+    os.makedirs(MIDI_DIR)
 
 # Inizializza il sistema DAW Multi-Track
 daw = MultiTrackDAW(bpm=120, socketio=socketio)
@@ -1062,10 +1067,30 @@ def handle_transport_cmd(data):
         return {'status': 'error', 'message': str(e)}
 
 
-@app.route('/api/daw/export_midi')
-def daw_export_midi():
-    """Esporta le tracce registrate come file MIDI (con strumenti)"""
+@app.route('/api/daw/midi/save', methods=['POST'])
+def daw_midi_save():
+    """Salva le tracce registrate come file MIDI sul Raspberry Pi"""
     try:
+        data = request.json or {}
+        name = data.get('name', '').strip()
+        if not name:
+            name = f"session_{int(time.time())}"
+
+        # Sanitizza il nome del file
+        safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_')
+        if not safe_name:
+            safe_name = f"session_{int(time.time())}"
+
+        # Evita sovrascritture: aggiungi suffisso
+        base_name = safe_name
+        filepath = os.path.join(MIDI_DIR, f"{safe_name}.mid")
+        counter = 2
+        while os.path.exists(filepath):
+            safe_name = f"{base_name}_{counter}"
+            filepath = os.path.join(MIDI_DIR, f"{safe_name}.mid")
+            counter += 1
+
         # Leggi i programmi correnti dei canali dal saved state
         state = get_last_state()
         saved_channels = state.get('channels', {})
@@ -1083,47 +1108,152 @@ def daw_export_midi():
         midi_bytes = daw.export_midi(channel_programs=channel_programs)
         if not midi_bytes:
             return jsonify({"status": "error", "message": "Nessuna traccia da esportare"}), 400
-        buf = io.BytesIO(midi_bytes)
-        buf.seek(0)
-        return send_file(buf, mimetype='audio/midi',
-                         as_attachment=True, download_name='matsynth_session.mid')
+
+        with open(filepath, 'wb') as f:
+            f.write(midi_bytes)
+
+        return jsonify({
+            "status": "ok",
+            "filename": f"{safe_name}.mid",
+            "message": f"Salvato come {safe_name}.mid"
+        })
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route('/api/daw/import_midi', methods=['POST'])
-def daw_import_midi():
-    """Importa un file MIDI nelle tracce del DAW"""
+@app.route('/api/daw/midi/list')
+def daw_midi_list():
+    """Restituisce la lista dei file MIDI salvati"""
     try:
-        if 'file' not in request.files:
-            return jsonify({"status": "error", "message": "Nessun file inviato"}), 400
-        f = request.files['file']
-        if not f.filename:
-            return jsonify({"status": "error", "message": "File vuoto"}), 400
-        # Limita a 5MB
-        midi_bytes = f.read(5 * 1024 * 1024)
-        if len(midi_bytes) < 14:
-            return jsonify({"status": "error", "message": "File troppo piccolo o non valido"}), 400
-        merge = request.form.get('merge', 'false').lower() == 'true'
+        if not os.path.exists(MIDI_DIR):
+            return jsonify([])
+        files = []
+        for fn in sorted(os.listdir(MIDI_DIR)):
+            if fn.lower().endswith(('.mid', '.midi')):
+                fp = os.path.join(MIDI_DIR, fn)
+                stat = os.stat(fp)
+                files.append({
+                    'filename': fn,
+                    'name': fn.rsplit('.', 1)[0],
+                    'size': stat.st_size,
+                    'modified': time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
+                })
+        return jsonify(files)
+    except Exception as e:
+        return jsonify([])  
+
+
+@app.route('/api/daw/midi/load/<filename>')
+def daw_midi_load(filename):
+    """Carica un file MIDI salvato nelle tracce del DAW"""
+    try:
+        # Previeni path traversal
+        safe = os.path.basename(filename)
+        filepath = os.path.join(MIDI_DIR, safe)
+        if not os.path.exists(filepath):
+            return jsonify({"status": "error", "message": "File non trovato"}), 404
+        with open(filepath, 'rb') as f:
+            midi_bytes = f.read()
+        merge = request.args.get('merge', 'false').lower() == 'true'
         info = daw.import_midi(midi_bytes, merge=merge)
 
         # Applica gli strumenti importati a FluidSynth e salva nello stato
         ch_progs = info.get('channel_programs', {})
         if ch_progs:
             with STATE_LOCK:
-                state = get_last_state()
-                if 'channels' not in state:
-                    state['channels'] = {}
+                st = get_last_state()
+                if 'channels' not in st:
+                    st['channels'] = {}
                 for ch_str, prog_data in ch_progs.items():
                     ch = int(ch_str)
                     bank = prog_data.get('bank', 0)
                     prog = prog_data.get('program', 0)
                     send_fluid(f"select {ch} {sf_id} {bank} {prog}")
-                    if str(ch) not in state['channels']:
-                        state['channels'][str(ch)] = {}
-                    state['channels'][str(ch)]['bank'] = bank
-                    state['channels'][str(ch)]['program'] = prog
-                _write_state_atomic(state)
+                    if str(ch) not in st['channels']:
+                        st['channels'][str(ch)] = {}
+                    st['channels'][str(ch)]['bank'] = bank
+                    st['channels'][str(ch)]['program'] = prog
+                _write_state_atomic(st)
+
+        return jsonify({"status": "ok", "data": info})
+    except RuntimeError as e:
+        return jsonify({"status": "error", "message": str(e)}), 409
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/delete/<filename>', methods=['DELETE'])
+def daw_midi_delete(filename):
+    """Elimina un file MIDI salvato"""
+    try:
+        safe = os.path.basename(filename)
+        filepath = os.path.join(MIDI_DIR, safe)
+        if not os.path.exists(filepath):
+            return jsonify({"status": "error", "message": "File non trovato"}), 404
+        os.remove(filepath)
+        return jsonify({"status": "ok", "message": f"{safe} eliminato"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/download/<filename>')
+def daw_midi_download(filename):
+    """Scarica un file MIDI salvato"""
+    try:
+        safe = os.path.basename(filename)
+        filepath = os.path.join(MIDI_DIR, safe)
+        if not os.path.exists(filepath):
+            return jsonify({"status": "error", "message": "File non trovato"}), 404
+        return send_file(filepath, mimetype='audio/midi',
+                         as_attachment=True, download_name=safe)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/upload', methods=['POST'])
+def daw_midi_upload():
+    """Carica un file MIDI dal PC nelle tracce del DAW"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"status": "error", "message": "Nessun file inviato"}), 400
+        f = request.files['file']
+        if not f.filename:
+            return jsonify({"status": "error", "message": "File vuoto"}), 400
+        midi_bytes = f.read(5 * 1024 * 1024)
+        if len(midi_bytes) < 14:
+            return jsonify({"status": "error", "message": "File troppo piccolo o non valido"}), 400
+        merge = request.form.get('merge', 'false').lower() == 'true'
+        info = daw.import_midi(midi_bytes, merge=merge)
+
+        # Salva anche una copia nella cartella MIDI
+        original_name = os.path.splitext(os.path.basename(f.filename))[0]
+        safe_name = "".join(c for c in original_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_') or f"upload_{int(time.time())}"
+        filepath = os.path.join(MIDI_DIR, f"{safe_name}.mid")
+        counter = 2
+        while os.path.exists(filepath):
+            filepath = os.path.join(MIDI_DIR, f"{safe_name}_{counter}.mid")
+            counter += 1
+        with open(filepath, 'wb') as out:
+            out.write(midi_bytes)
+
+        # Applica gli strumenti importati a FluidSynth e salva nello stato
+        ch_progs = info.get('channel_programs', {})
+        if ch_progs:
+            with STATE_LOCK:
+                st = get_last_state()
+                if 'channels' not in st:
+                    st['channels'] = {}
+                for ch_str, prog_data in ch_progs.items():
+                    ch = int(ch_str)
+                    bank = prog_data.get('bank', 0)
+                    prog = prog_data.get('program', 0)
+                    send_fluid(f"select {ch} {sf_id} {bank} {prog}")
+                    if str(ch) not in st['channels']:
+                        st['channels'][str(ch)] = {}
+                    st['channels'][str(ch)]['bank'] = bank
+                    st['channels'][str(ch)]['program'] = prog
+                _write_state_atomic(st)
 
         return jsonify({"status": "ok", "data": info})
     except RuntimeError as e:

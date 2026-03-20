@@ -870,11 +870,13 @@ class MultiTrackDAW:
             # Inserisci Bank Select + Program Change a tick 0
             ch_prog = channel_programs.get(ch, {})
             bank = ch_prog.get('bank', 0)
-            prog = ch_prog.get('program', 0)
+            prog = min(127, max(0, ch_prog.get('program', 0)))
+            bank_msb = min(127, max(0, (bank >> 7) & 0x7F))
+            bank_lsb = min(127, max(0, bank & 0x7F))
             track.append(mido.Message('control_change', channel=ch,
-                                      control=0, value=bank, time=0))
+                                      control=0, value=bank_msb, time=0))
             track.append(mido.Message('control_change', channel=ch,
-                                      control=32, value=0, time=0))
+                                      control=32, value=bank_lsb, time=0))
             track.append(mido.Message('program_change', channel=ch,
                                       program=prog, time=0))
 
