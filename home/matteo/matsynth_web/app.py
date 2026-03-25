@@ -881,6 +881,24 @@ def daw_mute_track(channel):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/solo', methods=['POST'])
+def daw_solo_track(channel):
+    """Attiva/disattiva il solo su una traccia"""
+    try:
+        data = request.json
+        solo = data.get('solo', True)
+        
+        daw.solo_track(channel, solo)
+        
+        return jsonify({
+            "status": "ok",
+            "message": f"Traccia {channel} solo {'attivato' if solo else 'disattivato'}",
+            "solo": daw.solo[channel]
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/track/<int:channel>/clear', methods=['POST'])
 def daw_clear_track(channel):
     """Cancella una traccia specifica"""
@@ -962,6 +980,62 @@ def daw_toggle_metronome():
             "message": f"Metronomo {'abilitato' if enabled else 'disabilitato'}",
             "enabled": enabled
         })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/loop_points', methods=['POST'])
+def daw_set_loop_points():
+    """Imposta i punti di loop (in beat)"""
+    try:
+        data = request.json or {}
+        start_beat = float(data.get('start_beat', 0))
+        end_beat = float(data.get('end_beat', 0))
+        success = daw.set_loop_points(start_beat, end_beat)
+        if success:
+            return jsonify({"status": "ok", "loop_start": start_beat, "loop_end": end_beat})
+        else:
+            return jsonify({"status": "error", "message": "end_beat deve essere > start_beat"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/loop/toggle', methods=['POST'])
+def daw_toggle_loop():
+    """Attiva/disattiva il loop"""
+    try:
+        enabled = daw.toggle_loop()
+        return jsonify({
+            "status": "ok",
+            "message": f"Loop {'attivato' if enabled else 'disattivato'}",
+            "enabled": enabled
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/undo', methods=['POST'])
+def daw_undo():
+    """Annulla l'ultima operazione distruttiva"""
+    try:
+        success = daw.undo()
+        if success:
+            return jsonify({"status": "ok", "message": "Undo eseguito"})
+        else:
+            return jsonify({"status": "error", "message": "Niente da annullare"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/redo', methods=['POST'])
+def daw_redo():
+    """Ripristina l'ultima operazione annullata"""
+    try:
+        success = daw.redo()
+        if success:
+            return jsonify({"status": "ok", "message": "Redo eseguito"})
+        else:
+            return jsonify({"status": "error", "message": "Niente da ripristinare"}), 400
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1127,6 +1201,13 @@ def handle_transport_cmd(data):
             success = daw.set_position(position)
             if not success:
                 return {'status': 'error', 'message': 'Cannot seek while playing or recording'}
+        elif cmd == 'undo':
+            success = daw.undo()
+        elif cmd == 'redo':
+            success = daw.redo()
+        elif cmd == 'toggle_loop':
+            daw.toggle_loop()
+            success = True
         else:
             return {'status': 'error', 'message': f'Unknown command: {cmd}'}
         return {'status': 'ok'} if success else {'status': 'error', 'message': f'{cmd} failed'}

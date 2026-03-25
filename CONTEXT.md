@@ -241,11 +241,16 @@ FluidSynth output: cerca 'FLUID' o '128:0' nei nomi porta
 | POST | `/api/daw/rewind` | Torna a 00:00:00 |
 | POST | `/api/daw/track/<ch>/arm` | Arma/disarma traccia |
 | POST | `/api/daw/track/<ch>/mute` | Muta/smuta traccia |
+| POST | `/api/daw/track/<ch>/solo` | Solo/unsolo traccia |
 | POST | `/api/daw/track/<ch>/clear` | Cancella traccia |
 | POST | `/api/daw/clear_all` | Cancella tutte le tracce |
 | POST | `/api/daw/bpm` | Imposta BPM (30–300) |
 | POST | `/api/daw/time_signature` | Imposta time signature (3 o 4) |
 | POST | `/api/daw/position` | Imposta posizione timeline (secondi) |
+| POST | `/api/daw/loop_points` | Imposta loop start/end (in beat) |
+| POST | `/api/daw/loop/toggle` | Toggle loop on/off |
+| POST | `/api/daw/undo` | Undo ultima operazione distruttiva |
+| POST | `/api/daw/redo` | Redo ultima operazione annullata |
 | POST | `/api/daw/quantize` | Quantizza tracce selezionate |
 | GET | `/api/daw/density_map` | Mappa densità note (slot 1/8 beat) |
 | GET | `/api/daw/track/<ch>/activity` | Intervalli note per traccia |
@@ -375,32 +380,47 @@ Canale 9 (0-indexed) = drum kit per il metronomo.
 
 ---
 
-## 10. Ruoli del Team
+## 10. Ruoli del Team e Agent Copilot
 
-### UX Designer
+Ogni ruolo ha un corrispondente file agent in `.github/agents/` che configura Copilot con competenze, tool e regole specifiche. Il **Tech Lead** è il punto di ingresso che coordina gli altri.
+
+| Ruolo | Agent file | Responsabilità principale |
+|-------|-----------|--------------------------|
+| Tech Lead (coordinatore) | `tech-lead.agent.md` | Analisi richieste, pianificazione, delega ai sotto-agent |
+| UX Designer | `ux-designer.agent.md` | UI/UX touch-first, wireframe, accessibilità, design DAW |
+| Esperto DAW / DSP | `daw.agent.md` | Ottimizzazione audio, timeline, transport, rendering Canvas |
+| Esperto Standard Musicali | `daw-expert.agent.md` | Validazione MIDI, SF2, timing, quantizzazione, standard DAW |
+| Programmatore Full-Stack | `programmer.agent.md` | Implementazione Flask, SocketIO, JS, Canvas API |
+| QA / Security Engineer | `qa-engineer.agent.md` | Test pytest, review OWASP, performance Pi, validazione MIDI |
+
+Regole globali condivise: `.github/copilot-instructions.md`
+
+### UX Designer (`ux-designer.agent.md`)
 - **Dominio**: `index.html`, `presets.html`, `settings.html`, `style.css`.
-- **Focus attuale**: usabilità su **tablet e PC** (target primario), feedback visivo latenza, accessibilità controlli DAW.
+- **Focus attuale**: usabilità su **tablet e PC** (target primario), feedback visivo latenza, accessibilità controlli DAW, design professionale dell'interfaccia grafica. 
 - **Vincoli**: il rendering avviene sul browser del client, quindi non ci sono limiti di CPU/RAM lato UI. Framework JS complessi (React, Vue, Svelte) sono compatibili; il processo di build risiede sulla dev machine, non sul Pi. Attualmente si usa Bootstrap 5 + vanilla JS — valutare migrazione se la complessità UI lo richiede.
 
-### Esperto DAW / Composizione
-- **Dominio**: `daw_recorder.py` (algoritmi musicali), UI DAW in `index.html`.
-- **Aree chiave**: timing preciso loop, quantizzazione, swing, metronomo, gestione loop point, esportazione MIDI standard.
-- **Vincoli hardware**: latenza audio/MIDI su Pi Zero, limitazioni buffer.
+### Esperto DAW / DSP (`daw.agent.md`)
+- **Dominio**: `daw_recorder.py` (algoritmi e ottimizzazione), UI DAW in `index.html` (Canvas, timeline, transport).
+- **Aree chiave**: ottimizzazione playback/recording per Pi Zero, rendering Canvas iper-ottimizzato, loop di riproduzione, threading audio.
+- **Vincoli hardware**: latenza audio/MIDI su Pi Zero, limitazioni buffer, CPU budget critico.
 
-### Backend Architect
-- **Dominio**: `app.py`, `startfluid.sh`, deploy scripts.
-- **Aree chiave**: comunicazione FluidSynth, state management, concorrenza threading, sicurezza path, deploy systemd.
-- **Vincoli**: Python 3.7+, Flask threading, niente DB relazionale.
+### Esperto Standard Musicali (`daw-expert.agent.md`)
+- **Dominio**: standard MIDI 1.0/2.0, SF2/SF3, SMF, General MIDI, FluidSynth.
+- **Aree chiave**: validazione timing, quantizzazione, swing, metronomo, loop point, esportazione MIDI standard, mappa CC, teoria musicale applicata.
+- **Ruolo**: consulenza e validazione — non implementa direttamente, definisce le specifiche algoritmiche per `programmer` e `daw`.
 
-### Programmatori
-- **Dominio**: tutti i file.
+### Programmatore Full-Stack (`programmer.agent.md`)
+- **Dominio**: tutti i file (`*.py`, `*.html`, `*.css`, `*.js`, deploy scripts, `startfluid.sh`).
 - **Linguaggi**: Python (backend), JavaScript ES6+ vanilla (frontend).
-- **Stile**: nessun linter configurato, italiano nei commenti/log, PEP8 suggerito.
+- **Aree chiave**: Flask API, SocketIO, comunicazione FluidSynth, state management, concorrenza threading, sicurezza path, deploy systemd.
+- **Vincoli**: Python 3.7+, Flask threading, niente DB relazionale.
+- **Stile**: nessun linter configurato, inglese nei commenti/log, PEP8 suggerito.
 
-### QA / Testing
-- **Dominio**: test di integrazione Flask, test MIDI (mock), test UX browser.
+### QA / Security Engineer (`qa-engineer.agent.md`)
+- **Dominio**: test di integrazione Flask, test MIDI (mock), test UX browser, review sicurezza.
 - **Tooling suggerito**: `pytest` + `pytest-flask` + `unittest.mock` per isolare FluidSynth/MIDI.
-- **Test critici**: scrittura stato atomica, path traversal, comportamento sotto latenza elevata.
+- **Test critici**: scrittura stato atomica, path traversal, comportamento sotto latenza elevata, OWASP Top 10.
 
 ---
 

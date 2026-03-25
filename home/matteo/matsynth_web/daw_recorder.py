@@ -39,6 +39,8 @@ class MultiTrackDAW:
         self.armed = {i: False for i in range(16)}      # traccia pronta per registrazione
         self.muted = {i: False for i in range(16)}      # traccia mutata
         self.has_data = {i: False for i in range(16)}   # traccia ha eventi registrati
+        self.solo = {i: False for i in range(16)}        # traccia in solo
+        self._any_solo = False                            # cache: almeno una traccia in solo
         
         # Stato del trasporto
         self.is_recording = False
@@ -50,12 +52,22 @@ class MultiTrackDAW:
         self.metronome_thread = None
         self.last_beat = -1  # ultimo beat suonato (per evitare duplicati)
         
+        # Loop points
+        self.loop_enabled = False
+        self.loop_start = 0.0    # beat position
+        self.loop_end = 0.0      # beat position
+        
         # Thread control
         self.record_thread = None
         self.playback_thread = None
         self.update_thread = None  # Thread per aggiornamenti periodici via WebSocket
         self.stop_event = threading.Event()
         self.metronome_stop_event = threading.Event()
+
+        # Undo/Redo stack (max 10 livelli, leggero per Pi Zero)
+        self._undo_stack = []
+        self._redo_stack = []
+        self._MAX_UNDO = 10
 
         # Conteggi attivi e densità
         self.active_notes = {i: 0 for i in range(16)}
@@ -382,6 +394,24 @@ class MultiTrackDAW:
         self._emit_state_change()
         return True
 
+    def set_loop_points(self, start_beat, end_beat):
+        """Imposta i punti di loop (in beat). end_beat deve essere > start_beat."""
+        if end_beat <= start_beat:
+            return False
+        self.loop_start = float(start_beat)
+        self.loop_end = float(end_beat)
+        self._emit_state_change()
+        return True
+
+    def toggle_loop(self):
+        """Attiva/disattiva il loop tra loop_start e loop_end."""
+        if self.loop_end > self.loop_start:
+            self.loop_enabled = not self.loop_enabled
+        else:
+            self.loop_enabled = False
+        self._emit_state_change()
+        return self.loop_enabled
+
     
     def arm_track(self, channel, armed=True):
         """
@@ -408,8 +438,19 @@ class MultiTrackDAW:
         self._emit_state_change()  # Notifica via WebSocket
         return True
     
+    def solo_track(self, channel, solo=True):
+        """
+        Attiva/disattiva il solo su una traccia.
+        Quando almeno una traccia è in solo, solo quelle producono suono.
+        """
+        self.solo[channel] = solo
+        self._any_solo = any(self.solo.values())
+        self._emit_state_change()
+        return True
+    
     def clear_track(self, channel):
         """Cancella tutti gli eventi di una traccia"""
+        self._push_undo()
         self.tracks[channel] = []
         self.has_data[channel] = False
         print(f"[DAW] Traccia {channel} cancellata")
@@ -420,6 +461,7 @@ class MultiTrackDAW:
         """Cancella gli eventi di una traccia nell'intervallo [start_beat, end_beat)"""
         if channel < 0 or channel > 15:
             return False
+        self._push_undo()
         before = len(self.tracks[channel])
         self.tracks[channel] = [
             (b, msg) for b, msg in self.tracks[channel]
@@ -433,11 +475,57 @@ class MultiTrackDAW:
 
     def clear_all_tracks(self):
         """Cancella tutte le tracce"""
+        self._push_undo()
         for ch in range(16):
             self.tracks[ch] = []
             self.has_data[ch] = False
         print("[DAW] Tutte le tracce cancellate")
         self._emit_state_change()
+        return True
+
+    # ──────────────────────────────────────────────────────────────────
+    # UNDO / REDO (leggero per Pi Zero 2W, max 10 livelli)
+    # ──────────────────────────────────────────────────────────────────
+
+    def _take_snapshot(self):
+        """Cattura stato corrente tracce (shallow copy — tuple sono immutabili)."""
+        return {
+            'tracks': {ch: list(self.tracks[ch]) for ch in range(16)},
+            'has_data': self.has_data.copy()
+        }
+
+    def _push_undo(self):
+        """Salva snapshot nello stack undo. Chiamare PRIMA dell'operazione distruttiva."""
+        self._undo_stack.append(self._take_snapshot())
+        if len(self._undo_stack) > self._MAX_UNDO:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def _restore_snapshot(self, snapshot):
+        """Applica uno snapshot alle tracce."""
+        for ch in range(16):
+            self.tracks[ch] = snapshot['tracks'].get(ch, [])
+            self.has_data[ch] = snapshot['has_data'].get(ch, False)
+        self._emit_state_change()
+
+    def undo(self):
+        """Annulla l'ultima operazione distruttiva."""
+        if self.is_recording or self.is_playing:
+            return False
+        if not self._undo_stack:
+            return False
+        self._redo_stack.append(self._take_snapshot())
+        self._restore_snapshot(self._undo_stack.pop())
+        return True
+
+    def redo(self):
+        """Ripristina l'ultima operazione annullata."""
+        if self.is_recording or self.is_playing:
+            return False
+        if not self._redo_stack:
+            return False
+        self._undo_stack.append(self._take_snapshot())
+        self._restore_snapshot(self._redo_stack.pop())
         return True
 
     # ──────────────────────────────────────────────────────────────────
@@ -496,6 +584,7 @@ class MultiTrackDAW:
         if not channels:
             channels = [ch for ch in range(16) if self.has_data[ch]]
 
+        self._push_undo()
         results = {}
 
         for ch in channels:
@@ -593,10 +682,17 @@ class MultiTrackDAW:
             'beats_per_measure': self.beats_per_measure,
             'armed': self.armed.copy(),
             'muted': self.muted.copy(),
+            'solo': self.solo.copy(),
+            'any_solo': self._any_solo,
             'has_data': self.has_data.copy(),
             'track_counts': {ch: len(self.tracks[ch]) for ch in range(16)},
-            'track_durations': track_durations,  # Durata di ogni traccia in secondi
-            'max_duration': max_duration  # Durata massima tra tutte le tracce
+            'track_durations': track_durations,
+            'max_duration': max_duration,
+            'loop_enabled': self.loop_enabled,
+            'loop_start': self.loop_start,
+            'loop_end': self.loop_end,
+            'can_undo': len(self._undo_stack) > 0,
+            'can_redo': len(self._redo_stack) > 0
         }
 
     def get_track_activity(self, channel, start_beat=0.0, end_beat=9999.0):
@@ -856,68 +952,87 @@ class MultiTrackDAW:
         except Exception as e:
             print(f"[DAW] Errore nel loop di registrazione: {e}")
     
+    def _collect_playback_events(self):
+        """Collect events from playable tracks, respecting solo/mute and loop range."""
+        events = []
+        for channel in range(16):
+            if not self.has_data[channel]:
+                continue
+            if self._any_solo:
+                if not self.solo[channel]:
+                    continue
+            else:
+                if self.muted[channel]:
+                    continue
+            for beat_position, msg_bytes in self.tracks[channel]:
+                if self.loop_enabled and self.loop_end > self.loop_start:
+                    if beat_position < self.loop_start or beat_position >= self.loop_end:
+                        continue
+                timestamp_seconds = beat_position * self.beat_duration
+                events.append((timestamp_seconds, channel, msg_bytes))
+        return events
+
     def _playback_loop(self):
-        """Loop di riproduzione (eseguito in thread separato)"""
+        """Loop di riproduzione con supporto solo/mute e loop points."""
         if not self.midi_output:
             print("[DAW] Errore: Nessun output MIDI disponibile")
             return
         
-        # Salva la posizione iniziale (da dove riprendere)
         initial_position = self.timeline_position
-        start_time = time.time()
-        
-        # Prepara gli eventi di tutte le tracce non mutate
-        # Converti beat position in secondi usando BPM corrente
-        all_events = []
-        for channel in range(16):
-            if self.has_data[channel] and not self.muted[channel]:
-                for beat_position, msg_bytes in self.tracks[channel]:
-                    # Converti beat in secondi con BPM corrente
-                    timestamp_seconds = beat_position * self.beat_duration
-                    all_events.append((timestamp_seconds, channel, msg_bytes))
-        
-        # Ordina gli eventi per timestamp in secondi
-        all_events.sort(key=lambda x: x[0])
-        
-        # Salta gli eventi già passati (prima della posizione corrente)
-        event_index = 0
-        while event_index < len(all_events) and all_events[event_index][0] < initial_position:
-            event_index += 1
-        
-        print(f"[DAW] Riproduzione di {len(all_events) - event_index} eventi da {initial_position:.1f}s")
         
         try:
-            while not self.stop_event.is_set() and event_index < len(all_events):
-                current_time = initial_position + (time.time() - start_time)
+            while not self.stop_event.is_set():
+                start_time = time.time()
                 
-                # Aggiorna timeline position
-                self.timeline_position = current_time
+                all_events = self._collect_playback_events()
+                all_events.sort(key=lambda x: x[0])
                 
-                # Invia tutti gli eventi che dovrebbero essere già suonati
-                while event_index < len(all_events):
-                    timestamp, channel, msg_bytes = all_events[event_index]
+                event_index = 0
+                while event_index < len(all_events) and all_events[event_index][0] < initial_position:
+                    event_index += 1
+                
+                if event_index >= len(all_events):
+                    break
+                
+                loop_end_sec = (self.loop_end * self.beat_duration) if (self.loop_enabled and self.loop_end > self.loop_start) else float('inf')
+                
+                print(f"[DAW] Riproduzione di {len(all_events) - event_index} eventi da {initial_position:.1f}s")
+                
+                while not self.stop_event.is_set() and event_index < len(all_events):
+                    current_time = initial_position + (time.time() - start_time)
+                    self.timeline_position = current_time
                     
-                    if timestamp <= current_time:
-                        # Ricostruisci e invia il messaggio
-                        try:
-                            msg = mido.Message.from_bytes(msg_bytes)
-                            self.midi_output.send(msg)
-                        except:
-                            pass
-                        
-                        event_index += 1
-                    else:
+                    if current_time >= loop_end_sec:
+                        self._send_all_notes_off()
                         break
+                    
+                    while event_index < len(all_events):
+                        timestamp, channel, msg_bytes = all_events[event_index]
+                        if timestamp <= current_time:
+                            try:
+                                msg = mido.Message.from_bytes(msg_bytes)
+                                self.midi_output.send(msg)
+                            except:
+                                pass
+                            event_index += 1
+                        else:
+                            break
+                    
+                    if event_index < len(all_events):
+                        next_timestamp = all_events[event_index][0]
+                        sleep_time = min(0.001, max(0, next_timestamp - current_time))
+                        time.sleep(sleep_time)
+                    else:
+                        time.sleep(0.001)
                 
-                # Sleep fino al prossimo evento o polling minimo
-                if event_index < len(all_events):
-                    next_timestamp = all_events[event_index][0]
-                    sleep_time = min(0.001, max(0, next_timestamp - current_time))
-                    time.sleep(sleep_time)
-                else:
-                    time.sleep(0.001)
+                if self.stop_event.is_set():
+                    break
+                if not self.loop_enabled or self.loop_end <= self.loop_start:
+                    break
+                # Restart from loop_start
+                initial_position = self.loop_start * self.beat_duration
+                self.timeline_position = initial_position
             
-            # Loop completato
             if not self.is_recording:
                 self.is_playing = False
                 self._send_all_notes_off()
