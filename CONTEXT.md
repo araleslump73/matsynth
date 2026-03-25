@@ -259,6 +259,13 @@ FluidSynth output: cerca 'FLUID' o '128:0' nei nomi porta
 | GET | `/api/daw/midi/download/<filename>` | Download file MIDI |
 | DELETE | `/api/daw/midi/delete/<filename>` | Elimina file MIDI |
 | POST | `/api/daw/range/clear` | Cancella range di beat su un canale |
+| POST | `/api/daw/seek_beat` | Seek to beat position (works during playback) |
+| POST | `/api/daw/copy` | Copy selection events to clipboard |
+| POST | `/api/daw/paste` | Paste clipboard events at target beat |
+| POST | `/api/daw/track/<ch>/duplicate` | Duplicate track to first empty channel |
+| POST | `/api/daw/track/<ch>/rename` | Rename track (max 32 chars) |
+| POST | `/api/daw/track/<ch>/color` | Set track color palette index (0-15) |
+| GET | `/api/daw/full_density_map` | Full density map (cached, invalidated on data change) |
 
 ---
 
@@ -267,7 +274,7 @@ FluidSynth output: cerca 'FLUID' o '128:0' nei nomi porta
 #### Sezioni UI (collapsibili)
 1. **MICRO-DAW RECORDER** — transport, BPM, time signature, zoom, 16 track rows con canvas.
 2. **MIDI CHANNELS** — 16 righe, dropdown strumento per canale.
-3. **CHANNEL CONTROLS** — slider CC (volume CC7, attack CC73, decay CC75, release CC72, cutoff CC74, resonance CC71).
+3. **CHANNEL CONTROLS** — slider CC (volume CC7, pan CC10, attack CC73, decay CC75, release CC72, cutoff CC74, resonance CC71).
 4. **MASTER VOLUME** — slider gain 0–3 (MUTE/NORMAL/BOOST).
 5. **MASTER EFFECTS** — Reverb e Chorus globali.
 

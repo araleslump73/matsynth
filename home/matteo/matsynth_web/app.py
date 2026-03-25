@@ -157,6 +157,7 @@ def restore_settings():
         # Applica CC se presenti
         cc_map = {
             'volume': ('7', ch_data.get('volume')),
+            'pan': ('10', ch_data.get('pan')),
             'attack': ('73', ch_data.get('attack')),
             'release': ('72', ch_data.get('release')),
             'decay': ('75', ch_data.get('decay')),
@@ -1095,12 +1096,103 @@ def daw_quantize():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/copy', methods=['POST'])
+def daw_copy():
+    """Copy events from a selection range on a channel to the clipboard."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', 0))
+        start_beat = float(data.get('start_beat', 0))
+        end_beat = float(data.get('end_beat', 0))
+        count = daw.copy_selection(channel, start_beat, end_beat)
+        return jsonify({"status": "ok", "copied": count})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/paste', methods=['POST'])
+def daw_paste():
+    """Paste clipboard events at a target beat on a channel."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', 0))
+        target_beat = float(data.get('beat', 0))
+        count = daw.paste_at(channel, target_beat)
+        return jsonify({"status": "ok", "pasted": count})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/duplicate', methods=['POST'])
+def daw_duplicate_track(channel):
+    """Duplicate track events to a user-chosen channel. Instrument and CC stay unchanged on dest."""
+    try:
+        data = request.json or {}
+        dest_channel = data.get('dest_channel')
+        if dest_channel is None:
+            return jsonify({"status": "error", "message": "dest_channel required"}), 400
+        dest_channel = int(dest_channel)
+        if dest_channel < 0 or dest_channel > 15:
+            return jsonify({"status": "error", "message": "dest_channel out of range"}), 400
+        if dest_channel == channel:
+            return jsonify({"status": "error", "message": "Cannot duplicate onto same channel"}), 400
+
+        result = daw.duplicate_track(channel, dest_channel)
+        if result == -1:
+            return jsonify({"status": "error", "message": "Cannot duplicate (source empty or transport active)"}), 400
+        return jsonify({"status": "ok", "dest_channel": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/rename', methods=['POST'])
+def daw_rename_track(channel):
+    """Rename a track."""
+    try:
+        data = request.json or {}
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({"status": "error", "message": "Name required"}), 400
+        ok = daw.rename_track(channel, name)
+        return jsonify({"status": "ok" if ok else "error"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/color', methods=['POST'])
+def daw_set_track_color(channel):
+    """Set track color palette index."""
+    try:
+        data = request.json or {}
+        color_index = int(data.get('color_index', 0))
+        ok = daw.set_track_color(channel, color_index)
+        return jsonify({"status": "ok" if ok else "error"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/full_density_map')
 def daw_full_density_map():
     """Ritorna la mappa di densità completa per tutte le tracce."""
     try:
         density = daw.get_full_density_map()
         return jsonify({"status": "ok", "map": density})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/seek_beat', methods=['POST'])
+def daw_seek_beat():
+    """Seek to a beat position (works during playback too)."""
+    try:
+        data = request.json or {}
+        beat = data.get('beat')
+        if beat is None or not isinstance(beat, (int, float)):
+            return jsonify({"status": "error", "message": "Missing or invalid beat"}), 400
+        success = daw.seek_to_beat(float(beat))
+        if not success:
+            return jsonify({"status": "error", "message": "Cannot seek during recording"}), 409
+        return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1113,6 +1205,49 @@ def daw_track_activity(channel):
         end = float(request.args.get('end', start + 16.0))
         intervals = daw.get_track_activity(channel, start, end)
         return jsonify({"status": "ok", "intervals": intervals})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/events')
+def daw_track_events(channel):
+    """Returns decoded MIDI events list for a channel (-1 = all)."""
+    try:
+        events = daw.get_events_decoded(channel)
+        return jsonify({"status": "ok", "events": events})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/events/<int:index>', methods=['PUT'])
+def daw_edit_event(channel, index):
+    """Edit an event's properties (beat, velocity, note, cc_num, cc_value, pitch, program)."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.json or {}
+        allowed = ('beat', 'velocity', 'note', 'cc_value', 'cc_num', 'pitch', 'program')
+        updates = {k: data[k] for k in allowed if k in data}
+        if not updates:
+            return jsonify({"status": "error", "message": "No updates provided"}), 400
+        ok = daw.edit_event(channel, index, updates)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot edit (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/events/<int:index>', methods=['DELETE'])
+def daw_delete_event(channel, index):
+    """Delete an event by index."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        ok = daw.delete_event(channel, index)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot delete (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1135,14 +1270,14 @@ def handle_cc_update(data):
         if not (0 <= chan <= 15 and 0 <= cc_num <= 127 and 0 <= val <= 127):
             return {'status': 'error', 'message': 'Values out of range'}
         send_fluid(f"cc {chan} {cc_num} {val}")
-        if cc_num in [7, 71, 72, 73, 74, 75]:
+        if cc_num in [7, 10, 71, 72, 73, 74, 75]:
             with STATE_LOCK:
                 state = get_last_state()
                 if 'channels' not in state:
                     state['channels'] = {}
                 if str(chan) not in state['channels']:
                     state['channels'][str(chan)] = {}
-                cc_names = {7: 'volume', 71: 'resonance', 72: 'release',
+                cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
                             73: 'attack', 74: 'cutoff', 75: 'decay'}
                 state['channels'][str(chan)][cc_names[cc_num]] = val
                 _write_state_atomic(state)
@@ -1201,6 +1336,13 @@ def handle_transport_cmd(data):
             success = daw.set_position(position)
             if not success:
                 return {'status': 'error', 'message': 'Cannot seek while playing or recording'}
+        elif cmd == 'seek_beat':
+            beat = data.get('beat')
+            if beat is None or not isinstance(beat, (int, float)):
+                return {'status': 'error', 'message': 'Missing or invalid beat'}
+            success = daw.seek_to_beat(float(beat))
+            if not success:
+                return {'status': 'error', 'message': 'Cannot seek during recording'}
         elif cmd == 'undo':
             success = daw.undo()
         elif cmd == 'redo':

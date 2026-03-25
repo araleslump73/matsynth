@@ -58,11 +58,25 @@
                     <i class="fas fa-retweet"></i> Set Loop from Selection
                 </button>
                 <div class="daw-dropdown-sep"></div>
-                <button class="daw-dropdown-item" onclick="dawToggleSelectMode(); closeMenus()">>
+                <button class="daw-dropdown-item" onclick="dawCopySelection(); closeMenus()">
+                    <i class="fas fa-copy"></i> Copy Selection <span class="daw-shortcut">Ctrl+C</span>
+                </button>
+                <button class="daw-dropdown-item" onclick="dawPasteAtPlayhead(); closeMenus()">
+                    <i class="fas fa-paste"></i> Paste at Playhead <span class="daw-shortcut">Ctrl+V</span>
+                </button>
+                <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="dawToggleSelectMode(); closeMenus()">
                     <i class="fas fa-i-cursor"></i> Select Mode
                 </button>
                 <button class="daw-dropdown-item" onclick="dawDeleteSelection(); closeMenus()">
                     <i class="fas fa-trash"></i> Delete Selection
+                </button>
+                <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="dawDuplicateTrack(); closeMenus()">
+                    <i class="fas fa-clone"></i> Duplicate Track
+                </button>
+                <button class="daw-dropdown-item" onclick="dawRenameTrackPrompt(); closeMenus()">
+                    <i class="fas fa-pen"></i> Rename Track
                 </button>
                 <div class="daw-dropdown-sep"></div>
                 <button class="daw-dropdown-item" onclick="dawToggleQuantBar(); closeMenus()">
@@ -182,6 +196,9 @@
             </button>
             <button id="daw-quant-toggle" class="daw-tbtn daw-tbtn-sel" onclick="dawToggleQuantBar()" title="Quantizzazione note (post-registrazione)">
                 <i class="fas fa-magic"></i>
+            </button>
+            <button id="daw-events-btn" class="daw-tbtn daw-tbtn-sel" onclick="dawOpenEventViewer()" title="MIDI Events Viewer">
+                <i class="fas fa-list-ol"></i>
             </button>
         </div>
     </div>
@@ -500,6 +517,24 @@
                    style="height: 8px;">
         </div>
         
+        <!-- PAN CONTROL (Horizontal) -->
+        <div class="mb-3 p-3" style="background: rgba(0, 180, 255, 0.08); border-radius: 10px; border: 1px solid rgba(0, 180, 255, 0.2);">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                <label class="slider-label icon-label mb-0" style="color: #00b4ff; font-size: 0.9rem;">
+                    <i class="fas fa-arrows-alt-h"></i> PAN (CC10)
+                </label>
+                <span id="val-10" class="badge-custom" style="font-size: 0.9rem; padding: 4px 12px;">C</span>
+            </div>
+            <input type="range" class="form-range" id="pan-slider" min="0" max="127" value="64" 
+                   oninput="updateCC(10, this.value); updatePanLabel(this.value)"
+                   style="height: 8px;">
+            <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 4px;">
+                <span>L</span>
+                <span>C</span>
+                <span>R</span>
+            </div>
+        </div>
+        
         <!-- VERTICAL SLIDERS ROW -->
         <div class="row g-2"> <!-- g-2 reduces space between columns -->
             <!-- ATTACK -->
@@ -723,6 +758,14 @@
                 document.getElementById('val-7').innerText = "100";
             }
             updateCC(7, 100);
+
+            // Pan (CC10) - default 64 (center)
+            const panSlider = document.getElementById('pan-slider');
+            if (panSlider) {
+                panSlider.value = 64;
+                updatePanLabel(64);
+            }
+            updateCC(10, 64);
             
             // Attack (CC73) - default 64
             const attackSlider = document.querySelector('input[oninput*="updateCC(73"]');
@@ -771,6 +814,15 @@
             } else {
                 fetch(`/cc/${activeControlChannel}/${cc}/${val}`);
             }
+        }
+
+        function updatePanLabel(val) {
+            val = parseInt(val);
+            const label = document.getElementById('val-10');
+            if (!label) return;
+            if (val < 60) label.innerText = 'L' + (64 - val);
+            else if (val > 68) label.innerText = 'R' + (val - 64);
+            else label.innerText = 'C';
         }
 
         function setEff(type, val) {
@@ -937,7 +989,8 @@ function setupChCellHandlers() {
         cell.addEventListener('mousedown', startPress);
         cell.addEventListener('mouseup', endPress);
         cell.addEventListener('mouseleave', cancelPress);
-        cell.addEventListener('contextmenu', e => e.preventDefault());
+        cell.addEventListener('contextmenu', e => { e.preventDefault(); dawCycleTrackColor(chan); });
+        cell.addEventListener('dblclick', e => { e.preventDefault(); dawRenameTrackPrompt(); });
     });
 }
 
@@ -985,6 +1038,210 @@ function dawUpdateHiddenBar() {
         badge.onclick = () => dawShowTrack(ch);
         badges.appendChild(badge);
     });
+}
+
+// ═══════════════════════ MIDI EVENT VIEWER ═══════════════════
+let evViewerOpen = false;
+let evCurrentChannel = -1;  // -1 = all
+let evEvents = [];           // cached decoded events
+let evHighlightBeat = -1;    // current playback beat for highlight
+
+function dawOpenEventViewer() {
+    evViewerOpen = true;
+    document.getElementById('midi-event-viewer-modal').style.display = 'flex';
+    dawBuildChannelFilter();
+    dawEventViewerFilter();
+}
+
+function dawCloseEventViewer(event) {
+    if (event && event.target !== event.currentTarget) return;
+    evViewerOpen = false;
+    document.getElementById('midi-event-viewer-modal').style.display = 'none';
+}
+
+function dawBuildChannelFilter() {
+    const sel = document.getElementById('ev-channel-filter');
+    const val = sel.value;
+    sel.innerHTML = '<option value="-1">All</option>';
+    if (dawState && dawState.has_data) {
+        for (let ch = 0; ch < 16; ch++) {
+            if (dawState.has_data[ch]) {
+                const name = (dawState.track_names && dawState.track_names[ch]) || ('Track ' + (ch + 1));
+                const opt = document.createElement('option');
+                opt.value = ch;
+                opt.textContent = 'Ch ' + ch + ' — ' + name;
+                sel.appendChild(opt);
+            }
+        }
+    }
+    sel.value = val;
+}
+
+async function dawEventViewerFilter() {
+    const sel = document.getElementById('ev-channel-filter');
+    evCurrentChannel = parseInt(sel.value);
+    await dawLoadEvents();
+}
+
+async function dawLoadEvents() {
+    const ch = evCurrentChannel;
+    try {
+        const res = await fetch('/api/daw/track/' + ch + '/events');
+        const data = await res.json();
+        if (data.status === 'ok') {
+            evEvents = data.events || [];
+            dawRenderEventTable();
+        }
+    } catch (e) {
+        console.error('[EventViewer] Load error:', e);
+    }
+}
+
+function dawRenderEventTable() {
+    const tbody = document.getElementById('ev-table-body');
+    const countEl = document.getElementById('ev-event-count');
+    countEl.textContent = evEvents.length + ' events';
+
+    if (!evEvents.length) {
+        tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted py-3">No events</td></tr>';
+        return;
+    }
+
+    const isRec = dawState && dawState.is_recording;
+    let html = '';
+    for (let i = 0; i < evEvents.length; i++) {
+        const ev = evEvents[i];
+        const isHighlighted = (evHighlightBeat >= 0 && Math.abs(ev.beat - evHighlightBeat) < 0.05);
+        const cls = isHighlighted ? ' style="background:rgba(0,255,136,0.18);"' : '';
+        html += '<tr id="ev-row-' + i + '"' + cls + '>';
+        html += '<td>' + ev.beat.toFixed(2) + '</td>';
+        html += '<td>' + dawEvTypeBadge(ev.type) + '</td>';
+        html += '<td>' + (ev.note || '—') + '</td>';
+        html += '<td>' + (ev.vel !== undefined ? ev.vel : '—') + '</td>';
+        html += '<td>' + ev.ch + '</td>';
+        html += '<td>' + (ev.dur !== null && ev.dur !== undefined ? ev.dur.toFixed(2) : '—') + '</td>';
+        html += '<td>' + (ev.cc_num !== undefined ? ev.cc_num : '—') + '</td>';
+        html += '<td>' + (ev.cc_val !== undefined ? ev.cc_val : (ev.pitch !== undefined ? ev.pitch : (ev.program !== undefined ? ev.program : '—'))) + '</td>';
+        html += '<td>';
+        if (!isRec) {
+            html += '<button class="btn btn-outline-warning btn-sm px-1 py-0" style="font-size:0.68rem;" onclick="dawEditEventInline(' + ev.ch + ',' + ev.idx + ',' + i + ')" title="Edit"><i class="fas fa-pen"></i></button> ';
+            html += '<button class="btn btn-outline-danger btn-sm px-1 py-0" style="font-size:0.68rem;" onclick="dawDeleteEvent(' + ev.ch + ',' + ev.idx + ')" title="Delete"><i class="fas fa-trash"></i></button>';
+        }
+        html += '</td>';
+        html += '</tr>';
+    }
+    tbody.innerHTML = html;
+}
+
+function dawEvTypeBadge(type) {
+    const colors = {
+        'note_on': '#00ff88',
+        'note_off': '#666',
+        'control_change': '#0dcaf0',
+        'program_change': '#ffc107',
+        'pitchwheel': '#b388ff'
+    };
+    const short = {
+        'note_on': 'NoteOn',
+        'note_off': 'NoteOff',
+        'control_change': 'CC',
+        'program_change': 'PC',
+        'pitchwheel': 'Pitch'
+    };
+    const c = colors[type] || '#aaa';
+    const t = short[type] || type;
+    return '<span style="color:' + c + '; font-weight:600;">' + t + '</span>';
+}
+
+function dawEditEventInline(ch, trackIdx, viewIdx) {
+    const ev = evEvents[viewIdx];
+    if (!ev) return;
+    const tbody = document.getElementById('ev-table-body');
+    const row = tbody.rows[viewIdx];
+    if (!row) return;
+    const inputStyle = 'font-size:0.72rem; padding:1px 4px; background:#2a2a3c; color:#fff; border:1px solid #0dcaf0;';
+    const mkInput = function(id, val, w, min, max, step) {
+        return '<input type="number"' + (step ? ' step="' + step + '"' : '') + ' min="' + min + '" max="' + max + '" value="' + val + '" class="form-control form-control-sm" style="width:' + w + 'px; ' + inputStyle + '" id="' + id + '">';
+    };
+    // Beat — always editable
+    row.cells[0].innerHTML = mkInput('ev-edit-beat-' + viewIdx, ev.beat, 60, 0, 9999, 0.01);
+    // Note — editable for note_on, note_off
+    if ((ev.type === 'note_on' || ev.type === 'note_off') && ev.note_num !== undefined) {
+        row.cells[2].innerHTML = mkInput('ev-edit-note-' + viewIdx, ev.note_num, 45, 0, 127);
+    }
+    // Velocity — editable for note_on, note_off
+    if (ev.vel !== undefined && (ev.type === 'note_on' || ev.type === 'note_off')) {
+        row.cells[3].innerHTML = mkInput('ev-edit-vel-' + viewIdx, ev.vel, 45, 0, 127);
+    }
+    // CC number — editable for control_change
+    if (ev.type === 'control_change' && ev.cc_num !== undefined) {
+        row.cells[6].innerHTML = mkInput('ev-edit-ccnum-' + viewIdx, ev.cc_num, 45, 0, 127);
+    }
+    // CC value — editable for control_change
+    if (ev.type === 'control_change' && ev.cc_val !== undefined) {
+        row.cells[7].innerHTML = mkInput('ev-edit-ccval-' + viewIdx, ev.cc_val, 45, 0, 127);
+    }
+    // Pitch — editable for pitchwheel
+    if (ev.type === 'pitchwheel' && ev.pitch !== undefined) {
+        row.cells[7].innerHTML = mkInput('ev-edit-pitch-' + viewIdx, ev.pitch, 55, -8192, 8191);
+    }
+    // Program — editable for program_change
+    if (ev.type === 'program_change' && ev.program !== undefined) {
+        row.cells[7].innerHTML = mkInput('ev-edit-prog-' + viewIdx, ev.program, 45, 0, 127);
+    }
+    row.cells[8].innerHTML = '<button class="btn btn-outline-success btn-sm px-1 py-0" style="font-size:0.68rem;" onclick="dawSaveEventEdit(' + ch + ',' + trackIdx + ',' + viewIdx + ')"><i class="fas fa-check"></i></button> <button class="btn btn-outline-secondary btn-sm px-1 py-0" style="font-size:0.68rem;" onclick="dawLoadEvents()"><i class="fas fa-times"></i></button>';
+}
+
+async function dawSaveEventEdit(ch, trackIdx, viewIdx) {
+    const beatInput = document.getElementById('ev-edit-beat-' + viewIdx);
+    const velInput = document.getElementById('ev-edit-vel-' + viewIdx);
+    const noteInput = document.getElementById('ev-edit-note-' + viewIdx);
+    const ccnumInput = document.getElementById('ev-edit-ccnum-' + viewIdx);
+    const ccvalInput = document.getElementById('ev-edit-ccval-' + viewIdx);
+    const pitchInput = document.getElementById('ev-edit-pitch-' + viewIdx);
+    const progInput = document.getElementById('ev-edit-prog-' + viewIdx);
+    const updates = {};
+    if (beatInput) updates.beat = parseFloat(beatInput.value);
+    if (velInput && velInput.value !== '') updates.velocity = parseInt(velInput.value);
+    if (noteInput && noteInput.value !== '') updates.note = parseInt(noteInput.value);
+    if (ccnumInput && ccnumInput.value !== '') updates.cc_num = parseInt(ccnumInput.value);
+    if (ccvalInput && ccvalInput.value !== '') updates.cc_value = parseInt(ccvalInput.value);
+    if (pitchInput && pitchInput.value !== '') updates.pitch = parseInt(pitchInput.value);
+    if (progInput && progInput.value !== '') updates.program = parseInt(progInput.value);
+    try {
+        const res = await fetch('/api/daw/track/' + ch + '/events/' + trackIdx, {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(updates)
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            await dawLoadEvents();
+            scheduleDensityRefresh();
+        } else {
+            alert(data.message || 'Edit failed');
+        }
+    } catch (e) {
+        console.error('[EventViewer] Edit error:', e);
+    }
+}
+
+async function dawDeleteEvent(ch, trackIdx) {
+    if (!confirm('Delete this event?')) return;
+    try {
+        const res = await fetch('/api/daw/track/' + ch + '/events/' + trackIdx, {
+            method: 'DELETE'
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            await dawLoadEvents();
+            scheduleDensityRefresh();
+        } else {
+            alert(data.message || 'Delete failed');
+        }
+    } catch (e) {
+        console.error('[EventViewer] Delete error:', e);
+    }
 }
 
 // Open MIDI Manager Modal
@@ -1213,6 +1470,7 @@ function dawInitWebSocket() {
     dawSocket.on('daw_state_update', (data) => {
         console.log('[WebSocket] State update ricevuto');
         const wasRecording = dawState && dawState.is_recording;
+        const wasPlaying = dawState && dawState.is_playing;
         dawState = data;
         // Restore position after recording stops
         if (wasRecording && !dawState.is_recording && recordStartPosition !== null) {
@@ -1222,6 +1480,12 @@ function dawInitWebSocket() {
             dawSocket.emit('transport_cmd', {cmd: 'seek', position: dawState.timeline_position});
         }
         dawUpdateUI();
+        // Auto-refresh event viewer when recording stops (get durations) or playback stops
+        if (evViewerOpen && ((wasRecording && !dawState.is_recording) || (wasPlaying && !dawState.is_playing))) {
+            evHighlightBeat = -1;
+            dawBuildChannelFilter();
+            dawLoadEvents();
+        }
     });
 
     dawSocket.on('daw_tick', (tick) => {
@@ -1236,6 +1500,65 @@ function dawInitWebSocket() {
             trackView.liveActivity[ch] = count || 0;
             renderTrackTape(ch);
         });
+    });
+
+    // Live event append during recording
+    dawSocket.on('midi_event_new', (ev) => {
+        if (!evViewerOpen) return;
+        // Only append if channel matches filter (or filter is "All")
+        if (evCurrentChannel >= 0 && ev.ch !== evCurrentChannel) return;
+        evEvents.push(ev);
+        // Append row incrementally instead of full re-render
+        const tbody = document.getElementById('ev-table-body');
+        if (evEvents.length === 1) {
+            tbody.innerHTML = '';  // clear "No events" placeholder
+        }
+        const countEl = document.getElementById('ev-event-count');
+        countEl.textContent = evEvents.length + ' events';
+        const i = evEvents.length - 1;
+        const tr = document.createElement('tr');
+        tr.id = 'ev-row-' + i;
+        tr.innerHTML =
+            '<td>' + ev.beat.toFixed(2) + '</td>' +
+            '<td>' + dawEvTypeBadge(ev.type) + '</td>' +
+            '<td>' + (ev.note || '—') + '</td>' +
+            '<td>' + (ev.vel !== undefined ? ev.vel : '—') + '</td>' +
+            '<td>' + ev.ch + '</td>' +
+            '<td>—</td>' +
+            '<td>' + (ev.cc_num !== undefined ? ev.cc_num : '—') + '</td>' +
+            '<td>' + (ev.cc_val !== undefined ? ev.cc_val : '—') + '</td>' +
+            '<td></td>';
+        tbody.appendChild(tr);
+        // Auto-scroll to bottom
+        const wrap = document.getElementById('ev-table-wrap');
+        wrap.scrollTop = wrap.scrollHeight;
+    });
+
+    // Playback beat highlight
+    dawSocket.on('midi_playback_beat', (data) => {
+        if (!evViewerOpen || !evEvents.length) return;
+        evHighlightBeat = data.beat;
+        // Find closest event to current beat
+        let closest = -1;
+        let minDist = Infinity;
+        for (let i = 0; i < evEvents.length; i++) {
+            const d = Math.abs(evEvents[i].beat - data.beat);
+            if (d < minDist) { minDist = d; closest = i; }
+            if (evEvents[i].beat > data.beat) break;  // events sorted, no need to continue
+        }
+        // Remove previous highlight
+        const tbody = document.getElementById('ev-table-body');
+        const prev = tbody.querySelector('tr.ev-highlight');
+        if (prev) { prev.classList.remove('ev-highlight'); prev.style.background = ''; }
+        // Apply highlight + scroll
+        if (closest >= 0 && minDist < 0.5) {
+            const row = document.getElementById('ev-row-' + closest);
+            if (row) {
+                row.classList.add('ev-highlight');
+                row.style.background = 'rgba(0,255,136,0.18)';
+                row.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+        }
     });
 }
 
@@ -1272,21 +1595,25 @@ function snapToGrid(beat) {
     return Math.round(beat / grid) * grid;
 }
 
-// Seek to a specific time in seconds (only when stopped)
+// Seek to a specific time in seconds (works during playback via seek_beat)
 function dawSeekTo(seconds) {
-    if (!dawState || dawState.is_playing || dawState.is_recording) return;
+    if (!dawState || dawState.is_recording) return;
     seconds = Math.max(0, seconds);
-    // Snap to grid in beat domain
     const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
-    if (beatDuration > 0) {
-        const beat = seconds / beatDuration;
-        seconds = snapToGrid(beat) * beatDuration;
-    }
-    dawState.timeline_position = seconds;
-    dawUpdateTimelineUI();
+    if (beatDuration <= 0) return;
+    let beat = seconds / beatDuration;
+    beat = snapToGrid(beat);
     if (dawSocket && dawSocket.connected) {
-        dawSocket.emit('transport_cmd', {cmd: 'seek', position: seconds});
+        dawSocket.emit('transport_cmd', {cmd: 'seek_beat', beat: beat});
+    } else {
+        fetch('/api/daw/seek_beat', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({beat: beat})
+        });
     }
+    dawState.timeline_position = beat * beatDuration;
+    dawUpdateTimelineUI();
 }
 
 // Parse time input (MM:SS.d) and seek
@@ -1577,6 +1904,12 @@ function dawUpdateUI() {
         }
         // Active channel border
         row.style.borderLeft = i === activeControlChannel ? '3px solid #ffc107' : '';
+
+        // Track color on CH cell
+        const chCell = row.querySelector('.ch-cell');
+        if (chCell) {
+            chCell.style.color = getTrackColor(i);
+        }
     }
     
     // Update total events badge
@@ -1717,8 +2050,8 @@ function onCanvasPointerUp(e) {
         return;
     }
 
-    // Click-to-seek: if no drag movement and DAW is stopped
-    if (!trackView.drag.didDrag && dawState && !dawState.is_playing && !dawState.is_recording) {
+    // Click-to-seek: if no drag movement and not recording
+    if (!trackView.drag.didDrag && dawState && !dawState.is_recording) {
         const rect = trackView.drag.canvasRect;
         const clickX = e.clientX - rect.left;
         const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
@@ -1834,16 +2167,18 @@ function renderTrackTape(ch) {
     }
 
     if (maxVal > 0) {
+        const tColor = getTrackColor(ch);
         for (let i = 0; i < density.length; i++) {
             const val = density[i] || 0;
             if (!val) continue;
             const ratio = Math.min(1, val / maxVal);
-            const hue = 120 - (120 * ratio); // green to red
             const alpha = (0.35 + 0.55 * ratio) * (muted ? 0.5 : 1);
-            ctx.fillStyle = `hsla(${hue}, 100%, 55%, ${alpha})`;
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = tColor;
             const x = i * slotWidthPx;
             ctx.fillRect(x, slotY, slotWidthPx, slotHeight);
         }
+        ctx.globalAlpha = 1;
     }
 
     const live = trackView.liveActivity[ch] || 0;
@@ -2459,6 +2794,48 @@ async function dawDeleteSelection() {
     }
 }
 
+async function dawCopySelection() {
+    if (selectionInBeat === null || selectionOutBeat === null) {
+        showStatus('No selection to copy', 'warning');
+        return;
+    }
+    try {
+        const res = await fetch('/api/daw/copy', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: activeControlChannel, start_beat: selectionInBeat, end_beat: selectionOutBeat })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showStatus(`Copied ${data.count} events`, 'success');
+        } else {
+            showStatus(data.error || 'Copy failed', 'danger');
+        }
+    } catch (e) {
+        console.error('Copy selection error:', e);
+    }
+}
+
+async function dawPasteAtPlayhead() {
+    const bpm = dawState.bpm || 120;
+    const currentBeat = (dawState.timeline_position || 0) / (60.0 / bpm);
+    try {
+        const res = await fetch('/api/daw/paste', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: activeControlChannel, beat: currentBeat })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showStatus(`Pasted ${data.count} events`, 'success');
+        } else {
+            showStatus(data.error || 'Paste failed', 'danger');
+        }
+    } catch (e) {
+        console.error('Paste error:', e);
+    }
+}
+
 async function dawClearTrack(channel) {
     if (!confirm(`Clear track ${channel + 1}?`)) return;
     
@@ -2486,6 +2863,102 @@ async function dawClearAll() {
     } catch (e) {
         console.error('Clear all error:', e);
     }
+}
+
+// ── Duplicate / Rename / Color ────────────────────────────────
+async function dawDuplicateTrack() {
+    const src = activeControlChannel;
+    // Build channel selector options
+    let options = '';
+    for (let ch = 0; ch < 16; ch++) {
+        if (ch === src) continue;
+        const hasData = dawState.has_data && dawState.has_data[ch];
+        const name = (dawState.track_names && dawState.track_names[ch]) || `Track ${ch+1}`;
+        const label = `Ch ${ch+1} - ${name}${hasData ? ' [has data]' : ' [empty]'}`;
+        options += `<option value="${ch}">${label}</option>`;
+    }
+    // Create modal for channel selection
+    const modal = document.createElement('div');
+    modal.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999';
+    modal.innerHTML = `
+        <div style="background:#2b2b2b;border-radius:8px;padding:20px;min-width:300px;color:#fff">
+            <h5 style="margin-top:0">Duplicate Track ${src+1}</h5>
+            <p style="font-size:0.9em;color:#aaa">Events will be copied. Instrument on destination stays unchanged.</p>
+            <label>Destination channel:</label>
+            <select id="dup-dest-select" class="form-select form-select-sm mt-1 mb-3" style="background:#1e1e1e;color:#fff;border-color:#555">${options}</select>
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-sm btn-secondary" id="dup-cancel-btn">Cancel</button>
+                <button class="btn btn-sm btn-primary" id="dup-ok-btn">Duplicate</button>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+
+    document.getElementById('dup-cancel-btn').onclick = () => modal.remove();
+    document.getElementById('dup-ok-btn').onclick = async () => {
+        const dest = parseInt(document.getElementById('dup-dest-select').value);
+        const hasData = dawState.has_data && dawState.has_data[dest];
+        if (hasData) {
+            if (!confirm(`Channel ${dest+1} already has data. Events will be replaced. Continue?`)) return;
+        }
+        modal.remove();
+        try {
+            const res = await fetch(`/api/daw/track/${src}/duplicate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ dest_channel: dest })
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+                showStatus(`Track ${src+1} duplicated to ${dest+1}`, 'success');
+            } else {
+                showStatus(data.message || 'Cannot duplicate', 'danger');
+            }
+        } catch (e) {
+            console.error('Duplicate track error:', e);
+        }
+    };
+}
+
+async function dawRenameTrackPrompt() {
+    const ch = activeControlChannel;
+    const current = (dawState.track_names && dawState.track_names[ch]) || `Track ${ch+1}`;
+    const name = prompt(`Rename Track ${ch+1}:`, current);
+    if (name === null || !name.trim()) return;
+    try {
+        await fetch(`/api/daw/track/${ch}/rename`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name.trim() })
+        });
+    } catch (e) {
+        console.error('Rename track error:', e);
+    }
+}
+
+async function dawCycleTrackColor(ch) {
+    const current = (dawState.track_colors && dawState.track_colors[ch]) || ch;
+    const next = (current + 1) % 16;
+    try {
+        await fetch(`/api/daw/track/${ch}/color`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ color_index: next })
+        });
+    } catch (e) {
+        console.error('Set track color error:', e);
+    }
+}
+
+const TRACK_PALETTE = [
+    '#00d4ff', '#ff4444', '#44ff44', '#ffcc00',
+    '#ff66ff', '#ff8844', '#44ffff', '#88ff44',
+    '#ff4488', '#4488ff', '#ffff44', '#aa44ff',
+    '#44ffaa', '#ff8888', '#88ccff', '#cccccc'
+];
+
+function getTrackColor(ch) {
+    const idx = (dawState.track_colors && dawState.track_colors[ch] !== undefined) ? dawState.track_colors[ch] : ch;
+    return TRACK_PALETTE[idx % 16];
 }
 
 // ── Quantizzazione post-registrazione ─────────────────────────
@@ -2599,6 +3072,21 @@ async function dawSetLoopFromSelection() {
     } catch (e) { console.error('Set loop points error:', e); }
 }
 
+// ── Status toast ──────────────────────────────────────────────
+let _statusTimer = null;
+function showStatus(msg, type) {
+    const statusDiv = document.getElementById('daw-status');
+    const statusText = document.getElementById('daw-status-text');
+    if (!statusDiv || !statusText) return;
+    if (dawState.is_playing || dawState.is_recording) return; // don't overwrite transport status
+    clearTimeout(_statusTimer);
+    const icon = type === 'success' ? 'fa-check-circle' : type === 'danger' ? 'fa-exclamation-circle' : 'fa-info-circle';
+    statusDiv.style.display = 'block';
+    statusDiv.className = 'daw-status-bar text-center';
+    statusText.innerHTML = `<i class="fas ${icon}"></i> ${msg}`;
+    _statusTimer = setTimeout(() => { statusDiv.style.display = 'none'; }, 2000);
+}
+
 // ── Keyboard shortcuts ────────────────────────────────────────
 document.addEventListener('keydown', (e) => {
     // Skip when typing in inputs
@@ -2607,6 +3095,8 @@ document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 'z') { e.preventDefault(); dawUndo(); }
     if (e.ctrlKey && e.key === 'y') { e.preventDefault(); dawRedo(); }
     if (e.ctrlKey && e.key === 's') { e.preventDefault(); dawQuickSaveMidi(); }
+    if (e.ctrlKey && e.key === 'c') { e.preventDefault(); dawCopySelection(); }
+    if (e.ctrlKey && e.key === 'v') { e.preventDefault(); dawPasteAtPlayhead(); }
     if (e.key === ' ') { e.preventDefault(); dawPlay(); }
     if (e.key === 'l' || e.key === 'L') { dawToggleLoop(); }
 });
@@ -2678,6 +3168,46 @@ document.addEventListener('keydown', (e) => {
             });
         }
     </script>
+<!-- MIDI Event Viewer Modal -->
+<div id="midi-event-viewer-modal" class="modal-overlay" style="display:none;" onclick="dawCloseEventViewer(event)">
+    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:850px; max-height:85vh; display:flex; flex-direction:column;">
+        <div class="modal-header" style="flex-shrink:0;">
+            <h5 class="modal-title"><i class="fas fa-list-ol"></i> MIDI Event Viewer</h5>
+            <div class="d-flex align-items-center gap-2" style="margin-left:auto; margin-right:12px;">
+                <label class="small text-muted mb-0">Channel:</label>
+                <select id="ev-channel-filter" class="daw-tselect" style="min-width:100px;" onchange="dawEventViewerFilter()">
+                    <option value="-1">All</option>
+                </select>
+                <span id="ev-event-count" class="daw-tbadge" style="font-size:0.72rem;">0 events</span>
+            </div>
+            <button class="btn-close-modal" onclick="dawCloseEventViewer()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body" style="padding:0; overflow:hidden; flex:1; display:flex; flex-direction:column;">
+            <div id="ev-table-wrap" style="overflow-y:auto; flex:1;">
+                <table class="table table-sm table-dark table-striped mb-0" style="font-size:0.78rem;">
+                    <thead style="position:sticky; top:0; z-index:1; background:#1e1e2e;">
+                        <tr>
+                            <th style="width:60px;">Beat</th>
+                            <th style="width:80px;">Type</th>
+                            <th style="width:50px;">Note</th>
+                            <th style="width:40px;">Vel</th>
+                            <th style="width:35px;">Ch</th>
+                            <th style="width:55px;">Dur</th>
+                            <th style="width:40px;">CC#</th>
+                            <th style="width:45px;">Val</th>
+                            <th style="width:80px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ev-table-body">
+                        <tr><td colspan="9" class="text-center text-muted py-3">No events</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
 <!-- MIDI File Manager Modal -->
 <div id="midi-manager-modal" class="modal-overlay" style="display:none;" onclick="dawCloseMidiManager(event)">
     <div class="modal-content" onclick="event.stopPropagation()" style="max-width:550px;">

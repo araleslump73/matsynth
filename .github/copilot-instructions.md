@@ -20,20 +20,36 @@ Leggi il file **CONTEXT.md** (root del repository) **solo quando necessario**:
 
 L'utente parla **sempre con Copilot (te)**. Tu sei l'unico responsabile di scrivere sui file.
 
-### Processo:
-1. **Analizza** la richiesta dell'utente
-2. **Delega** ai sub-agent (`@daw`, `@daw-expert`, `@programmer`, `@ux-designer`, `@qa-engineer`) tramite `runSubagent` per ottenere **analisi, suggerimenti e specifiche** — NON per fargli scrivere codice
-3. **Applica tu** le modifiche sui file usando `replace_string_in_file`, `multi_replace_string_in_file` o `create_file`
-4. **Verifica** con `get_errors`
+**Tutti i sub-agent sono read-only** — analizzano, suggeriscono, restituiscono testo strutturato. Non possono scrivere sui file, eseguire comandi in terminale, né invocare altri agent. Il loro budget token è limitato: passagli contesto sintetico nel prompt, non fargli leggere file enormi.
+
+### Processo Standard (feature, cambiamenti funzionali):
+1. **Raccogli** la richiesta dell'utente
+2. **Delega al Business Analyst** (`@business-analyst`) per raccogliere/chiarire requisiti
+3. Se il BA restituisce **domande**: presentale all'utente, raccogli le risposte, reinvoca il BA
+4. Quando il BA produce **specifiche funzionali complete**: passale al **Tech Lead** (`@tech-lead`)
+5. Il Tech Lead analizza l'impatto e restituisce un piano tecnico
+6. Se servono pareri specialistici: invoca l'esperto pertinente tu stesso (non il Tech Lead)
+7. **Applica tu** le modifiche sui file usando `replace_string_in_file`, `multi_replace_string_in_file` o `create_file`
+8. **Verifica** con `get_errors`
+
+### Processo Rapido (bug fix, fix minori, operazioni note):
+1. **Analizza** la richiesta — se è un bug chiaro o un fix puntuale, salta BA e Tech Lead
+2. **Delega** direttamente all'esperto pertinente per analisi
+3. **Applica tu** le modifiche e verifica
 
 ### Quando delegare:
 | Agent | Chiedi... |
 |-------|-----------|
+| **business-analyst** | Raccolta requisiti, chiarimento ambiguità, specifiche funzionali, criteri di accettazione |
+| **tech-lead** | Piano tecnico, impatto architetturale, sequenza implementazione |
 | **daw** | Analisi ottimizzazione audio/MIDI, specifiche algoritmo DAW per Pi Zero |
 | **daw-expert** | Validazione standard musicali, specifiche MIDI/SF2, formule timing |
 | **programmer** | Analisi architettura Flask/SocketIO, strategie implementazione |
 | **ux-designer** | Wireframe, design controlli, specifiche UI/UX |
 | **qa-engineer** | Review sicurezza, test case da implementare, analisi race condition |
 
-### Regola chiave:
-I sub-agent **suggeriscono**, tu **scrivi**. Non aspettarti che i sub-agent modifichino file — il loro budget token è limitato e le scritture falliscono.
+### Regole chiave:
+- I sub-agent **analizzano e suggeriscono**, tu **scrivi** sui file
+- **Non aspettarti** che i sub-agent modifichino file — hanno solo tool read-only
+- Passa **contesto sintetico** nel prompt, non chiedere di leggere CONTEXT.md intero
+- Se un sub-agent non risponde, **implementa direttamente** — non reinvocarlo
