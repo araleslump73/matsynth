@@ -28,13 +28,14 @@ L'utente parla **sempre con Copilot (te)**. Tu sei l'unico responsabile di scriv
 3. Se il BA restituisce **domande**: presentale all'utente, raccogli le risposte, reinvoca il BA
 4. Quando il BA produce **specifiche funzionali complete**: passale al **Tech Lead** (`@tech-lead`)
 5. Il Tech Lead analizza l'impatto e restituisce un piano tecnico
-6. Se servono pareri specialistici: invoca l'esperto pertinente tu stesso (non il Tech Lead)
-7. **Applica tu** le modifiche sui file usando `replace_string_in_file`, `multi_replace_string_in_file` o `create_file`
-8. **Verifica** con `get_errors`
+6. **Delega al Programmer** (`@programmer`) con piano tecnico + specifiche → lui produce snippet precisi (file, riga, before/after)
+7. Se servono pareri specialistici (audio, MIDI, UX, sicurezza): invoca l'esperto pertinente tu stesso
+8. **Applica tu** le modifiche prodotte dal Programmer usando `replace_string_in_file`, `multi_replace_string_in_file` o `create_file`
+9. **Verifica** con `get_errors`
 
 ### Processo Rapido (bug fix, fix minori, operazioni note):
 1. **Analizza** la richiesta — se è un bug chiaro o un fix puntuale, salta BA e Tech Lead
-2. **Delega** direttamente all'esperto pertinente per analisi
+2. **Delega al Programmer** (`@programmer`) per analisi e snippet di codice
 3. **Applica tu** le modifiche e verifica
 
 ### Quando delegare:
@@ -43,8 +44,8 @@ L'utente parla **sempre con Copilot (te)**. Tu sei l'unico responsabile di scriv
 | **business-analyst** | Raccolta requisiti, chiarimento ambiguità, specifiche funzionali, criteri di accettazione |
 | **tech-lead** | Piano tecnico, impatto architetturale, sequenza implementazione |
 | **daw** | Analisi ottimizzazione audio/MIDI, specifiche algoritmo DAW per Pi Zero |
-| **daw-expert** | Validazione standard musicali, specifiche MIDI/SF2, formule timing |
-| **programmer** | Analisi architettura Flask/SocketIO, strategie implementazione |
+| **daw-expert** | Validazione standard musicali, specifiche MIDI/SF2, formule timing, DAW specifiche, DAW funzionalità|
+| **programmer** | **TUTTE le implementazioni**: analisi codice, snippet before/after, logica Flask/SocketIO/JS/Canvas, refactoring, bug fix — invocalo SEMPRE prima di scrivere codice |
 | **ux-designer** | Wireframe, design controlli, specifiche UI/UX |
 | **qa-engineer** | Review sicurezza, test case da implementare, analisi race condition |
 

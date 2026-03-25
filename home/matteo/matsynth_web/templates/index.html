@@ -122,14 +122,8 @@
 
     <!-- ═══════════════════════ TRANSPORT BAR ═══════════════════ -->
     <div class="daw-transport">
-        <!-- Panic button (far left) -->
-        <div class="daw-transport-group">
-            <button id="daw-panic" class="daw-tbtn daw-tbtn-panic" onclick="dawPanic()" title="PANIC - All Notes Off">
-                <i class="fas fa-exclamation-triangle"></i>
-            </button>
-        </div>
         <!-- Transport buttons -->
-        <div class="daw-transport-group daw-transport-sep">
+        <div class="daw-transport-group">
             <button id="daw-rewind" class="daw-tbtn daw-tbtn-info" onclick="dawRewind()" title="Rewind">
                 <i class="fas fa-undo"></i>
             </button>
@@ -144,15 +138,6 @@
             </button>
             <button id="daw-loop" class="daw-tbtn daw-tbtn-sel" onclick="dawToggleLoop()" title="Loop On/Off">
                 <i class="fas fa-retweet"></i>
-            </button>
-        </div>
-        <!-- Undo / Redo -->
-        <div class="daw-transport-group daw-transport-sep">
-            <button id="daw-undo" class="daw-tbtn daw-tbtn-sel" onclick="dawUndo()" title="Undo (Ctrl+Z)" disabled>
-                <i class="fas fa-undo"></i>
-            </button>
-            <button id="daw-redo" class="daw-tbtn daw-tbtn-sel" onclick="dawRedo()" title="Redo (Ctrl+Y)" disabled>
-                <i class="fas fa-redo"></i>
             </button>
         </div>
         <!-- BPM + Metronome -->
@@ -179,7 +164,26 @@
             <span id="daw-time-signature" class="daw-tbadge">4/4</span>
             <span id="daw-bar-counter" class="daw-tbadge">Bar 1</span>
         </div>
-        <!-- Zoom + Snap + SEL -->
+        <!-- Panic (far right) -->
+        <div class="daw-transport-group daw-transport-sep" style="margin-left: auto;">
+            <button id="daw-panic" class="daw-tbtn daw-tbtn-panic" onclick="dawPanic()" title="PANIC - All Notes Off">
+                <i class="fas fa-exclamation-triangle"></i>
+            </button>
+        </div>
+    </div>
+
+    <!-- ═══════════════════════ EDITING TOOLBAR ═══════════════════ -->
+    <div class="daw-editing-toolbar">
+        <!-- Undo / Redo -->
+        <div class="daw-transport-group">
+            <button id="daw-undo" class="daw-tbtn daw-tbtn-sel" onclick="dawUndo()" title="Undo (Ctrl+Z)" disabled>
+                <i class="fas fa-undo"></i>
+            </button>
+            <button id="daw-redo" class="daw-tbtn daw-tbtn-sel" onclick="dawRedo()" title="Redo (Ctrl+Y)" disabled>
+                <i class="fas fa-redo"></i>
+            </button>
+        </div>
+        <!-- Zoom + Snap + Tools -->
         <div class="daw-transport-group daw-transport-sep daw-transport-flex">
             <label class="daw-tlabel">Zoom</label>
             <input type="range" id="daw-zoom-range" class="daw-zoom-slider" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
@@ -203,96 +207,71 @@
         </div>
     </div>
 
-    <!-- Selection action bar (shown only when selection exists) -->
-    <div id="daw-sel-bar" class="daw-sel-bar" style="display: none !important;">
-        <span style="color: #ffc832; font-family: monospace; font-size: 0.78rem;">
-            <i class="fas fa-grip-lines-vertical"></i>
-            CH <span id="daw-sel-ch">1</span> &nbsp;
-            <span id="daw-sel-range">—</span>
-        </span>
-        <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-light" onclick="dawCancelSelection()" style="padding: 2px 8px; font-size: 0.72rem;">
-                <i class="fas fa-times"></i>
-            </button>
-            <button class="btn btn-sm btn-danger" onclick="dawDeleteSelection()" style="padding: 2px 10px; font-size: 0.72rem;">
-                <i class="fas fa-trash"></i> DEL
-            </button>
-        </div>
-    </div>
-
-    <!-- ═══════════════════════ QUANTIZE BAR ══════════════════════ -->
-    <div id="daw-quant-bar" class="daw-quant-bar" style="display: none;">
-        <!-- Label -->
-        <span class="daw-quant-label"><i class="fas fa-magic"></i> QUANT</span>
-
-        <!-- Grid (risoluzione) -->
-        <span class="daw-tlabel">GRID</span>
-        <select id="quant-grid" class="daw-tselect" title="Risoluzione griglia di quantizzazione">
-            <option value="1">1/4</option>
-            <option value="0.5">1/8</option>
-            <option value="0.25" selected>1/16</option>
-            <option value="0.125">1/32</option>
-            <option value="0.0625">1/64</option>
-        </select>
-
-        <!-- Strength (forza) -->
-        <span class="daw-tlabel">STR</span>
-        <input type="range" id="quant-strength" class="daw-quant-slider"
-               min="0" max="100" step="5" value="100"
-               oninput="document.getElementById('quant-str-val').textContent=this.value+'%'"
-               title="Strength: 100% = note perfettamente allineate">
-        <span id="quant-str-val" class="daw-tbadge">100%</span>
-
-        <!-- Swing -->
-        <span class="daw-tlabel">SWING</span>
-        <input type="range" id="quant-swing" class="daw-quant-slider"
-               min="0" max="100" step="1" value="50"
-               oninput="document.getElementById('quant-sw-val').textContent=this.value+'%'"
-               title="Swing: 50% = straight (no shuffle);  67% = triplet swing;  >50% = shuffle">
-        <span id="quant-sw-val" class="daw-tbadge">50%</span>
-
-        <!-- Channel -->
-        <span class="daw-tlabel">CH</span>
-        <select id="quant-channel" class="daw-tselect" title="Canale da quantizzare (ALL = tutti)">
-            <option value="all">ALL</option>
-            <option value="0">1</option>
-            <option value="1">2</option>
-            <option value="2">3</option>
-            <option value="3">4</option>
-            <option value="4">5</option>
-            <option value="5">6</option>
-            <option value="6">7</option>
-            <option value="7">8</option>
-            <option value="8">9</option>
-            <option value="9">10</option>
-            <option value="10">11</option>
-            <option value="11">12</option>
-            <option value="12">13</option>
-            <option value="13">14</option>
-            <option value="14">15</option>
-            <option value="15">16</option>
-        </select>
-
-        <!-- Apply -->
-        <button id="quant-apply-btn" class="daw-tbtn daw-tbtn-quant" onclick="dawQuantize()"
-                title="Applica la quantizzazione alle note registrate">
-            <i class="fas fa-bolt"></i> APPLY
-        </button>
-
-        <!-- Close -->
-        <button class="daw-tbtn daw-tbtn-sel" onclick="dawToggleQuantBar()"
-                title="Chiudi" style="margin-left: auto;">
-            <i class="fas fa-times"></i>
-        </button>
-    </div>
-
-    <!-- Status Display (full-width, shown during play/record) -->
-    <div id="daw-status" class="daw-status-bar" style="display: none;">
-        <span id="daw-status-text">Ready</span>
-    </div>
-
     <!-- ═══════════════════════ MAIN DAW AREA ══════════════════════ -->
     <div class="daw-main">
+
+        <!-- Overlay: Selection action bar (shown only when selection exists) -->
+        <div id="daw-sel-bar" class="daw-sel-bar" style="display: none;">
+            <span style="color: #ffc832; font-family: monospace; font-size: 0.78rem;">
+                <i class="fas fa-grip-lines-vertical"></i>
+                CH <span id="daw-sel-ch">1</span> &nbsp;
+                <span id="daw-sel-range">—</span>
+            </span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-light" onclick="dawCancelSelection()" style="padding: 2px 8px; font-size: 0.72rem;">
+                    <i class="fas fa-times"></i>
+                </button>
+                <button class="btn btn-sm btn-danger" onclick="dawDeleteSelection()" style="padding: 2px 10px; font-size: 0.72rem;">
+                    <i class="fas fa-trash"></i> DEL
+                </button>
+            </div>
+        </div>
+
+        <!-- Overlay: Quantize bar -->
+        <div id="daw-quant-bar" class="daw-quant-bar" style="display: none;">
+            <span class="daw-quant-label"><i class="fas fa-magic"></i> QUANT</span>
+            <span class="daw-tlabel">GRID</span>
+            <select id="quant-grid" class="daw-tselect" title="Risoluzione griglia di quantizzazione">
+                <option value="1">1/4</option>
+                <option value="0.5">1/8</option>
+                <option value="0.25" selected>1/16</option>
+                <option value="0.125">1/32</option>
+                <option value="0.0625">1/64</option>
+            </select>
+            <span class="daw-tlabel">STR</span>
+            <input type="range" id="quant-strength" class="daw-quant-slider"
+                   min="0" max="100" step="5" value="100"
+                   oninput="document.getElementById('quant-str-val').textContent=this.value+'%'"
+                   title="Strength: 100% = note perfettamente allineate">
+            <span id="quant-str-val" class="daw-tbadge">100%</span>
+            <span class="daw-tlabel">SWING</span>
+            <input type="range" id="quant-swing" class="daw-quant-slider"
+                   min="0" max="100" step="1" value="50"
+                   oninput="document.getElementById('quant-sw-val').textContent=this.value+'%'"
+                   title="Swing: 50% = straight (no shuffle);  67% = triplet swing;  >50% = shuffle">
+            <span id="quant-sw-val" class="daw-tbadge">50%</span>
+            <span class="daw-tlabel">CH</span>
+            <select id="quant-channel" class="daw-tselect" title="Canale da quantizzare (ALL = tutti)">
+                <option value="all">ALL</option>
+                <option value="0">1</option><option value="1">2</option><option value="2">3</option><option value="3">4</option>
+                <option value="4">5</option><option value="5">6</option><option value="6">7</option><option value="7">8</option>
+                <option value="8">9</option><option value="9">10</option><option value="10">11</option><option value="11">12</option>
+                <option value="12">13</option><option value="13">14</option><option value="14">15</option><option value="15">16</option>
+            </select>
+            <button id="quant-apply-btn" class="daw-tbtn daw-tbtn-quant" onclick="dawQuantize()"
+                    title="Applica la quantizzazione alle note registrate">
+                <i class="fas fa-bolt"></i> APPLY
+            </button>
+            <button class="daw-tbtn daw-tbtn-sel" onclick="dawToggleQuantBar()"
+                    title="Chiudi" style="margin-left: auto;">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+
+        <!-- Overlay: Status Display (shown during play/record) -->
+        <div id="daw-status" class="daw-status-bar" style="display: none;">
+            <span id="daw-status-text">Ready</span>
+        </div>
 
         <!-- Channel Strips (Compact Table) -->
         <div class="daw-tracks-panel">
@@ -313,163 +292,163 @@
                     <tbody id="daw-tracks">
                         <tr id="daw-track-0" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="0" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">1</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-0" class="form-select form-select-sm daw-inst-select" onchange="changeInst(0, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(0)" id="arm-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(0)" id="mute-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(0)" id="solo-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-0" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-0" class="form-select form-select-sm daw-inst-select" onchange="changeInst(0, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(0)" id="arm-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(0)" id="mute-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(0)" id="solo-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-0" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-0" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(0)" id="clear-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(0)" id="clear-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-1" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="1" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">2</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-1" class="form-select form-select-sm daw-inst-select" onchange="changeInst(1, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(1)" id="arm-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(1)" id="mute-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(1)" id="solo-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-1" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-1" class="form-select form-select-sm daw-inst-select" onchange="changeInst(1, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(1)" id="arm-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(1)" id="mute-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(1)" id="solo-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-1" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-1" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(1)" id="clear-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(1)" id="clear-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-2" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="2" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">3</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-2" class="form-select form-select-sm daw-inst-select" onchange="changeInst(2, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(2)" id="arm-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(2)" id="mute-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(2)" id="solo-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-2" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-2" class="form-select form-select-sm daw-inst-select" onchange="changeInst(2, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(2)" id="arm-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(2)" id="mute-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(2)" id="solo-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-2" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-2" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(2)" id="clear-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(2)" id="clear-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-3" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="3" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">4</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-3" class="form-select form-select-sm daw-inst-select" onchange="changeInst(3, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(3)" id="arm-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(3)" id="mute-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(3)" id="solo-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-3" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-3" class="form-select form-select-sm daw-inst-select" onchange="changeInst(3, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(3)" id="arm-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(3)" id="mute-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(3)" id="solo-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-3" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-3" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(3)" id="clear-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(3)" id="clear-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-4" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="4" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">5</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-4" class="form-select form-select-sm daw-inst-select" onchange="changeInst(4, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(4)" id="arm-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(4)" id="mute-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(4)" id="solo-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-4" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-4" class="form-select form-select-sm daw-inst-select" onchange="changeInst(4, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(4)" id="arm-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(4)" id="mute-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(4)" id="solo-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-4" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-4" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(4)" id="clear-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(4)" id="clear-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-5" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="5" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">6</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-5" class="form-select form-select-sm daw-inst-select" onchange="changeInst(5, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(5)" id="arm-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(5)" id="mute-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(5)" id="solo-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-5" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-5" class="form-select form-select-sm daw-inst-select" onchange="changeInst(5, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(5)" id="arm-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(5)" id="mute-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(5)" id="solo-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-5" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-5" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(5)" id="clear-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(5)" id="clear-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-6" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="6" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">7</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-6" class="form-select form-select-sm daw-inst-select" onchange="changeInst(6, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(6)" id="arm-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(6)" id="mute-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(6)" id="solo-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-6" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-6" class="form-select form-select-sm daw-inst-select" onchange="changeInst(6, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(6)" id="arm-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(6)" id="mute-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(6)" id="solo-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-6" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-6" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(6)" id="clear-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(6)" id="clear-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-7" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="7" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">8</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-7" class="form-select form-select-sm daw-inst-select" onchange="changeInst(7, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(7)" id="arm-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(7)" id="mute-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(7)" id="solo-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-7" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-7" class="form-select form-select-sm daw-inst-select" onchange="changeInst(7, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(7)" id="arm-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(7)" id="mute-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(7)" id="solo-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-7" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-7" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(7)" id="clear-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(7)" id="clear-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-8" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="8" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">9</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-8" class="form-select form-select-sm daw-inst-select" onchange="changeInst(8, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(8)" id="arm-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(8)" id="mute-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(8)" id="solo-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-8" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-8" class="form-select form-select-sm daw-inst-select" onchange="changeInst(8, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(8)" id="arm-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(8)" id="mute-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(8)" id="solo-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-8" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-8" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(8)" id="clear-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(8)" id="clear-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-9" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="9" style="color: #ff9800; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide (Drums)">10</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-9" class="form-select form-select-sm daw-inst-select" onchange="changeInst(9, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ff9800; border: 1px solid rgba(255,152,0,0.3);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(9)" id="arm-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(9)" id="mute-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(9)" id="solo-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-9" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-9" class="form-select form-select-sm daw-inst-select" onchange="changeInst(9, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ff9800; border: 1px solid rgba(255,152,0,0.3);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(9)" id="arm-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(9)" id="mute-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(9)" id="solo-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-9" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-9" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(9)" id="clear-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(9)" id="clear-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-10" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="10" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">11</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-10" class="form-select form-select-sm daw-inst-select" onchange="changeInst(10, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(10)" id="arm-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(10)" id="mute-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(10)" id="solo-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-10" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-10" class="form-select form-select-sm daw-inst-select" onchange="changeInst(10, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(10)" id="arm-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(10)" id="mute-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(10)" id="solo-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-10" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-10" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(10)" id="clear-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(10)" id="clear-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-11" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="11" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">12</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-11" class="form-select form-select-sm daw-inst-select" onchange="changeInst(11, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(11)" id="arm-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(11)" id="mute-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(11)" id="solo-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-11" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-11" class="form-select form-select-sm daw-inst-select" onchange="changeInst(11, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(11)" id="arm-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(11)" id="mute-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(11)" id="solo-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-11" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-11" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(11)" id="clear-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(11)" id="clear-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-12" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="12" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">13</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-12" class="form-select form-select-sm daw-inst-select" onchange="changeInst(12, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(12)" id="arm-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(12)" id="mute-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(12)" id="solo-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-12" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-12" class="form-select form-select-sm daw-inst-select" onchange="changeInst(12, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(12)" id="arm-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(12)" id="mute-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(12)" id="solo-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-12" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-12" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(12)" id="clear-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(12)" id="clear-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-13" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="13" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">14</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-13" class="form-select form-select-sm daw-inst-select" onchange="changeInst(13, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(13)" id="arm-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(13)" id="mute-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(13)" id="solo-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-13" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-13" class="form-select form-select-sm daw-inst-select" onchange="changeInst(13, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(13)" id="arm-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(13)" id="mute-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(13)" id="solo-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-13" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-13" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(13)" id="clear-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(13)" id="clear-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-14" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="14" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">15</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-14" class="form-select form-select-sm daw-inst-select" onchange="changeInst(14, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(14)" id="arm-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(14)" id="mute-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(14)" id="solo-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-14" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-14" class="form-select form-select-sm daw-inst-select" onchange="changeInst(14, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(14)" id="arm-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(14)" id="mute-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(14)" id="solo-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-14" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-14" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(14)" id="clear-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(14)" id="clear-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-15" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="15" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">16</td>
-                            <td style="padding: 1px 2px;"><select id="select-ch-15" class="form-select form-select-sm daw-inst-select" onchange="changeInst(15, this.value)" style="font-size: 0.62rem; padding: 0 16px 0 2px; height: 20px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
-                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(15)" id="arm-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-circle"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(15)" id="mute-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-volume-mute"></i></button></td>
-                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(15)" id="solo-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 22px;">S</button></td>
-                            <td><canvas id="track-canvas-15" height="22" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
+                            <td style="padding: 1px 2px;"><select id="select-ch-15" class="form-select form-select-sm daw-inst-select" onchange="changeInst(15, this.value)" style="font-size: 0.72rem; padding: 0 16px 0 2px; height: 30px; background: rgba(30,30,45,0.9); color: #ccc; border: 1px solid rgba(255,255,255,0.1);"><option value="">--</option></select></td>
+                            <td><button class="btn btn-sm btn-outline-danger w-100" onclick="dawToggleArm(15)" id="arm-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-circle"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-warning w-100" onclick="dawToggleMute(15)" id="mute-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-volume-mute"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(15)" id="solo-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
+                            <td><canvas id="track-canvas-15" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-15" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(15)" id="clear-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 22px;"><i class="fas fa-trash"></i></button></td>
+                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(15)" id="clear-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                     </tbody>
                 </table>
@@ -2762,11 +2741,9 @@ function updateSelectionUI() {
         const barOut = Math.ceil(selectionOutBeat / beatsPerMeasure);
         document.getElementById('daw-sel-ch').textContent = activeControlChannel + 1;
         document.getElementById('daw-sel-range').textContent = `Bar ${barIn} \u2192 ${barOut}  (beat ${selectionInBeat.toFixed(1)} - ${selectionOutBeat.toFixed(1)})`;
-        bar.style.cssText = bar.style.cssText.replace('display: none !important', '');
         bar.style.display = 'flex';
     } else {
         bar.style.display = 'none';
-        bar.style.cssText += '; display: none !important';
     }
     renderAllTracks();
 }
