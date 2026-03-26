@@ -76,9 +76,10 @@ class MultiTrackDAW:
         self._last_tick_counts = {i: 0 for i in range(16)}
         self._last_counts_emit_ts = 0.0
 
-        # Density map cache (P2-7)
+        # Density / note map cache (P2-7)
         self._density_dirty = True
         self._cached_density_map = None
+        self._cached_note_map = None
 
         # Clipboard for copy/paste (P2-3)
         self._clipboard = []        # list of (relative_beat, midi_bytes)
@@ -1017,6 +1018,77 @@ class MultiTrackDAW:
 
         intervals.sort(key=lambda iv: iv[0])
         return intervals, max_beat
+
+    def _build_notes_full(self, events):
+        """Build note-level data for piano-roll rendering.
+        Returns (notes_list, max_beat, min_note, max_note).
+        notes_list: [(note, velocity, start_beat, end_beat), ...]
+        """
+        if not events:
+            return [], 0.0, 127, 0
+
+        active_notes = {}
+        notes = []
+        max_beat = 0.0
+        min_note = 127
+        max_note = 0
+
+        for beat_position, msg_bytes in events:
+            max_beat = max(max_beat, beat_position)
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+            except Exception:
+                continue
+
+            if msg.type == 'note_on' and msg.velocity > 0:
+                active_notes[msg.note] = (beat_position, msg.velocity)
+            elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
+                if msg.note in active_notes:
+                    start, vel = active_notes.pop(msg.note)
+                    notes.append((msg.note, vel, start, beat_position))
+                    min_note = min(min_note, msg.note)
+                    max_note = max(max_note, msg.note)
+
+        for note_num, (start, vel) in active_notes.items():
+            notes.append((note_num, vel, start, max_beat))
+            min_note = min(min_note, note_num)
+            max_note = max(max_note, note_num)
+
+        notes.sort(key=lambda n: n[2])
+        return notes, max_beat, min_note, max_note
+
+    def get_full_note_map(self):
+        """Return per-channel note data for piano-roll rendering. Cached."""
+        if not self.is_recording and not self._density_dirty and self._cached_note_map is not None:
+            return self._cached_note_map
+
+        beats_per_measure = self.beats_per_measure
+        total_beats = 0.0
+        tracks = {}
+
+        for ch in range(16):
+            notes, max_beat, min_note, max_note = self._build_notes_full(
+                self.tracks.get(ch)
+            )
+            total_beats = max(total_beats, max_beat)
+            if notes:
+                tracks[ch] = {
+                    'notes': [[n, v, round(s, 4), round(e, 4)] for n, v, s, e in notes],
+                    'min_note': min_note,
+                    'max_note': max_note
+                }
+
+        if total_beats <= 0:
+            total_beats = beats_per_measure * 4
+
+        result = {
+            'total_beats': total_beats,
+            'beats_per_measure': beats_per_measure,
+            'tracks': tracks
+        }
+        self._cached_note_map = result
+        self._density_dirty = False
+        return result
 
     def get_full_density_map(self):
         """Ritorna la mappa di densità (slot di 1/8 beat) per tutte le tracce. Cached."""

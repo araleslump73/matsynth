@@ -19,9 +19,62 @@ FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
 MIDI_DIR = '/home/matteo/matsynth_web/midi/'  # Directory per i file MIDI salvati
-sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
+sf_id = 1 # Global variable to track the active soundfont ID
 STATE_LOCK = threading.Lock()
 _INITIALIZED = False
+
+# Debounced state writer — batches rapid CC writes to reduce SD card I/O on Pi Zero
+_state_dirty = False
+_state_pending = {}       # pending flat key→value updates
+_cc_pending = {}          # pending CC updates: (chan_str, cc_name) → value
+_state_flush_lock = threading.Lock()
+
+def _schedule_state_flush():
+    """Flush pending state writes after a short delay (debounce)."""
+    global _state_dirty, _state_pending, _cc_pending
+    time.sleep(0.5)  # 500ms debounce
+    with _state_flush_lock:
+        if not _state_pending and not _cc_pending:
+            return
+        pending = _state_pending.copy()
+        cc_pending = _cc_pending.copy()
+        _state_pending.clear()
+        _cc_pending.clear()
+        _state_dirty = False
+    try:
+        with STATE_LOCK:
+            state = get_last_state()
+            state.update(pending)
+            if cc_pending:
+                if 'channels' not in state:
+                    state['channels'] = {}
+                for (chan_str, cc_name), val in cc_pending.items():
+                    if chan_str not in state['channels']:
+                        state['channels'][chan_str] = {}
+                    state['channels'][chan_str][cc_name] = val
+            _write_state_atomic(state)
+    except Exception as e:
+        print(f"[State] Flush error: {e}")
+
+def save_state_debounced(key, value):
+    """Queue a flat state update; actual write is debounced to reduce I/O."""
+    global _state_dirty
+    with _state_flush_lock:
+        _state_pending[key] = value
+        should_start = not _state_dirty
+        _state_dirty = True
+    if should_start:
+        threading.Thread(target=_schedule_state_flush, daemon=True).start()
+
+def save_cc_debounced(chan, cc_name, val):
+    """Queue a CC state update (nested under channels); debounced."""
+    global _state_dirty
+    with _state_flush_lock:
+        _cc_pending[(str(chan), cc_name)] = val
+        should_start = not _state_dirty
+        _state_dirty = True
+    if should_start:
+        threading.Thread(target=_schedule_state_flush, daemon=True).start()
 
 # Crea la directory dei preset se non esiste
 if not os.path.exists(PRESETS_DIR):
@@ -50,7 +103,7 @@ def save_state(key, value):
             state[key] = value
             _write_state_atomic(state)
     except Exception as e:
-        print(f"Errore salvataggio stato: {e}")
+        print(f"[State] Save error: {e}")
 
 def get_last_state():
     if os.path.exists(STATE_FILE):
@@ -83,7 +136,7 @@ def send_fluid(command):
                     return sock.recv(4096).decode()
                 return "OK"
 
-            # Per comandi di lettura (inst, fonts, channels)
+            # Read commands (inst, fonts, channels)
             time.sleep(0.2)
             data = ""
             while True:
@@ -91,11 +144,13 @@ def send_fluid(command):
                     chunk = sock.recv(4096).decode()
                     if not chunk: break
                     data += chunk
-                except:
+                except socket.timeout:
+                    break
+                except OSError:
                     break
             return data
     except Exception as e:
-        print(f"Errore Socket: {e}")
+        print(f"[FluidSynth] Socket error: {e}")
         return ""
 
 def get_active_sf_id():
@@ -114,12 +169,11 @@ def get_active_sf_id():
 
 def restore_settings():
     state = get_last_state()
-    # Usiamo i valori salvati o default sicuri
     gain = state.get('gain', 0.7)
     rev = state.get('reverb.level', 0.4)
     cho = state.get('chorus.level', 0.4)
     
-    print(f"Ripristino: Gain {gain}, Rev {rev}, Chorus {cho}")
+    print(f"[Init] Restore: Gain {gain}, Rev {rev}, Chorus {cho}")
     send_fluid(f"set synth.gain {gain}")
     send_fluid(f"set synth.reverb.level {rev}")
     send_fluid(f"set synth.chorus.level {cho}")
@@ -136,12 +190,12 @@ def restore_settings():
                 if parts and parts[0].isdigit():
                     send_fluid(f"unload {parts[0]}")
             res = send_fluid(f"load {path}")
-            print(f"Ripristino font {font_name}: {res}")
+            print(f"[Init] Restored font {font_name}: {res}")
             # Aggiorna l'ID attivo del font
             global sf_id
             sf_id = get_active_sf_id()
         else:
-            print(f"Font salvato non trovato: {path}")
+            print(f"[Init] Saved font not found: {path}")
 
     # Applica banche, programmi e CC salvati per ogni canale
     saved_channels = state.get('channels', {})
@@ -175,12 +229,19 @@ def startup_init_once():
     if _INITIALIZED:
         return
     _INITIALIZED = True
-    # Piccola attesa per permettere a FluidSynth di essere pronto
-    time.sleep(2)
+    # Wait for FluidSynth with progressive retry
+    for attempt in range(5):
+        test = send_fluid("fonts")
+        if test.strip():
+            print(f"[Init] FluidSynth ready after {attempt + 1} attempt(s)")
+            break
+        wait = 1.0 + attempt * 0.5
+        print(f"[Init] FluidSynth not ready, retrying in {wait:.1f}s...")
+        time.sleep(wait)
     restore_settings()
     # Aggiorna l'ID attivo del font dopo il ripristino
     sf_id = get_active_sf_id()
-    print(f"Soundfont ID caricato all'avvio: {sf_id}")
+    print(f"[Init] Active soundfont ID: {sf_id}")
 
 @app.route('/')
 def index():
@@ -250,7 +311,7 @@ def select_prog(chan, bank, prog):
         state['channels'][str(chan)]['bank'] = bank
         state['channels'][str(chan)]['program'] = prog
         
-        print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
+        print(f"[Channel] Saved ch {chan}: bank={bank}, prog={prog}")
         _write_state_atomic(state)
     
     return "OK"
@@ -262,34 +323,19 @@ def set_effect(type, val):
         send_fluid(f"set synth.{type} {f_val}")
         save_state(type, f_val)
         return "OK"
-    except:
-        return "Errore", 400
+    except (ValueError, TypeError) as e:
+        print(f"[Effect] Invalid value type={type} val={val}: {e}")
+        return "Error", 400
 
 @app.route('/cc/<int:chan>/<int:cc>/<int:val>')
 def control(chan, cc, val):
     send_fluid(f"cc {chan} {cc} {val}")
     
-    # Salva i CC importanti per i preset
-    # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=75
-    if cc in [7, 71, 72, 73, 74, 75]:
-        with STATE_LOCK:
-            state = get_last_state()
-            if 'channels' not in state:
-                state['channels'] = {}
-            if str(chan) not in state['channels']:
-                state['channels'][str(chan)] = {}
-            
-            # Mappa i CC ai nomi
-            cc_names = {
-                7: 'volume',
-                71: 'resonance',
-                72: 'release',
-                73: 'attack',
-                74: 'cutoff',
-                75: 'decay'
-            }
-            state['channels'][str(chan)][cc_names[cc]] = val
-            _write_state_atomic(state)
+    # Save important CCs for presets (debounced to reduce SD card I/O)
+    cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
+                73: 'attack', 74: 'cutoff', 75: 'decay'}
+    if cc in cc_names:
+        save_cc_debounced(chan, cc_names[cc], val)
     
     return "OK"
 
@@ -313,7 +359,8 @@ def get_state():
 def api_capture_current_config():
     """Cattura la configurazione MIDI completa corrente"""
     try:
-        state = get_last_state()
+        with STATE_LOCK:
+            state = get_last_state()
         
         # Ottieni informazioni sui canali da FluidSynth
         channels_raw = send_fluid("channels")
@@ -361,7 +408,7 @@ def api_capture_current_config():
         
         return jsonify({'status': 'ok', 'config': config})
     except Exception as e:
-        print(f"Errore cattura configurazione: {e}")
+        print(f"[Config] Capture error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # ==========================================
@@ -393,14 +440,14 @@ def api_presets_list():
                             'created': preset_data.get('created', 'Unknown'),
                             'font': preset_data.get('font', 'N/A')
                         })
-                except:
+                except (json.JSONDecodeError, IOError):
                     continue
         
         # Ordina per nome
         presets.sort(key=lambda x: x['name'].lower())
         return jsonify(presets)
     except Exception as e:
-        print(f"Errore lettura preset: {e}")
+        print(f"[Preset] List error: {e}")
         return jsonify([])
 
 @app.route('/api/presets/save', methods=['POST'])
@@ -452,7 +499,7 @@ def api_presets_save():
             'filename': f"{safe_filename}.json"
         })
     except Exception as e:
-        print(f"Errore salvataggio preset: {e}")
+        print(f"[Preset] Save error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/load/<filename>')
@@ -469,7 +516,7 @@ def api_presets_load(filename):
         
         return jsonify({'status': 'ok', 'data': preset_data})
     except Exception as e:
-        print(f"Errore caricamento preset: {e}")
+        print(f"[Preset] Load error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/delete/<filename>', methods=['DELETE'])
@@ -484,7 +531,7 @@ def api_presets_delete(filename):
         os.remove(preset_path)
         return jsonify({'status': 'ok', 'message': 'Preset eliminato con successo'})
     except Exception as e:
-        print(f"Errore eliminazione preset: {e}")
+        print(f"[Preset] Delete error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/rename', methods=['POST'])
@@ -530,7 +577,7 @@ def api_presets_rename():
             'new_filename': f"{safe_filename}.json"
         })
     except Exception as e:
-        print(f"Errore rinominazione preset: {e}")
+        print(f"[Preset] Rename error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/apply', methods=['POST'])
@@ -592,18 +639,13 @@ def api_presets_apply():
         
         return jsonify({'status': 'ok', 'message': 'Preset applicato con successo'})
     except Exception as e:
-        print(f"Errore applicazione preset: {e}")
+        print(f"[Preset] Apply error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-# rotte per settings
 # ==========================================
-# ROTTE PER LE IMPOSTAZIONI HARDWARE E RETE
+# HARDWARE AND NETWORK SETTINGS ROUTES
 # ==========================================
-
-@app.route('/settings')
-def settings_page():
-    return render_template('settings.html')
 
 @app.route('/api/network')
 def api_network():
@@ -638,9 +680,10 @@ def api_audio():
                 print(f"DEBUG: Device trovato: {dev_id} - {name}")
                 devices.append({"id": dev_id, "name": f"Scheda {card_num}: {name}"})
     except Exception as e:
-        print(f"Errore lettura audio: {e}")
+        print(f"[Audio] Device scan error: {e}")
 
-    state = get_last_state()
+    with STATE_LOCK:
+        state = get_last_state()
     # Se non c'è una scheda salvata, mettiamo un default vuoto
     current = state.get('audio_device', '')
     # Converti vecchi valori hw: in plughw: per compatibilità
@@ -666,9 +709,10 @@ def api_midi():
                 if "System" not in name and "Midi Through" not in name:
                     devices.append({"id": client_num, "name": name})
     except Exception as e:
-        print(f"Errore lettura midi: {e}")
+        print(f"[MIDI] Device scan error: {e}")
 
-    state = get_last_state()
+    with STATE_LOCK:
+        state = get_last_state()
     current = state.get('midi_device', '')
     return jsonify({"devices": devices, "current": current})
 
@@ -681,8 +725,7 @@ def save_hardware():
         # Forza sempre plughw: invece di hw:
         if audio_device.startswith('hw:'):
             audio_device = audio_device.replace('hw:', 'plughw:', 1)
-        # Debug: stampa cosa viene salvato
-        print(f"DEBUG: Salvando audio_device: {audio_device}")
+        print(f"[Settings] Saving audio_device: {audio_device}")
         save_state('audio_device', audio_device)
     if 'midi' in data and data['midi']: 
         save_state('midi_device', data['midi'])
@@ -691,7 +734,7 @@ def save_hardware():
     # per permettere alla risposta HTTP di arrivare al browser
     def delayed_restart():
         time.sleep(1)
-        os.system("sudo systemctl restart matsynth.service")
+        subprocess.run(["sudo", "systemctl", "restart", "matsynth.service"])
     
     restart_thread = threading.Thread(target=delayed_restart, daemon=True)
     restart_thread.start()
@@ -846,14 +889,15 @@ def daw_rewind():
 @app.route('/api/daw/track/<int:channel>/arm', methods=['POST'])
 def daw_arm_track(channel):
     """Arma/disarma una traccia per la registrazione"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         data = request.json
         armed = data.get('armed', True)
         
         success = daw.arm_track(channel, armed)
         
-        print(f"[DAW API] Traccia {channel} {'armata' if armed else 'disarmata'} - success={success}")
-        print(f"[DAW API] Stato armed aggiornato: {daw.armed[channel]}")
+        print(f"[DAW API] Track {channel} {'armed' if armed else 'disarmed'} - success={success}")
         
         return jsonify({
             "status": "ok", 
@@ -867,6 +911,8 @@ def daw_arm_track(channel):
 @app.route('/api/daw/track/<int:channel>/mute', methods=['POST'])
 def daw_mute_track(channel):
     """Muta/smuta una traccia"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         data = request.json
         muted = data.get('muted', True)
@@ -885,6 +931,8 @@ def daw_mute_track(channel):
 @app.route('/api/daw/track/<int:channel>/solo', methods=['POST'])
 def daw_solo_track(channel):
     """Attiva/disattiva il solo su una traccia"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         data = request.json
         solo = data.get('solo', True)
@@ -903,6 +951,8 @@ def daw_solo_track(channel):
 @app.route('/api/daw/track/<int:channel>/clear', methods=['POST'])
 def daw_clear_track(channel):
     """Cancella una traccia specifica"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         daw.clear_track(channel)
         return jsonify({"status": "ok", "message": f"Traccia {channel} cancellata"})
@@ -1181,6 +1231,16 @@ def daw_full_density_map():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/full_note_map')
+def daw_full_note_map():
+    """Return note-level data for piano-roll rendering."""
+    try:
+        note_map = daw.get_full_note_map()
+        return jsonify({"status": "ok", "map": note_map})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/seek_beat', methods=['POST'])
 def daw_seek_beat():
     """Seek to a beat position (works during playback too)."""
@@ -1270,17 +1330,10 @@ def handle_cc_update(data):
         if not (0 <= chan <= 15 and 0 <= cc_num <= 127 and 0 <= val <= 127):
             return {'status': 'error', 'message': 'Values out of range'}
         send_fluid(f"cc {chan} {cc_num} {val}")
-        if cc_num in [7, 10, 71, 72, 73, 74, 75]:
-            with STATE_LOCK:
-                state = get_last_state()
-                if 'channels' not in state:
-                    state['channels'] = {}
-                if str(chan) not in state['channels']:
-                    state['channels'][str(chan)] = {}
-                cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
-                            73: 'attack', 74: 'cutoff', 75: 'decay'}
-                state['channels'][str(chan)][cc_names[cc_num]] = val
-                _write_state_atomic(state)
+        cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
+                    73: 'attack', 74: 'cutoff', 75: 'decay'}
+        if cc_num in cc_names:
+            save_cc_debounced(chan, cc_names[cc_num], val)
         return {'status': 'ok'}
     except Exception as e:
         print(f"[WS] cc_update error: {e}")

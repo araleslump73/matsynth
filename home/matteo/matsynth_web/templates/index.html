@@ -279,14 +279,14 @@
                 <table class="table table-sm table-dark mb-0" style="font-size: 0.75rem;">
                     <thead style="position: sticky; top: 0; background: #1a1a1a; z-index: 10; border-bottom: 2px solid #c2185b;">
                         <tr>
-                            <th style="width: 3%;">CH</th>
-                            <th style="width: 20%;">Instrument</th>
+                            <th style="width: 2%;">CH</th>
+                            <th style="width: 14%;">Instrument</th>
                             <th style="width: 5%;">REC</th>
                             <th style="width: 5%;">MUTE</th>
                             <th style="width: 5%;">SOLO</th>
-                            <th style="width: 48%;">Timeline</th>
-                            <th style="width: 6%;">Ev</th>
-                            <th style="width: 8%;">Clear</th>
+                            <th style="width: 58%;">Timeline</th>
+                            <th style="width: 4%;">Ev</th>
+                            <th style="width: 7%;">Clear</th>
                         </tr>
                     </thead>
                     <tbody id="daw-tracks">
@@ -482,100 +482,120 @@
             <i class="fas fa-chevron-down daw-panel-chevron"></i>
         </div>
         <div class="daw-panel-body" id="panel-mixer-body">
-        
-        <!-- VOLUME CONTROL (Horizontal) -->
-        <div class="mb-3 p-3" style="background: rgba(0, 255, 136, 0.08); border-radius: 10px; border: 1px solid rgba(0, 255, 136, 0.2);">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <label class="slider-label icon-label mb-0" style="color: #00ff88; font-size: 0.9rem;">
-                    <i class="fas fa-volume-up"></i> VOLUME (CC7)
-                </label>
-                <span id="val-7" class="badge-custom" style="font-size: 0.9rem; padding: 4px 12px;">100</span>
-            </div>
-            <input type="range" class="form-range" min="0" max="127" value="100" 
-                   oninput="updateCC(7, this.value); document.getElementById('val-7').innerText=this.value"
-                   style="height: 8px;">
+
+        <!-- TAB BAR -->
+        <div class="daw-panel-tabs">
+            <button class="daw-panel-tab active" data-tab="tab-mix" onclick="switchMixerTab('tab-mix')">
+                <i class="fas fa-sliders-h"></i> MIX
+            </button>
+            <button class="daw-panel-tab" data-tab="tab-sound" onclick="switchMixerTab('tab-sound')">
+                <i class="fas fa-wave-square"></i> SOUND
+            </button>
         </div>
-        
-        <!-- PAN CONTROL (Horizontal) -->
-        <div class="mb-3 p-3" style="background: rgba(0, 180, 255, 0.08); border-radius: 10px; border: 1px solid rgba(0, 180, 255, 0.2);">
-            <div class="d-flex justify-content-between align-items-center mb-2">
-                <label class="slider-label icon-label mb-0" style="color: #00b4ff; font-size: 0.9rem;">
-                    <i class="fas fa-arrows-alt-h"></i> PAN (CC10)
-                </label>
-                <span id="val-10" class="badge-custom" style="font-size: 0.9rem; padding: 4px 12px;">C</span>
-            </div>
-            <input type="range" class="form-range" id="pan-slider" min="0" max="127" value="64" 
-                   oninput="updateCC(10, this.value); updatePanLabel(this.value)"
-                   style="height: 8px;">
-            <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 4px;">
-                <span>L</span>
-                <span>C</span>
-                <span>R</span>
-            </div>
-        </div>
-        
-        <!-- VERTICAL SLIDERS ROW -->
-        <div class="row g-2"> <!-- g-2 reduces space between columns -->
-            <!-- ATTACK -->
-            <div class="col">
-                <div class="vertical-slider-group">
-                    <span id="val-73" class="val-badge">64</span>
-                    <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
-                               oninput="updateCC(73, this.value); document.getElementById('val-73').innerText=this.value">
-                    </div>
-                    <label class="slider-label-vert"><i class="fas fa-arrow-up d-block mb-1"></i>&nbsp;ATK</label>
-                </div>
-            </div>
 
-            <!-- DECAY -->
-            <div class="col">
-                <div class="vertical-slider-group">
-                    <span id="val-75" class="val-badge">64</span>
-                    <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
-                               oninput="updateCC(75, this.value); document.getElementById('val-75').innerText=this.value">
-                    </div>
-                    <label class="slider-label-vert"><i class="fas fa-hourglass-half d-block mb-1"></i>&nbsp;DEC</label>
-                </div>
-            </div>
+        <!-- MIX TAB: Volume + Pan -->
+        <div id="tab-mix" class="daw-tab-pane active">
+            <span id="tab-mix-inline-hint" class="daw-tab-inline-hint" style="display:none;">
+                <i class="fas fa-info-circle"></i> Vol/Pan visibili inline nella track in modalità large
+            </span>
 
-            <!-- RELEASE -->
-            <div class="col">
-                <div class="vertical-slider-group">
-                    <span id="val-72" class="val-badge">64</span>
-                    <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
-                               oninput="updateCC(72, this.value); document.getElementById('val-72').innerText=this.value">
-                    </div>
-                    <label class="slider-label-vert"><i class="fas fa-arrow-down d-block mb-1"></i>&nbsp;REL</label>
+            <!-- VOLUME CONTROL (Horizontal) -->
+            <div class="mb-3 p-3" style="background: rgba(0, 255, 136, 0.08); border-radius: 10px; border: 1px solid rgba(0, 255, 136, 0.2);">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <label class="slider-label icon-label mb-0" style="color: #00ff88; font-size: 0.9rem;">
+                        <i class="fas fa-volume-up"></i> VOLUME (CC7)
+                    </label>
+                    <span id="val-7" class="badge-custom" style="font-size: 0.9rem; padding: 4px 12px;">100</span>
+                </div>
+                <input type="range" class="form-range" id="vol-slider" min="0" max="127" value="100" 
+                       oninput="updateCC(7, this.value); document.getElementById('val-7').innerText=this.value"
+                       style="height: 8px;">
+            </div>
+            
+            <!-- PAN CONTROL (Horizontal) -->
+            <div class="mb-3 p-3" style="background: rgba(0, 180, 255, 0.08); border-radius: 10px; border: 1px solid rgba(0, 180, 255, 0.2);">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <label class="slider-label icon-label mb-0" style="color: #00b4ff; font-size: 0.9rem;">
+                        <i class="fas fa-arrows-alt-h"></i> PAN (CC10)
+                    </label>
+                    <span id="val-10" class="badge-custom" style="font-size: 0.9rem; padding: 4px 12px;">C</span>
+                </div>
+                <input type="range" class="form-range" id="pan-slider" min="0" max="127" value="64" 
+                       oninput="updateCC(10, this.value); updatePanLabel(this.value)"
+                       style="height: 8px;">
+                <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 4px;">
+                    <span>L</span>
+                    <span>C</span>
+                    <span>R</span>
                 </div>
             </div>
+        </div><!-- end tab-mix -->
 
-            <!-- CUTOFF -->
-            <div class="col">
-                <div class="vertical-slider-group">
-                    <span id="val-74" class="val-badge">64</span>
-                    <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
-                               oninput="updateCC(74, this.value); document.getElementById('val-74').innerText=this.value">
+        <!-- SOUND TAB: ADSR + Filter -->
+        <div id="tab-sound" class="daw-tab-pane">
+            <div class="row g-2">
+                <!-- ATTACK -->
+                <div class="col">
+                    <div class="vertical-slider-group">
+                        <span id="val-73" class="val-badge">64</span>
+                        <div class="vertical-range-container">
+                            <input type="range" class="form-range vertical-slider" id="cc-slider-73" min="0" max="127" value="64" 
+                                   oninput="updateCC(73, this.value); document.getElementById('val-73').innerText=this.value">
+                        </div>
+                        <label class="slider-label-vert"><i class="fas fa-arrow-up d-block mb-1"></i>&nbsp;ATK</label>
                     </div>
-                    <label class="slider-label-vert"><i class="fas fa-filter d-block mb-1"></i>&nbsp;CUT</label>
                 </div>
-            </div>
 
-            <!-- RESONANCE -->
-            <div class="col">
-                <div class="vertical-slider-group">
-                    <span id="val-71" class="val-badge">64</span>
-                    <div class="vertical-range-container">
-                        <input type="range" class="form-range vertical-slider" min="0" max="127" value="64" 
-                               oninput="updateCC(71, this.value); document.getElementById('val-71').innerText=this.value">
+                <!-- DECAY -->
+                <div class="col">
+                    <div class="vertical-slider-group">
+                        <span id="val-75" class="val-badge">64</span>
+                        <div class="vertical-range-container">
+                            <input type="range" class="form-range vertical-slider" id="cc-slider-75" min="0" max="127" value="64" 
+                                   oninput="updateCC(75, this.value); document.getElementById('val-75').innerText=this.value">
+                        </div>
+                        <label class="slider-label-vert"><i class="fas fa-hourglass-half d-block mb-1"></i>&nbsp;DEC</label>
                     </div>
-                    <label class="slider-label-vert"><i class="fas fa-wave-square d-block mb-1"></i>&nbsp;RES</label>
+                </div>
+
+                <!-- RELEASE -->
+                <div class="col">
+                    <div class="vertical-slider-group">
+                        <span id="val-72" class="val-badge">64</span>
+                        <div class="vertical-range-container">
+                            <input type="range" class="form-range vertical-slider" id="cc-slider-72" min="0" max="127" value="64" 
+                                   oninput="updateCC(72, this.value); document.getElementById('val-72').innerText=this.value">
+                        </div>
+                        <label class="slider-label-vert"><i class="fas fa-arrow-down d-block mb-1"></i>&nbsp;REL</label>
+                    </div>
+                </div>
+
+                <!-- CUTOFF -->
+                <div class="col">
+                    <div class="vertical-slider-group">
+                        <span id="val-74" class="val-badge">64</span>
+                        <div class="vertical-range-container">
+                            <input type="range" class="form-range vertical-slider" id="cc-slider-74" min="0" max="127" value="64" 
+                                   oninput="updateCC(74, this.value); document.getElementById('val-74').innerText=this.value">
+                        </div>
+                        <label class="slider-label-vert"><i class="fas fa-filter d-block mb-1"></i>&nbsp;CUT</label>
+                    </div>
+                </div>
+
+                <!-- RESONANCE -->
+                <div class="col">
+                    <div class="vertical-slider-group">
+                        <span id="val-71" class="val-badge">64</span>
+                        <div class="vertical-range-container">
+                            <input type="range" class="form-range vertical-slider" id="cc-slider-71" min="0" max="127" value="64" 
+                                   oninput="updateCC(71, this.value); document.getElementById('val-71').innerText=this.value">
+                        </div>
+                        <label class="slider-label-vert"><i class="fas fa-wave-square d-block mb-1"></i>&nbsp;RES</label>
+                    </div>
                 </div>
             </div>
-        </div>
+        </div><!-- end tab-sound -->
+
         </div><!-- end panel-mixer-body -->
     </div><!-- end panel-mixer -->
 
@@ -622,6 +642,13 @@
     <script>
         let instrumentData = [];
         let activeControlChannel = 0; // The channel on which CC sliders act
+        let channelCC = {};  // Per-channel CC values: channelCC[ch] = {7: vol, 10: pan, 71: res, ...}
+        const SOUND_CCS = [73, 75, 72, 74, 71]; // ATK, DEC, REL, CUT, RES
+
+        // ═══════════════ TRACK SIZE SYSTEM ═══════════════
+        const TRACK_SIZES = { compact: 32, medium: 48, large: 80 };
+        const TRACK_SIZE_ORDER = ['medium', 'large', 'compact'];
+        const trackSizes = new Array(16).fill('medium');
 
         // Mixer Initialization
         async function setupMixer() {
@@ -672,6 +699,7 @@
                 
                 // Applica le selezioni salvate ai dropdown
                 if (state.channels) {
+                    const ccNameMap = {volume: 7, attack: 73, decay: 75, release: 72, cutoff: 74, resonance: 71};
                     for (let chan in state.channels) {
                         const channelData = state.channels[chan];
                         const bank = channelData.bank;
@@ -689,6 +717,16 @@
                                 }
                             }
                         }
+                        // Populate channelCC from saved state
+                        const ch = parseInt(chan);
+                        if (!channelCC[ch]) channelCC[ch] = {};
+                        for (let [name, cc] of Object.entries(ccNameMap)) {
+                            if (channelData[name] !== undefined) {
+                                channelCC[ch][cc] = parseInt(channelData[name]);
+                            }
+                        }
+                        // Also store pan if present
+                        if (channelData.pan !== undefined) channelCC[ch][10] = parseInt(channelData.pan);
                     }
                 }
             } catch (e) {
@@ -700,12 +738,43 @@
         function setControlChannel(chan) {
             activeControlChannel = chan;
             document.getElementById('target-ch-display').innerText = chan + 1;
-            // Highlight the active track row with yellow left border
+            // Highlight the active track row with selection class
             for (let i = 0; i < 16; i++) {
                 const row = document.getElementById(`daw-track-${i}`);
                 if (row) {
-                    row.style.borderLeft = i === chan ? '3px solid #ffc107' : '';
+                    row.classList.toggle('daw-track-selected', i === chan);
                 }
+            }
+            // Sync Channel Controls sliders FROM inline track sliders
+            const iv = document.getElementById(`track-vol-${chan}`);
+            const ip = document.getElementById(`track-pan-${chan}`);
+            const mainVol = document.getElementById('vol-slider');
+            const mainPan = document.getElementById('pan-slider');
+            if (iv && mainVol) {
+                mainVol.value = iv.value;
+                const vl = document.getElementById('val-7');
+                if (vl) vl.textContent = iv.value;
+            }
+            if (ip && mainPan) {
+                mainPan.value = ip.value;
+                updatePanLabel(ip.value);
+            }
+            // Sync SOUND tab sliders (ADSR + filter) from channelCC map
+            const ccData = channelCC[chan] || {};
+            SOUND_CCS.forEach(cc => {
+                const val = ccData[cc] !== undefined ? ccData[cc] : 64;
+                const slider = document.getElementById(`cc-slider-${cc}`);
+                const badge = document.getElementById(`val-${cc}`);
+                if (slider) slider.value = val;
+                if (badge) badge.textContent = val;
+            });
+            // U2: Auto-switch to SOUND tab if active track is in large mode
+            const hint = document.getElementById('tab-mix-inline-hint');
+            if (trackSizes[chan] === 'large') {
+                switchMixerTab('tab-sound');
+                if (hint) hint.style.display = '';
+            } else {
+                if (hint) hint.style.display = 'none';
             }
         }
 
@@ -721,6 +790,9 @@
             
             // Reset UI sliders to default values
             resetUISliders();
+
+            // Update compact-mode instrument label
+            updateTrackInstLabel(chan);
         }
         
         // NOTE: With native vertical sliders (-webkit-appearance: slider-vertical), 
@@ -788,10 +860,22 @@
         }
 
         function updateCC(cc, val) {
+            // Store value in per-channel map
+            if (!channelCC[activeControlChannel]) channelCC[activeControlChannel] = {};
+            channelCC[activeControlChannel][cc] = parseInt(val);
+
             if (dawSocket && dawSocket.connected) {
                 dawSocket.emit('cc_update', {chan: activeControlChannel, cc: cc, val: val});
             } else {
                 fetch(`/cc/${activeControlChannel}/${cc}/${val}`);
+            }
+            // Sync inline track sliders (bidirectional)
+            if (cc === 7) {
+                const iv = document.getElementById(`track-vol-${activeControlChannel}`);
+                if (iv) { iv.value = val; document.getElementById(`track-vol-val-${activeControlChannel}`).textContent = val; }
+            } else if (cc === 10) {
+                const ip = document.getElementById(`track-pan-${activeControlChannel}`);
+                if (ip) { ip.value = val; updateInlinePanLabel(activeControlChannel, val); }
             }
         }
 
@@ -902,8 +986,8 @@ let soloInProgress = {};  // Track which SOLO buttons are being processed
 let trackView = {
     startTime: 0,
     zoomLevel: 10,
-    density: {},              // slot densities per track
-    meta: { slotBeats: 0.125, totalBeats: 0, beatsPerMeasure: 4 },
+    noteMap: {},               // note data per track for piano-roll
+    meta: { totalBeats: 0, beatsPerMeasure: 4 },
     liveActivity: {},
     lastTrackCounts: {},
     rafId: null,
@@ -969,14 +1053,28 @@ function setupChCellHandlers() {
         cell.addEventListener('mouseup', endPress);
         cell.addEventListener('mouseleave', cancelPress);
         cell.addEventListener('contextmenu', e => { e.preventDefault(); dawCycleTrackColor(chan); });
-        cell.addEventListener('dblclick', e => { e.preventDefault(); dawRenameTrackPrompt(); });
+        cell.addEventListener('dblclick', e => { e.preventDefault(); dawCycleTrackSize(chan); });
     });
+
+    // Click anywhere on a track row to select that channel
+    for (let ch = 0; ch < 16; ch++) {
+        const row = document.getElementById(`daw-track-${ch}`);
+        if (!row) continue;
+        row.addEventListener('click', function(e) {
+            const tag = e.target.tagName;
+            if (tag === 'BUTTON' || tag === 'SELECT' || tag === 'INPUT' || tag === 'OPTION'
+                || e.target.closest('button') || e.target.closest('select') || e.target.closest('.ch-cell')) return;
+            setControlChannel(ch);
+        });
+    }
 }
 
 function dawHideTrack(ch) {
     const row = document.getElementById(`daw-track-${ch}`);
     if (!row) return;
     row.style.display = 'none';
+    const cr = document.getElementById(`track-controls-${ch}`);
+    if (cr) cr.style.display = 'none';
     hiddenTracks.add(ch);
     dawUpdateHiddenBar();
 }
@@ -985,6 +1083,8 @@ function dawShowTrack(ch) {
     const row = document.getElementById(`daw-track-${ch}`);
     if (!row) return;
     row.style.display = '';
+    const cr = document.getElementById(`track-controls-${ch}`);
+    if (cr) cr.style.display = '';
     hiddenTracks.delete(ch);
     dawUpdateHiddenBar();
 }
@@ -993,6 +1093,8 @@ function dawShowAllTracks() {
     hiddenTracks.forEach(ch => {
         const row = document.getElementById(`daw-track-${ch}`);
         if (row) row.style.display = '';
+        const cr = document.getElementById(`track-controls-${ch}`);
+        if (cr) cr.style.display = '';
     });
     hiddenTracks.clear();
     dawUpdateHiddenBar();
@@ -1017,6 +1119,174 @@ function dawUpdateHiddenBar() {
         badge.onclick = () => dawShowTrack(ch);
         badges.appendChild(badge);
     });
+}
+
+// ═══════════════ TRACK SIZE INIT & FUNCTIONS ═══════════════
+
+function initTrackSizeSystem() {
+    for (let ch = 0; ch < 16; ch++) {
+        const row = document.getElementById(`daw-track-${ch}`);
+        if (!row) continue;
+
+        // Add default class
+        row.classList.add('track-medium');
+
+        // Add instrument label span (hidden in medium, visible in compact)
+        const instSelect = document.getElementById(`select-ch-${ch}`);
+        if (instSelect) {
+            const label = document.createElement('span');
+            label.className = 'track-inst-label';
+            label.id = `track-inst-label-${ch}`;
+            label.textContent = '--';
+            instSelect.parentElement.appendChild(label);
+        }
+
+        // Mark clear button TD for compact-hide
+        const clearBtn = document.getElementById(`clear-btn-${ch}`);
+        if (clearBtn) clearBtn.parentElement.classList.add('clear-cell');
+
+        // Embed controls inside the timeline cell (visible in large mode via CSS)
+        const canvas = document.getElementById(`track-canvas-${ch}`);
+        if (canvas) {
+            const timelineTd = canvas.parentElement;
+            timelineTd.classList.add('track-timeline-cell');
+            const controls = document.createElement('div');
+            controls.className = 'track-inline-controls';
+            controls.id = `track-controls-${ch}`;
+            controls.innerHTML = `
+                <span class="tic-icon" style="color:#00ff88;"><i class="fas fa-volume-up"></i></span>
+                <input type="range" id="track-vol-${ch}" class="track-inline-slider" min="0" max="127" value="100">
+                <span id="track-vol-val-${ch}" class="tic-val">100</span>
+                <span class="tic-icon" style="color:#00b4ff;"><i class="fas fa-arrows-alt-h"></i></span>
+                <input type="range" id="track-pan-${ch}" class="track-inline-slider" min="0" max="127" value="64">
+                <span id="track-pan-val-${ch}" class="tic-val">C</span>
+                <span class="tic-val" style="color:#555;">Range:</span>
+                <span id="track-range-${ch}" class="badge bg-dark" style="font-size:0.55rem; padding:1px 4px;">--</span>
+            `;
+            timelineTd.appendChild(controls);
+        }
+
+        // Setup inline slider events (closure over ch)
+        setupInlineSliders(ch);
+    }
+}
+
+function setupInlineSliders(ch) {
+    const volSlider = document.getElementById(`track-vol-${ch}`);
+    const panSlider = document.getElementById(`track-pan-${ch}`);
+    if (!volSlider || !panSlider) return;
+
+    volSlider.addEventListener('input', function() {
+        const val = parseInt(this.value);
+        document.getElementById(`track-vol-val-${ch}`).textContent = val;
+        // Send CC7 to this specific channel
+        if (dawSocket && dawSocket.connected) {
+            dawSocket.emit('cc_update', {chan: ch, cc: 7, val: val});
+        } else {
+            fetch(`/cc/${ch}/7/${val}`);
+        }
+        // Sync with Channel Controls if this is the active channel
+        if (ch === activeControlChannel) {
+            const mainVol = document.querySelector('#vol-slider');
+            if (mainVol) { mainVol.value = val; }
+            const valLabel = document.getElementById('val-7');
+            if (valLabel) valLabel.textContent = val;
+        }
+    });
+
+    panSlider.addEventListener('input', function() {
+        const val = parseInt(this.value);
+        updateInlinePanLabel(ch, val);
+        // Send CC10 to this specific channel
+        if (dawSocket && dawSocket.connected) {
+            dawSocket.emit('cc_update', {chan: ch, cc: 10, val: val});
+        } else {
+            fetch(`/cc/${ch}/10/${val}`);
+        }
+        // Sync with Channel Controls if this is the active channel
+        if (ch === activeControlChannel) {
+            const mainPan = document.getElementById('pan-slider');
+            if (mainPan) { mainPan.value = val; }
+            updatePanLabel(val);
+        }
+    });
+}
+
+function updateInlinePanLabel(ch, val) {
+    val = parseInt(val);
+    const label = document.getElementById(`track-pan-val-${ch}`);
+    if (!label) return;
+    if (val < 60) label.textContent = 'L' + (64 - val);
+    else if (val > 68) label.textContent = 'R' + (val - 64);
+    else label.textContent = 'C';
+}
+
+function dawCycleTrackSize(ch) {
+    const current = trackSizes[ch];
+    const idx = TRACK_SIZE_ORDER.indexOf(current);
+    const next = TRACK_SIZE_ORDER[(idx + 1) % TRACK_SIZE_ORDER.length];
+    trackSizes[ch] = next;
+    applyTrackSize(ch);
+}
+
+function applyTrackSize(ch) {
+    const mode = trackSizes[ch];
+    const row = document.getElementById(`daw-track-${ch}`);
+    const canvas = document.getElementById(`track-canvas-${ch}`);
+    if (!row || !canvas) return;
+
+    // Remove old classes, add new
+    row.classList.remove('track-compact', 'track-medium', 'track-large');
+    row.classList.add(`track-${mode}`);
+
+    // Canvas height (leave room for inline controls bar in large mode)
+    canvas.height = mode === 'large' ? TRACK_SIZES[mode] - 22 : TRACK_SIZES[mode];
+
+    // U2: Auto-switch mixer tab when active track changes size
+    if (ch === activeControlChannel) {
+        const hint = document.getElementById('tab-mix-inline-hint');
+        if (mode === 'large') {
+            switchMixerTab('tab-sound');
+            if (hint) hint.style.display = '';
+        } else {
+            switchMixerTab('tab-mix');
+            if (hint) hint.style.display = 'none';
+        }
+    }
+
+    // Update instrument label (compact shows text instead of dropdown)
+    updateTrackInstLabel(ch);
+
+    // Size indicator dot on CH cell
+    const chCell = row.querySelector('.ch-cell');
+    if (chCell) {
+        let dot = chCell.querySelector('.ch-size-dot');
+        if (mode === 'medium') {
+            if (dot) dot.remove();
+        } else {
+            if (!dot) {
+                dot = document.createElement('span');
+                dot.className = 'ch-size-dot';
+                chCell.appendChild(dot);
+            }
+            dot.className = `ch-size-dot ${mode}`;
+        }
+        // Update tooltip
+        chCell.title = `Tap: select · Hold: hide · DblClick: resize (${mode})`;
+    }
+
+    // Force tape re-render
+    trackView.tapes[ch] = null;
+    renderTrackTape(ch);
+    renderAllTracks();
+}
+
+function updateTrackInstLabel(ch) {
+    const label = document.getElementById(`track-inst-label-${ch}`);
+    const select = document.getElementById(`select-ch-${ch}`);
+    if (!label || !select) return;
+    const opt = select.options[select.selectedIndex];
+    label.textContent = (opt && opt.value) ? opt.text.substring(0, 25) : '--';
 }
 
 // ═══════════════════════ MIDI EVENT VIEWER ═══════════════════
@@ -1283,6 +1553,16 @@ function togglePanel(panelId) {
     const panel = document.getElementById(panelId);
     if (!panel) return;
     panel.classList.toggle('collapsed');
+}
+
+// Switch between MIX and SOUND tabs in Channel Controls panel
+function switchMixerTab(tabId) {
+    document.querySelectorAll('#panel-mixer-body .daw-panel-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.tab === tabId);
+    });
+    document.querySelectorAll('#panel-mixer-body .daw-tab-pane').forEach(pane => {
+        pane.classList.toggle('active', pane.id === tabId);
+    });
 }
 
 // SAVE: direct if name known, ask if new project
@@ -2095,7 +2375,7 @@ function ensureTape(ch, height) {
     const beatsPerMeasure = dawState ? (dawState.beats_per_measure || trackView.meta.beatsPerMeasure || 4) : (trackView.meta.beatsPerMeasure || 4);
     if (trackView.lastBeatsPerMeasure !== beatsPerMeasure) {
         trackView.tapes = {};
-        trackView.density = {};
+        trackView.noteMap = {};
         trackView.liveActivity = {};
         trackView.lastTrackCounts = {};
         trackView.lastBeatsPerMeasure = beatsPerMeasure;
@@ -2130,32 +2410,38 @@ function renderTrackTape(ch) {
     ctx.fillStyle = 'rgba(25, 25, 35, 0.9)';
     ctx.fillRect(0, 0, tape.width, tape.height);
 
-    // NB: griglia e shading disegnati in renderAllTracks() sul canvas visibile
-    //     per restare nitidi a qualsiasi livello di zoom
-
-    const density = trackView.density[ch] || [];
-    const slotBeats = trackView.meta.slotBeats || 0.125;
-    const slotWidthPx = slotBeats * trackView.tapeScale;
+    const trackData = trackView.noteMap[ch];
     const muted = dawState && dawState.muted && dawState.muted[ch];
-    const slotHeight = height - 6;
-    const slotY = 3;
 
-    let maxVal = 0;
-    for (const v of density) {
-        if (v > maxVal) maxVal = v;
-    }
-
-    if (maxVal > 0) {
+    if (trackData && trackData.notes && trackData.notes.length) {
+        const notes = trackData.notes;
+        const minNote = trackData.min_note;
+        const maxNote = trackData.max_note;
         const tColor = getTrackColor(ch);
-        for (let i = 0; i < density.length; i++) {
-            const val = density[i] || 0;
-            if (!val) continue;
-            const ratio = Math.min(1, val / maxVal);
-            const alpha = (0.35 + 0.55 * ratio) * (muted ? 0.5 : 1);
+        const noteRange = Math.max(1, maxNote - minNote);
+        const padding = 2;
+        const drawHeight = height - padding * 2;
+        const noteH = Math.max(1, Math.min(drawHeight / (noteRange + 1), height * 0.18));
+
+        for (const n of notes) {
+            const [note, vel, startBeat, endBeat] = n;
+            const x = startBeat * trackView.tapeScale;
+            const w = Math.max(1, (endBeat - startBeat) * trackView.tapeScale);
+            const yRatio = noteRange > 0 ? (maxNote - note) / noteRange : 0.5;
+            const y = padding + yRatio * (drawHeight - noteH);
+            const velRatio = vel / 127;
+            const alpha = (0.45 + 0.55 * velRatio) * (muted ? 0.35 : 1);
+
             ctx.globalAlpha = alpha;
             ctx.fillStyle = tColor;
-            const x = i * slotWidthPx;
-            ctx.fillRect(x, slotY, slotWidthPx, slotHeight);
+            ctx.fillRect(x, y, w, noteH);
+
+            if (w > 3 && noteH > 2) {
+                ctx.globalAlpha = alpha * 0.4;
+                ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                ctx.lineWidth = 0.5;
+                ctx.strokeRect(x + 0.5, y + 0.5, w - 1, noteH - 1);
+            }
         }
         ctx.globalAlpha = 1;
     }
@@ -2199,22 +2485,20 @@ function stopRenderLoop() {
 async function refreshDensityMap(force = false) {
     if (!dawState) return;
     try {
-        const res = await fetch('/api/daw/full_density_map');
+        const res = await fetch('/api/daw/full_note_map');
         const data = await res.json();
         if (data.status === 'ok' && data.map) {
             const map = data.map;
             trackView.meta = {
-                slotBeats: map.slot_beats || 0.125,
                 totalBeats: map.total_beats || 0,
                 beatsPerMeasure: map.beats_per_measure || (dawState ? dawState.beats_per_measure : 4)
             };
-            trackView.density = map.tracks || {};
+            trackView.noteMap = map.tracks || {};
             trackView.totalBars = Math.max(4, Math.ceil((trackView.meta.totalBeats || (trackView.meta.beatsPerMeasure * 4)) / (trackView.meta.beatsPerMeasure || 4)));
             trackView.lastBeatsPerMeasure = trackView.meta.beatsPerMeasure || trackView.lastBeatsPerMeasure;
             trackView.tapes = {};
             trackView.liveActivity = {};
             trackView.lastTrackCounts = { ...(dawState.track_counts || {}) };
-            // Rebuild every offscreen tape so the density stays visible after stopping recording
             for (let ch = 0; ch < 16; ch++) {
                 renderTrackTape(ch);
             }
@@ -2222,7 +2506,7 @@ async function refreshDensityMap(force = false) {
             renderAllTracks();
         }
     } catch (e) {
-        console.error('Density map fetch error:', e);
+        console.error('Note map fetch error:', e);
     }
 }
 
@@ -3083,6 +3367,7 @@ document.addEventListener('keydown', (e) => {
         window.addEventListener('load', () => {
              setupMixer();           // Populate instrument dropdowns
              setupChCellHandlers();  // Long-press handlers for CH cells
+             initTrackSizeSystem();  // Track size modes (compact/medium/large)
              initDAW();              // Initialize DAW on page load
              initRecorderResize();   // Drag-to-resize recorder area
         });
