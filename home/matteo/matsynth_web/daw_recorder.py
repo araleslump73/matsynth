@@ -757,6 +757,62 @@ class MultiTrackDAW:
 
         return results
 
+    def transpose_notes(self, channel, semitones, start_beat=None, end_beat=None):
+        """Transpose note events on a channel by semitones.
+
+        If start_beat/end_beat are provided, transpose only events within [start_beat, end_beat).
+        Returns number of transposed note events.
+        """
+        if self.is_recording or self.is_playing:
+            return None
+        if channel < 0 or channel > 15:
+            return 0
+
+        events = self.tracks.get(channel)
+        if not events:
+            return 0
+
+        st = float(start_beat) if start_beat is not None else None
+        en = float(end_beat) if end_beat is not None else None
+        if st is not None and en is not None and en <= st:
+            return 0
+
+        semitones = int(semitones)
+        if semitones == 0:
+            return 0
+
+        updated = []
+        modified = 0
+        for beat, msg_bytes in events:
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+            except Exception:
+                updated.append((beat, msg_bytes))
+                continue
+
+            in_range = (
+                (st is None or beat >= st) and
+                (en is None or beat < en)
+            )
+
+            if in_range and hasattr(msg, 'note') and msg.type in ('note_on', 'note_off'):
+                new_note = max(0, min(127, int(msg.note) + semitones))
+                if new_note != msg.note:
+                    msg = msg.copy(note=new_note)
+                    modified += 1
+            updated.append((beat, msg.bytes()))
+
+        if modified <= 0:
+            return 0
+
+        self._push_undo()
+        self.tracks[channel] = updated
+        self.has_data[channel] = len(self.tracks[channel]) > 0
+        self._density_dirty = True
+        self._emit_state_change()
+        print(f"[DAW] transpose ch={channel} semitones={semitones} modified={modified} range=({st},{en})")
+        return modified
+
     def set_bpm(self, bpm):
         """
         Imposta il tempo (BPM)
@@ -1022,7 +1078,7 @@ class MultiTrackDAW:
     def _build_notes_full(self, events):
         """Build note-level data for piano-roll rendering.
         Returns (notes_list, max_beat, min_note, max_note).
-        notes_list: [(note, velocity, start_beat, end_beat), ...]
+        notes_list: [(note, velocity, start_beat, end_beat, note_on_index, note_off_index), ...]
         """
         if not events:
             return [], 0.0, 127, 0
@@ -1033,7 +1089,7 @@ class MultiTrackDAW:
         min_note = 127
         max_note = 0
 
-        for beat_position, msg_bytes in events:
+        for idx, (beat_position, msg_bytes) in enumerate(events):
             max_beat = max(max_beat, beat_position)
             try:
                 msg = mido.Message.from_bytes(msg_bytes)
@@ -1041,18 +1097,21 @@ class MultiTrackDAW:
                 continue
 
             if msg.type == 'note_on' and msg.velocity > 0:
-                active_notes[msg.note] = (beat_position, msg.velocity)
+                active_notes.setdefault(msg.note, []).append((beat_position, msg.velocity, idx))
             elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
-                if msg.note in active_notes:
-                    start, vel = active_notes.pop(msg.note)
-                    notes.append((msg.note, vel, start, beat_position))
+                if msg.note in active_notes and active_notes[msg.note]:
+                    start, vel, on_idx = active_notes[msg.note].pop(0)
+                    notes.append((msg.note, vel, start, beat_position, on_idx, idx))
                     min_note = min(min_note, msg.note)
                     max_note = max(max_note, msg.note)
+                    if not active_notes[msg.note]:
+                        del active_notes[msg.note]
 
-        for note_num, (start, vel) in active_notes.items():
-            notes.append((note_num, vel, start, max_beat))
-            min_note = min(min_note, note_num)
-            max_note = max(max_note, note_num)
+        for note_num, pending in active_notes.items():
+            for start, vel, on_idx in pending:
+                notes.append((note_num, vel, start, max_beat, on_idx, -1))
+                min_note = min(min_note, note_num)
+                max_note = max(max_note, note_num)
 
         notes.sort(key=lambda n: n[2])
         return notes, max_beat, min_note, max_note
@@ -1073,7 +1132,10 @@ class MultiTrackDAW:
             total_beats = max(total_beats, max_beat)
             if notes:
                 tracks[ch] = {
-                    'notes': [[n, v, round(s, 4), round(e, 4)] for n, v, s, e in notes],
+                    'notes': [
+                        [n, v, round(s, 4), round(e, 4), on_idx, off_idx]
+                        for n, v, s, e, on_idx, off_idx in notes
+                    ],
                     'min_note': min_note,
                     'max_note': max_note
                 }

@@ -78,6 +78,9 @@
                 <button class="daw-dropdown-item" onclick="dawRenameTrackPrompt(); closeMenus()">
                     <i class="fas fa-pen"></i> Rename Track
                 </button>
+                <button class="daw-dropdown-item daw-dropdown-danger" onclick="dawClearTrack(activeControlChannel); closeMenus()">
+                    <i class="fas fa-eraser"></i> Purge Track
+                </button>
                 <div class="daw-dropdown-sep"></div>
                 <button class="daw-dropdown-item" onclick="dawToggleQuantBar(); closeMenus()">
                     <i class="fas fa-magic"></i> Quantize…
@@ -121,9 +124,9 @@
     </nav>
 
     <!-- ═══════════════════════ TRANSPORT BAR ═══════════════════ -->
-    <div class="daw-transport">
+    <div class="daw-transport daw-shell-tier daw-shell-tier-primary">
         <!-- Transport buttons -->
-        <div class="daw-transport-group">
+        <div class="daw-transport-group transport-core-group">
             <button id="daw-rewind" class="daw-tbtn daw-tbtn-info" onclick="dawRewind()" title="Rewind">
                 <i class="fas fa-undo"></i>
             </button>
@@ -141,7 +144,7 @@
             </button>
         </div>
         <!-- BPM + Metronome -->
-        <div class="daw-transport-group daw-transport-sep">
+        <div class="daw-transport-group daw-transport-sep transport-tempo-group">
             <label class="daw-tlabel">BPM</label>
             <input type="number" id="daw-bpm" class="daw-tnumber" value="120" min="30" max="300"
                    onchange="dawSetBPM(this.value)">
@@ -154,7 +157,7 @@
             </select>
         </div>
         <!-- TIME display -->
-        <div class="daw-transport-group daw-transport-sep">
+        <div class="daw-transport-group daw-transport-sep transport-time-group">
             <label class="daw-tlabel"><i class="fas fa-clock"></i></label>
             <input id="daw-timeline" type="text" class="daw-timedisp"
                    value="00:00.0"
@@ -165,7 +168,7 @@
             <span id="daw-bar-counter" class="daw-tbadge">Bar 1</span>
         </div>
         <!-- Panic (far right) -->
-        <div class="daw-transport-group daw-transport-sep" style="margin-left: auto;">
+        <div class="daw-transport-group daw-transport-sep transport-panic-group" style="margin-left: auto;">
             <button id="daw-panic" class="daw-tbtn daw-tbtn-panic" onclick="dawPanic()" title="PANIC - All Notes Off">
                 <i class="fas fa-exclamation-triangle"></i>
             </button>
@@ -173,9 +176,9 @@
     </div>
 
     <!-- ═══════════════════════ EDITING TOOLBAR ═══════════════════ -->
-    <div class="daw-editing-toolbar">
+    <div class="daw-editing-toolbar daw-shell-tier daw-shell-tier-secondary">
         <!-- Undo / Redo -->
-        <div class="daw-transport-group">
+        <div class="daw-transport-group edit-history-group">
             <button id="daw-undo" class="daw-tbtn daw-tbtn-sel" onclick="dawUndo()" title="Undo (Ctrl+Z)" disabled>
                 <i class="fas fa-undo"></i>
             </button>
@@ -184,7 +187,7 @@
             </button>
         </div>
         <!-- Zoom + Snap + Tools -->
-        <div class="daw-transport-group daw-transport-sep daw-transport-flex">
+        <div class="daw-transport-group daw-transport-sep daw-transport-flex edit-main-group">
             <label class="daw-tlabel">Zoom</label>
             <input type="range" id="daw-zoom-range" class="daw-zoom-slider" min="10" max="200" step="5" value="10" oninput="dawViewSetZoom(this.value)">
             <select id="daw-snap-grid" class="daw-tselect" title="Snap grid">
@@ -203,6 +206,21 @@
             </button>
             <button id="daw-events-btn" class="daw-tbtn daw-tbtn-sel" onclick="dawOpenEventViewer()" title="MIDI Events Viewer">
                 <i class="fas fa-list-ol"></i>
+            </button>
+        </div>
+        <div class="daw-transport-group daw-transport-sep edit-transpose-group">
+            <label class="daw-tlabel">Transpose</label>
+            <button class="daw-tbtn daw-tbtn-sel daw-tbtn-trans" onclick="dawTransposeActive(-12)" title="-12 semitoni (ottava giu)">
+                -12
+            </button>
+            <button class="daw-tbtn daw-tbtn-sel daw-tbtn-trans" onclick="dawTransposeActive(-1)" title="-1 semitono">
+                -1
+            </button>
+            <button class="daw-tbtn daw-tbtn-sel daw-tbtn-trans" onclick="dawTransposeActive(1)" title="+1 semitono">
+                +1
+            </button>
+            <button class="daw-tbtn daw-tbtn-sel daw-tbtn-trans" onclick="dawTransposeActive(12)" title="+12 semitoni (ottava su)">
+                +12
             </button>
         </div>
     </div>
@@ -274,9 +292,9 @@
         </div>
 
         <!-- Channel Strips (Compact Table) -->
-        <div class="daw-tracks-panel">
-            <div style="overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; background: rgba(0,0,0,0.3);">
-                <table class="table table-sm table-dark mb-0" style="font-size: 0.75rem;">
+        <div class="daw-tracks-panel daw-track-shell">
+            <div class="daw-track-shell-scroll" style="overflow-y: auto; border: 1px solid rgba(255,255,255,0.1); border-radius: 6px; background: rgba(0,0,0,0.3);">
+                <table class="table table-sm table-dark mb-0 daw-track-shell-table" style="font-size: 0.75rem;">
                     <thead style="position: sticky; top: 0; background: #1a1a1a; z-index: 10; border-bottom: 2px solid #c2185b;">
                         <tr>
                             <th style="width: 2%;">CH</th>
@@ -284,9 +302,13 @@
                             <th style="width: 5%;">REC</th>
                             <th style="width: 5%;">MUTE</th>
                             <th style="width: 5%;">SOLO</th>
-                            <th style="width: 58%;">Timeline</th>
+                            <th style="width: 65%;">Timeline</th>
                             <th style="width: 4%;">Ev</th>
-                            <th style="width: 7%;">Clear</th>
+                        </tr>
+                        <tr class="daw-ruler-row">
+                            <td colspan="5" style="padding:0; border:0; background:transparent;"></td>
+                            <td style="padding:0; border:0;"><canvas id="daw-ruler" height="24" style="width:100%; background:rgba(15,15,25,0.95);"></canvas></td>
+                            <td style="padding:0; border:0;"></td>
                         </tr>
                     </thead>
                     <tbody id="daw-tracks">
@@ -298,7 +320,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(0)" id="solo-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-0" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-0" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(0)" id="clear-btn-0" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-1" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="1" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">2</td>
@@ -308,7 +329,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(1)" id="solo-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-1" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-1" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(1)" id="clear-btn-1" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-2" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="2" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">3</td>
@@ -318,7 +338,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(2)" id="solo-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-2" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-2" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(2)" id="clear-btn-2" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-3" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="3" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">4</td>
@@ -328,7 +347,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(3)" id="solo-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-3" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-3" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(3)" id="clear-btn-3" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-4" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="4" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">5</td>
@@ -338,7 +356,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(4)" id="solo-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-4" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-4" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(4)" id="clear-btn-4" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-5" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="5" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">6</td>
@@ -348,7 +365,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(5)" id="solo-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-5" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-5" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(5)" id="clear-btn-5" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-6" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="6" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">7</td>
@@ -358,7 +374,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(6)" id="solo-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-6" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-6" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(6)" id="clear-btn-6" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-7" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="7" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">8</td>
@@ -368,7 +383,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(7)" id="solo-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-7" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-7" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(7)" id="clear-btn-7" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-8" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="8" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">9</td>
@@ -378,7 +392,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(8)" id="solo-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-8" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-8" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(8)" id="clear-btn-8" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-9" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="9" style="color: #ff9800; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide (Drums)">10</td>
@@ -388,7 +401,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(9)" id="solo-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-9" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-9" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(9)" id="clear-btn-9" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-10" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="10" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">11</td>
@@ -398,7 +410,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(10)" id="solo-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-10" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-10" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(10)" id="clear-btn-10" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-11" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="11" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">12</td>
@@ -408,7 +419,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(11)" id="solo-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-11" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-11" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(11)" id="clear-btn-11" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-12" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="12" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">13</td>
@@ -418,7 +428,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(12)" id="solo-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-12" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-12" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(12)" id="clear-btn-12" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-13" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="13" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">14</td>
@@ -428,7 +437,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(13)" id="solo-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-13" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-13" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(13)" id="clear-btn-13" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-14" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="14" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">15</td>
@@ -438,7 +446,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(14)" id="solo-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-14" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-14" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(14)" id="clear-btn-14" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                         <tr id="daw-track-15" style="transition: background-color 0.2s;">
                             <td class="text-center fw-bold ch-cell" data-ch="15" style="color: #00d4ff; cursor: pointer; white-space: nowrap;" title="Tap: select &#x2022; Hold: hide">16</td>
@@ -448,7 +455,6 @@
                             <td><button class="btn btn-sm btn-outline-info w-100" onclick="dawToggleSolo(15)" id="solo-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 32px;">S</button></td>
                             <td><canvas id="track-canvas-15" height="48" style="width: 100%; background: rgba(40,40,55,0.8);"></canvas></td>
                             <td class="text-center"><span id="events-15" class="badge bg-secondary" style="font-size: 0.65rem;">0</span></td>
-                            <td><button class="btn btn-sm btn-outline-secondary w-100" onclick="dawClearTrack(15)" id="clear-btn-15" style="padding: 0 4px; font-size: 0.7rem; height: 32px;"><i class="fas fa-trash"></i></button></td>
                         </tr>
                     </tbody>
                 </table>
@@ -646,7 +652,7 @@
         const SOUND_CCS = [73, 75, 72, 74, 71]; // ATK, DEC, REL, CUT, RES
 
         // ═══════════════ TRACK SIZE SYSTEM ═══════════════
-        const TRACK_SIZES = { compact: 32, medium: 48, large: 80 };
+        const TRACK_SIZES = { compact: 36, medium: 64, large: 110 };
         const TRACK_SIZE_ORDER = ['medium', 'large', 'compact'];
         const trackSizes = new Array(16).fill('medium');
 
@@ -1011,9 +1017,111 @@ let selectMode = false;       // drag-to-select mode toggle
 
 let hiddenTracks = new Set();
 
+// Interactive piano roll editor state
+let noteEditor = {
+    selected: new Set(),
+    drag: null,
+    box: null,
+    preview: { note: null, at: 0 }
+};
+
 // Long-press handler for CH cells: tap = select, hold 600ms = hide
 let chPressTimer = null;
 let chLongPressTriggered = false;
+
+function getChannelFromCanvas(canvas) {
+    if (!canvas || !canvas.id) return -1;
+    const m = canvas.id.match(/^track-canvas-(\d+)$/);
+    return m ? parseInt(m[1], 10) : -1;
+}
+
+function noteEntryId(ch, n) {
+    const onIdx = (n.length > 4) ? n[4] : -1;
+    const offIdx = (n.length > 5) ? n[5] : -1;
+    if (onIdx >= 0 || offIdx >= 0) {
+        return `${ch}:${onIdx}:${offIdx}`;
+    }
+    return `${ch}:n:${n[0]}:${n[2]}:${n[3]}`;
+}
+
+function getTrackNoteMetrics(trackData, canvasHeight) {
+    const minNote = trackData?.min_note ?? 48;
+    const maxNote = trackData?.max_note ?? 84;
+    const noteRange = Math.max(1, maxNote - minNote);
+    const padding = 2;
+    const drawHeight = canvasHeight - padding * 2;
+    const noteH = Math.max(1, Math.min(drawHeight / (noteRange + 1), canvasHeight * 0.18));
+    return { minNote, maxNote, noteRange, padding, drawHeight, noteH };
+}
+
+function getVisibleNoteRects(ch, canvas) {
+    const trackData = trackView.noteMap[ch];
+    if (!trackData || !trackData.notes) return [];
+    const h = canvas.height;
+    const w = canvas.clientWidth || canvas.width;
+    const m = getTrackNoteMetrics(trackData, h);
+    const out = [];
+    for (const n of trackData.notes) {
+        const note = n[0];
+        const startBeat = n[2];
+        const endBeat = n[3];
+        const x = (startBeat - trackView.startTime) * trackView.zoomLevel;
+        const rw = Math.max(1, (endBeat - startBeat) * trackView.zoomLevel);
+        if (x + rw < 0 || x > w) continue;
+        const yRatio = m.noteRange > 0 ? (m.maxNote - note) / m.noteRange : 0.5;
+        const y = m.padding + yRatio * (m.drawHeight - m.noteH);
+        out.push({
+            id: noteEntryId(ch, n),
+            entry: n,
+            x,
+            y,
+            w: rw,
+            h: m.noteH
+        });
+    }
+    return out;
+}
+
+function hitTestNote(ch, canvas, px, py) {
+    const rects = getVisibleNoteRects(ch, canvas);
+    for (let i = rects.length - 1; i >= 0; i--) {
+        const r = rects[i];
+        if (px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h) {
+            const edgePad = Math.min(6, Math.max(2, r.w * 0.25));
+            let edge = null;
+            if (px - r.x <= edgePad) edge = 'left';
+            else if ((r.x + r.w) - px <= edgePad) edge = 'right';
+            return { ...r, edge };
+        }
+    }
+    return null;
+}
+
+function clearSelectedNotes() {
+    noteEditor.selected.clear();
+}
+
+function previewNote(channel, note, velocity = 96) {
+    const now = performance.now();
+    if ((now - noteEditor.preview.at) < 180) return;
+    if (noteEditor.preview.note === note && (now - noteEditor.preview.at) < 300) return;
+    noteEditor.preview.note = note;
+    noteEditor.preview.at = now;
+    fetch('/api/daw/preview_note', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, note, velocity, length_ms: 120 })
+    }).catch(() => {});
+}
+
+function findCurrentNoteById(ch, id) {
+    const trackData = trackView.noteMap[ch];
+    if (!trackData || !trackData.notes) return null;
+    for (const n of trackData.notes) {
+        if (noteEntryId(ch, n) === id) return n;
+    }
+    return null;
+}
 
 function setupChCellHandlers() {
     document.querySelectorAll('.ch-cell').forEach(cell => {
@@ -1141,29 +1249,30 @@ function initTrackSizeSystem() {
             instSelect.parentElement.appendChild(label);
         }
 
-        // Mark clear button TD for compact-hide
-        const clearBtn = document.getElementById(`clear-btn-${ch}`);
-        if (clearBtn) clearBtn.parentElement.classList.add('clear-cell');
-
-        // Embed controls inside the timeline cell (visible in large mode via CSS)
+        // Embed controls inside the instrument cell (visible in medium+large via CSS)
+        const instTd = instSelect ? instSelect.parentElement : null;
         const canvas = document.getElementById(`track-canvas-${ch}`);
         if (canvas) {
             const timelineTd = canvas.parentElement;
             timelineTd.classList.add('track-timeline-cell');
+        }
+        if (instTd) {
             const controls = document.createElement('div');
             controls.className = 'track-inline-controls';
             controls.id = `track-controls-${ch}`;
             controls.innerHTML = `
-                <span class="tic-icon" style="color:#00ff88;"><i class="fas fa-volume-up"></i></span>
-                <input type="range" id="track-vol-${ch}" class="track-inline-slider" min="0" max="127" value="100">
-                <span id="track-vol-val-${ch}" class="tic-val">100</span>
-                <span class="tic-icon" style="color:#00b4ff;"><i class="fas fa-arrows-alt-h"></i></span>
-                <input type="range" id="track-pan-${ch}" class="track-inline-slider" min="0" max="127" value="64">
-                <span id="track-pan-val-${ch}" class="tic-val">C</span>
-                <span class="tic-val" style="color:#555;">Range:</span>
-                <span id="track-range-${ch}" class="badge bg-dark" style="font-size:0.55rem; padding:1px 4px;">--</span>
+                <div class="tic-row">
+                    <span class="tic-icon" style="color:#00ff88;"><i class="fas fa-volume-up"></i></span>
+                    <input type="range" id="track-vol-${ch}" class="track-inline-slider" min="0" max="127" value="100">
+                    <span id="track-vol-val-${ch}" class="tic-val">100</span>
+                </div>
+                <div class="tic-row">
+                    <span class="tic-icon" style="color:#00b4ff;"><i class="fas fa-arrows-alt-h"></i></span>
+                    <input type="range" id="track-pan-${ch}" class="track-inline-slider" min="0" max="127" value="64">
+                    <span id="track-pan-val-${ch}" class="tic-val">C</span>
+                </div>
             `;
-            timelineTd.appendChild(controls);
+            instTd.appendChild(controls);
         }
 
         // Setup inline slider events (closure over ch)
@@ -1239,8 +1348,8 @@ function applyTrackSize(ch) {
     row.classList.remove('track-compact', 'track-medium', 'track-large');
     row.classList.add(`track-${mode}`);
 
-    // Canvas height (leave room for inline controls bar in large mode)
-    canvas.height = mode === 'large' ? TRACK_SIZES[mode] - 22 : TRACK_SIZES[mode];
+    // Canvas height (full height — inline controls are overlay)
+    canvas.height = TRACK_SIZES[mode];
 
     // U2: Auto-switch mixer tab when active track changes size
     if (ch === activeControlChannel) {
@@ -2234,10 +2343,78 @@ function attachCanvasDragHandlers() {
 }
 
 function onCanvasPointerDown(e) {
+    const ch = getChannelFromCanvas(e.target);
+    const isEditable = dawState && !dawState.is_playing && !dawState.is_recording;
+
     if (trackView.drag.momentumId) {
         cancelAnimationFrame(trackView.drag.momentumId);
         trackView.drag.momentumId = null;
     }
+
+    // Interactive note editing (when transport is stopped)
+    if (isEditable && ch >= 0 && !selectMode) {
+        const rect = e.target.getBoundingClientRect();
+        const localX = e.clientX - rect.left;
+        const localY = e.clientY - rect.top;
+        const hit = hitTestNote(ch, e.target, localX, localY);
+
+        if (hit) {
+            if (e.shiftKey) {
+                if (noteEditor.selected.has(hit.id)) noteEditor.selected.delete(hit.id);
+                else noteEditor.selected.add(hit.id);
+            } else if (!noteEditor.selected.has(hit.id)) {
+                clearSelectedNotes();
+                noteEditor.selected.add(hit.id);
+            }
+
+            if (noteEditor.selected.size > 0) {
+                const trackData = trackView.noteMap[ch];
+                const m = getTrackNoteMetrics(trackData, e.target.height);
+                const mode = hit.edge === 'left' ? 'resize-left' : (hit.edge === 'right' ? 'resize-right' : 'move');
+                const originals = [];
+                for (const id of noteEditor.selected) {
+                    const n = findCurrentNoteById(ch, id);
+                    if (!n) continue;
+                    originals.push({
+                        id,
+                        note: n[0],
+                        vel: n[1],
+                        start: n[2],
+                        end: n[3],
+                        onIdx: n.length > 4 ? n[4] : -1,
+                        offIdx: n.length > 5 ? n[5] : -1
+                    });
+                }
+                noteEditor.drag = {
+                    ch,
+                    mode,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    originals,
+                    noteStepPx: Math.max(3, (m.drawHeight - m.noteH) / Math.max(1, m.noteRange)),
+                    changed: false
+                };
+                previewNote(ch, hit.entry[0], hit.entry[1]);
+                e.target.setPointerCapture(e.pointerId);
+                ensureRenderLoop();
+                return;
+            }
+        } else if (e.shiftKey) {
+            // Shift + drag on empty area = box select notes
+            noteEditor.box = {
+                active: true,
+                ch,
+                x0: localX,
+                y0: localY,
+                x1: localX,
+                y1: localY
+            };
+            e.target.setPointerCapture(e.pointerId);
+            ensureRenderLoop();
+            return;
+        }
+    }
+
     trackView.drag.active = true;
     trackView.drag.lastX = e.clientX;
     trackView.drag.startX = e.clientX;
@@ -2260,6 +2437,59 @@ function onCanvasPointerDown(e) {
 }
 
 function onCanvasPointerMove(e) {
+    // Note drag/resize in progress
+    if (noteEditor.drag && noteEditor.drag.originals && noteEditor.drag.originals.length) {
+        const d = noteEditor.drag;
+        const deltaX = e.clientX - d.startX;
+        const rawDeltaBeat = deltaX / trackView.zoomLevel;
+        const beatDelta = snapToGrid(rawDeltaBeat);
+        const deltaY = d.startY - e.clientY;
+        const semitoneDelta = Math.round(deltaY / Math.max(1, d.noteStepPx));
+
+        for (const o of d.originals) {
+            const n = findCurrentNoteById(d.ch, o.id);
+            if (!n) continue;
+            if (d.mode === 'move') {
+                const dur = Math.max(0.01, o.end - o.start);
+                let newStart = Math.max(0, snapToGrid(o.start + beatDelta));
+                let newEnd = Math.max(newStart + 0.01, snapToGrid(newStart + dur));
+                n[2] = newStart;
+                n[3] = newEnd;
+                n[0] = Math.max(0, Math.min(127, o.note + semitoneDelta));
+            } else if (d.mode === 'resize-right') {
+                let newEnd = Math.max(o.start + 0.01, snapToGrid(o.end + beatDelta));
+                n[3] = newEnd;
+            } else if (d.mode === 'resize-left') {
+                let newStart = Math.max(0, snapToGrid(o.start + beatDelta));
+                n[2] = Math.min(newStart, n[3] - 0.01);
+            }
+        }
+        d.changed = true;
+        ensureRenderLoop();
+        return;
+    }
+
+    // Box selection in progress
+    if (noteEditor.box && noteEditor.box.active) {
+        const rect = e.target.getBoundingClientRect();
+        noteEditor.box.x1 = e.clientX - rect.left;
+        noteEditor.box.y1 = e.clientY - rect.top;
+        ensureRenderLoop();
+        return;
+    }
+
+    // Hover preview (light throttle via previewNote)
+    if (dawState && !dawState.is_playing && !dawState.is_recording && !selectMode) {
+        const ch = getChannelFromCanvas(e.target);
+        if (ch >= 0) {
+            const rect = e.target.getBoundingClientRect();
+            const localX = e.clientX - rect.left;
+            const localY = e.clientY - rect.top;
+            const hit = hitTestNote(ch, e.target, localX, localY);
+            if (hit) previewNote(ch, hit.entry[0], Math.max(36, hit.entry[1] || 96));
+        }
+    }
+
     if (!trackView.drag.active) return;
     const now = performance.now();
     const dx = e.clientX - trackView.drag.lastX;
@@ -2292,7 +2522,70 @@ function onCanvasPointerMove(e) {
     ensureRenderLoop();
 }
 
+async function commitNoteDragEdit() {
+    const d = noteEditor.drag;
+    if (!d || !d.changed) return;
+    for (const o of d.originals) {
+        const n = findCurrentNoteById(d.ch, o.id);
+        if (!n) continue;
+
+        // Update note_on event
+        if (o.onIdx >= 0) {
+            const updatesOn = {};
+            if (Math.abs(n[2] - o.start) > 0.0001) updatesOn.beat = n[2];
+            if (n[0] !== o.note) updatesOn.note = n[0];
+            if (Object.keys(updatesOn).length) {
+                await fetch(`/api/daw/track/${d.ch}/events/${o.onIdx}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatesOn)
+                });
+            }
+        }
+
+        // Update note_off event
+        if (o.offIdx >= 0) {
+            const updatesOff = {};
+            if (Math.abs(n[3] - o.end) > 0.0001) updatesOff.beat = n[3];
+            if (n[0] !== o.note) updatesOff.note = n[0];
+            if (Object.keys(updatesOff).length) {
+                await fetch(`/api/daw/track/${d.ch}/events/${o.offIdx}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updatesOff)
+                });
+            }
+        }
+    }
+    await refreshDensityMap(true);
+}
+
 function onCanvasPointerUp(e) {
+    if (noteEditor.drag) {
+        try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+        commitNoteDragEdit().catch(err => console.error('Note edit commit error:', err));
+        noteEditor.drag = null;
+        return;
+    }
+
+    if (noteEditor.box && noteEditor.box.active) {
+        const box = noteEditor.box;
+        const canvas = e.target;
+        const x0 = Math.min(box.x0, box.x1);
+        const x1 = Math.max(box.x0, box.x1);
+        const y0 = Math.min(box.y0, box.y1);
+        const y1 = Math.max(box.y0, box.y1);
+        if (!e.shiftKey) clearSelectedNotes();
+        for (const r of getVisibleNoteRects(box.ch, canvas)) {
+            const intersects = !(r.x > x1 || (r.x + r.w) < x0 || r.y > y1 || (r.y + r.h) < y0);
+            if (intersects) noteEditor.selected.add(r.id);
+        }
+        noteEditor.box = null;
+        try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+        ensureRenderLoop();
+        return;
+    }
+
     if (!trackView.drag.active) return;
     trackView.drag.active = false;
     e.target.releasePointerCapture(e.pointerId);
@@ -2422,6 +2715,7 @@ function renderTrackTape(ch) {
         const padding = 2;
         const drawHeight = height - padding * 2;
         const noteH = Math.max(1, Math.min(drawHeight / (noteRange + 1), height * 0.18));
+        const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
 
         for (const n of notes) {
             const [note, vel, startBeat, endBeat] = n;
@@ -2434,13 +2728,38 @@ function renderTrackTape(ch) {
 
             ctx.globalAlpha = alpha;
             ctx.fillStyle = tColor;
-            ctx.fillRect(x, y, w, noteH);
+            const r = Math.min(2, w / 2, noteH / 2);
+            if (r > 0.5 && w > 2 && noteH > 2) {
+                ctx.beginPath();
+                ctx.moveTo(x + r, y);
+                ctx.arcTo(x + w, y, x + w, y + noteH, r);
+                ctx.arcTo(x + w, y + noteH, x, y + noteH, r);
+                ctx.arcTo(x, y + noteH, x, y, r);
+                ctx.arcTo(x, y, x + w, y, r);
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.fillRect(x, y, w, noteH);
+            }
 
-            if (w > 3 && noteH > 2) {
-                ctx.globalAlpha = alpha * 0.4;
-                ctx.strokeStyle = 'rgba(255,255,255,0.3)';
-                ctx.lineWidth = 0.5;
-                ctx.strokeRect(x + 0.5, y + 0.5, w - 1, noteH - 1);
+            // Top highlight line
+            if (w > 3 && noteH > 3) {
+                ctx.globalAlpha = alpha * 0.5;
+                ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(x + 1, y + 0.5);
+                ctx.lineTo(x + w - 1, y + 0.5);
+                ctx.stroke();
+            }
+
+            // MIDI note name when zoomed in
+            if (w > 20 && noteH > 8) {
+                const noteName = NOTE_NAMES[note % 12] + (Math.floor(note / 12) - 1);
+                ctx.globalAlpha = alpha * 0.8;
+                ctx.fillStyle = '#fff';
+                ctx.font = `${Math.min(noteH - 2, 9)}px sans-serif`;
+                ctx.fillText(noteName, x + 2, y + noteH - 2);
             }
         }
         ctx.globalAlpha = 1;
@@ -2499,6 +2818,18 @@ async function refreshDensityMap(force = false) {
             trackView.tapes = {};
             trackView.liveActivity = {};
             trackView.lastTrackCounts = { ...(dawState.track_counts || {}) };
+
+            // Drop stale note selections after remap
+            const validIds = new Set();
+            for (const [chStr, td] of Object.entries(trackView.noteMap)) {
+                const ch = parseInt(chStr, 10);
+                if (!td || !td.notes) continue;
+                for (const n of td.notes) {
+                    validIds.add(noteEntryId(ch, n));
+                }
+            }
+            noteEditor.selected = new Set([...noteEditor.selected].filter(id => validIds.has(id)));
+
             for (let ch = 0; ch < 16; ch++) {
                 renderTrackTape(ch);
             }
@@ -2572,6 +2903,55 @@ function renderAllTracks() {
         playheadX = (currentBeat - tapeStartTime) * trackView.zoomLevel;
     }
 
+    // ── Ruler canvas rendering ──
+    const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : 4;
+    const rulerCanvas = document.getElementById('daw-ruler');
+    if (rulerCanvas) {
+        const rw = rulerCanvas.clientWidth || rulerCanvas.width;
+        if (rulerCanvas.width !== rw) rulerCanvas.width = rw;
+        const rh = rulerCanvas.height;
+        const rctx = rulerCanvas.getContext('2d');
+        rctx.clearRect(0, 0, rw, rh);
+        rctx.fillStyle = 'rgba(15,15,25,0.95)';
+        rctx.fillRect(0, 0, rw, rh);
+
+        const firstBar = Math.floor(tapeStartTime / beatsPerMeasure);
+        const lastBar = Math.ceil((tapeStartTime + visibleBeats) / beatsPerMeasure);
+        for (let bar = firstBar; bar <= lastBar; bar++) {
+            const barStartBeat = bar * beatsPerMeasure;
+            const px = (barStartBeat - tapeStartTime) * trackView.zoomLevel;
+            if (px < -50 || px > rw + 50) continue;
+            rctx.fillStyle = 'rgba(255,255,255,0.6)';
+            rctx.font = '10px sans-serif';
+            rctx.fillText(String(bar + 1), px + 3, 11);
+            rctx.strokeStyle = 'rgba(255,255,255,0.4)';
+            rctx.lineWidth = 1;
+            rctx.beginPath();
+            rctx.moveTo(px, 14);
+            rctx.lineTo(px, rh);
+            rctx.stroke();
+            for (let bt = 1; bt < beatsPerMeasure; bt++) {
+                const bpx = px + bt * trackView.zoomLevel;
+                if (bpx < 0 || bpx > rw) continue;
+                rctx.strokeStyle = 'rgba(255,255,255,0.2)';
+                rctx.lineWidth = 0.5;
+                rctx.beginPath();
+                rctx.moveTo(bpx, rh - 6);
+                rctx.lineTo(bpx, rh);
+                rctx.stroke();
+            }
+        }
+        if (beatDuration > 0 && playheadX >= 0 && playheadX <= rw) {
+            rctx.fillStyle = (dawState.is_playing || dawState.is_recording) ? 'rgba(255,80,80,0.9)' : 'rgba(0,200,255,0.8)';
+            rctx.beginPath();
+            rctx.moveTo(playheadX - 4, 0);
+            rctx.lineTo(playheadX + 4, 0);
+            rctx.lineTo(playheadX, 8);
+            rctx.closePath();
+            rctx.fill();
+        }
+    }
+
     for (let ch = 0; ch < 16; ch++) {
         const canvas = document.getElementById(`track-canvas-${ch}`);
         if (!canvas) continue;
@@ -2588,14 +2968,46 @@ function renderAllTracks() {
         vctx.fillStyle = 'rgba(25, 25, 35, 0.9)';
         vctx.fillRect(0, 0, w, h);
 
+        // Pitch lane + keyboard labels on left side
+        const trackData = trackView.noteMap[ch];
+        if (trackData && trackData.notes && trackData.notes.length) {
+            const m = getTrackNoteMetrics(trackData, h);
+            const laneW = 24;
+            vctx.fillStyle = 'rgba(12, 12, 18, 0.75)';
+            vctx.fillRect(0, 0, laneW, h);
+            const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+            for (let note = m.minNote; note <= m.maxNote; note++) {
+                const yRatio = m.noteRange > 0 ? (m.maxNote - note) / m.noteRange : 0.5;
+                const y = m.padding + yRatio * (m.drawHeight - m.noteH) + (m.noteH * 0.5);
+                vctx.strokeStyle = (note % 12 === 0) ? 'rgba(255,255,255,0.20)' : 'rgba(255,255,255,0.06)';
+                vctx.lineWidth = 1;
+                vctx.beginPath();
+                vctx.moveTo(laneW, y);
+                vctx.lineTo(w, y);
+                vctx.stroke();
+                if (note % 12 === 0 && y > 8 && y < h - 2) {
+                    vctx.fillStyle = 'rgba(220,220,220,0.75)';
+                    vctx.font = '9px monospace';
+                    vctx.fillText(NOTE_NAMES[note % 12] + (Math.floor(note / 12) - 1), 2, y - 1);
+                }
+            }
+        }
+
         if (tape) {
             const sx = tapeStartTime * trackView.tapeScale;
             const sourceWidth = visibleBeats * trackView.tapeScale;
             vctx.drawImage(tape, sx, 0, sourceWidth, tape.height, 0, 0, w, h);
         }
 
+        // Track color stripe on left edge
+        const tColor = getTrackColor(ch);
+        const muted = dawState.muted && dawState.muted[ch];
+        vctx.globalAlpha = muted ? 0.25 : 0.8;
+        vctx.fillStyle = tColor;
+        vctx.fillRect(0, 0, 4, h);
+        vctx.globalAlpha = 1;
+
         // Griglia direttamente sul canvas visibile (sempre nitida)
-        const beatsPerMeasure = dawState ? (dawState.beats_per_measure || 4) : 4;
         const firstBeat = Math.floor(tapeStartTime);
         for (let b = firstBeat; b <= tapeStartTime + visibleBeats + 1; b++) {
             const px = (b - tapeStartTime) * trackView.zoomLevel;
@@ -2614,6 +3026,24 @@ function renderAllTracks() {
             vctx.stroke();
         }
 
+        // Sub-beat grid at high zoom
+        if (trackView.zoomLevel > 40) {
+            for (let b = firstBeat; b <= tapeStartTime + visibleBeats + 1; b++) {
+                for (let sub = 1; sub <= 3; sub++) {
+                    const subBeat = b + sub * 0.25;
+                    const spx = (subBeat - tapeStartTime) * trackView.zoomLevel;
+                    if (spx < 0) continue;
+                    if (spx > w) break;
+                    vctx.strokeStyle = 'rgba(255,255,255,0.08)';
+                    vctx.lineWidth = 0.5;
+                    vctx.beginPath();
+                    vctx.moveTo(spx, 0);
+                    vctx.lineTo(spx, h);
+                    vctx.stroke();
+                }
+            }
+        }
+
         // Shading alternato per battuta
         const firstBar = Math.floor(tapeStartTime / beatsPerMeasure);
         const lastBar = Math.ceil((tapeStartTime + visibleBeats) / beatsPerMeasure);
@@ -2623,6 +3053,31 @@ function renderAllTracks() {
             const barW = beatsPerMeasure * trackView.zoomLevel;
             vctx.fillStyle = 'rgba(255,255,255,0.04)';
             vctx.fillRect(x0, 0, barW, h);
+        }
+
+        // Selected notes outline overlay
+        if (noteEditor.selected.size > 0) {
+            for (const r of getVisibleNoteRects(ch, canvas)) {
+                if (!noteEditor.selected.has(r.id)) continue;
+                vctx.strokeStyle = 'rgba(255, 200, 50, 0.95)';
+                vctx.lineWidth = 2;
+                vctx.strokeRect(r.x + 0.5, r.y + 0.5, Math.max(1, r.w - 1), Math.max(1, r.h - 1));
+            }
+        }
+
+        // Box-select rectangle overlay
+        if (noteEditor.box && noteEditor.box.active && noteEditor.box.ch === ch) {
+            const x = Math.min(noteEditor.box.x0, noteEditor.box.x1);
+            const y = Math.min(noteEditor.box.y0, noteEditor.box.y1);
+            const bw = Math.abs(noteEditor.box.x1 - noteEditor.box.x0);
+            const bh = Math.abs(noteEditor.box.y1 - noteEditor.box.y0);
+            vctx.fillStyle = 'rgba(255, 200, 50, 0.10)';
+            vctx.fillRect(x, y, bw, bh);
+            vctx.strokeStyle = 'rgba(255, 200, 50, 0.9)';
+            vctx.lineWidth = 1;
+            vctx.setLineDash([4, 3]);
+            vctx.strokeRect(x + 0.5, y + 0.5, bw, bh);
+            vctx.setLineDash([]);
         }
 
         // Selection overlay
@@ -3273,6 +3728,42 @@ async function dawQuantize() {
     }
 }
 
+async function dawTransposeActive(semitones) {
+    if (!dawState || dawState.is_playing || dawState.is_recording) {
+        showStatus('Stop playback/recording before transpose', 'warning');
+        return;
+    }
+
+    const payload = {
+        channel: activeControlChannel,
+        semitones: semitones
+    };
+
+    if (selectionInBeat !== null && selectionOutBeat !== null && selectionOutBeat > selectionInBeat) {
+        payload.start_beat = selectionInBeat;
+        payload.end_beat = selectionOutBeat;
+    }
+
+    try {
+        const res = await fetch('/api/daw/transpose', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            const scope = payload.start_beat != null ? 'selection' : 'track';
+            showStatus(`Transpose ${semitones > 0 ? '+' : ''}${semitones} (${scope}) · ${data.modified} events`, 'success');
+            await refreshDensityMap(true);
+        } else {
+            showStatus(data.message || 'Transpose failed', 'danger');
+        }
+    } catch (e) {
+        console.error('Transpose error:', e);
+        showStatus('Transpose network error', 'danger');
+    }
+}
+
 // ── Undo / Redo ───────────────────────────────────────────────
 async function dawUndo() {
     try {
@@ -3358,8 +3849,16 @@ document.addEventListener('keydown', (e) => {
     if (e.ctrlKey && e.key === 's') { e.preventDefault(); dawQuickSaveMidi(); }
     if (e.ctrlKey && e.key === 'c') { e.preventDefault(); dawCopySelection(); }
     if (e.ctrlKey && e.key === 'v') { e.preventDefault(); dawPasteAtPlayhead(); }
+    if (e.altKey && e.shiftKey && e.key === 'ArrowUp') { e.preventDefault(); dawTransposeActive(12); }
+    if (e.altKey && e.shiftKey && e.key === 'ArrowDown') { e.preventDefault(); dawTransposeActive(-12); }
+    if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); dawTransposeActive(1); }
+    if (e.altKey && e.key === 'ArrowDown') { e.preventDefault(); dawTransposeActive(-1); }
     if (e.key === ' ') { e.preventDefault(); dawPlay(); }
     if (e.key === 'l' || e.key === 'L') { dawToggleLoop(); }
+    if (e.key === 'Escape' && noteEditor.selected.size > 0) {
+        clearSelectedNotes();
+        ensureRenderLoop();
+    }
 });
 
 

@@ -1146,6 +1146,70 @@ def daw_quantize():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/transpose', methods=['POST'])
+def daw_transpose():
+    """Transpose notes on one channel (whole track or beat-range)."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        semitones = int(data.get('semitones', 0))
+
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "channel must be 0-15"}), 400
+        if semitones < -24 or semitones > 24:
+            return jsonify({"status": "error", "message": "semitones must be between -24 and 24"}), 400
+
+        start_beat = data.get('start_beat', None)
+        end_beat = data.get('end_beat', None)
+
+        modified = daw.transpose_notes(channel, semitones, start_beat, end_beat)
+        if modified is None:
+            return jsonify({"status": "error", "message": "Cannot transpose during recording/playback"}), 409
+
+        return jsonify({
+            "status": "ok",
+            "channel": channel,
+            "semitones": semitones,
+            "modified": modified
+        })
+    except Exception as e:
+        print(f"[DAW] transpose error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/preview_note', methods=['POST'])
+def daw_preview_note():
+    """Play a very short preview note on a channel for piano-roll interactions."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', 0))
+        note = int(data.get('note', 60))
+        velocity = int(data.get('velocity', 96))
+        length_ms = int(data.get('length_ms', 120))
+
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "channel must be 0-15"}), 400
+
+        note = max(0, min(127, note))
+        velocity = max(1, min(127, velocity))
+        length_ms = max(40, min(400, length_ms))
+
+        send_fluid(f"noteon {channel} {note} {velocity}")
+
+        def _noteoff():
+            try:
+                time.sleep(length_ms / 1000.0)
+                send_fluid(f"noteoff {channel} {note}")
+            except Exception as ex:
+                print(f"[DAW] preview noteoff error: {ex}")
+
+        threading.Thread(target=_noteoff, daemon=True).start()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print(f"[DAW] preview error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/copy', methods=['POST'])
 def daw_copy():
     """Copy events from a selection range on a channel to the clipboard."""

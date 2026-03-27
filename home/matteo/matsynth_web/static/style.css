@@ -206,21 +206,21 @@ body.container {
 
 /* Editing toolbar (Undo/Redo, Zoom, Snap, Select, Quantize, Events) */
 .daw-editing-toolbar {
-    background: #0f0f1a;
-    border-bottom: 1px solid #1a1a2a;
+    background: linear-gradient(180deg, #121826 0%, #0e1422 100%);
+    border-bottom: 1px solid rgba(255,255,255,0.08);
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 0;
-    padding: 3px 8px;
+    gap: 4px;
+    padding: 5px 10px;
     flex-shrink: 0;
 }
 
 .daw-transport-group {
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 0 8px;
+    gap: 6px;
+    padding: 0 10px;
     flex-shrink: 0;
 }
 
@@ -244,7 +244,7 @@ body.container {
 
 /* Transport buttons */
 .daw-tbtn {
-    border: none;
+    border: 1px solid rgba(255,255,255,0.14);
     border-radius: 5px;
     width: 36px;
     height: 30px;
@@ -253,8 +253,9 @@ body.container {
     display: flex;
     align-items: center;
     justify-content: center;
-    transition: all 0.15s;
+    transition: all 0.15s ease;
     flex-shrink: 0;
+    background: rgba(255,255,255,0.04);
 }
 
 .daw-tbtn-play  { background: rgba(0,200,100,0.15); color: #00c864; border: 1px solid rgba(0,200,100,0.3); }
@@ -265,6 +266,18 @@ body.container {
 .daw-tbtn-metro { background: rgba(255,255,255,0.06); color: #888; border: 1px solid rgba(255,255,255,0.12); }
 .daw-tbtn-sel   { background: transparent; color: #888; border: 1px solid rgba(255,255,255,0.15); }
 .daw-tbtn-active { background: rgba(255,193,7,0.2) !important; color: #ffc107 !important; border-color: #ffc107 !important; }
+.daw-tbtn-trans {
+    width: 42px;
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #9fd3ff;
+    border-color: rgba(0, 180, 255, 0.35);
+    background: rgba(0, 120, 180, 0.12);
+}
+.daw-tbtn-trans:hover {
+    color: #d7f0ff;
+    background: rgba(0, 170, 255, 0.2);
+}
 
 .daw-tbtn:hover  { filter: brightness(1.3); }
 .daw-tbtn:disabled { opacity: 0.35; cursor: not-allowed; filter: none; }
@@ -396,7 +409,7 @@ body.container {
     height: 4px;
     width: 72px;
     border-radius: 2px;
-    background: rgba(168, 85, 247, 0.25);
+    background: rgba(0, 180, 255, 0.25);
     outline: none;
     cursor: pointer;
     flex-shrink: 0;
@@ -406,28 +419,50 @@ body.container {
     width: 13px;
     height: 13px;
     border-radius: 50%;
-    background: #a855f7;
+    background: #00b4ff;
     cursor: pointer;
     transition: background 0.15s;
 }
-.daw-quant-slider::-webkit-slider-thumb:hover  { background: #c084fc; }
+.daw-quant-slider::-webkit-slider-thumb:hover  { background: #5fd4ff; }
 .daw-quant-slider::-moz-range-thumb {
     width: 13px; height: 13px;
     border-radius: 50%;
-    background: #a855f7;
+    background: #00b4ff;
     border: none;
     cursor: pointer;
 }
 
 .daw-tbtn-quant {
-    background: rgba(138, 43, 226, 0.18) !important;
-    color: #a855f7 !important;
-    border: 1px solid rgba(168, 85, 247, 0.45) !important;
+    background: rgba(0, 180, 255, 0.15) !important;
+    color: #73d5ff !important;
+    border: 1px solid rgba(0, 180, 255, 0.45) !important;
     font-weight: 600;
     white-space: nowrap;
     letter-spacing: 0.5px;
 }
 .daw-tbtn-quant:hover { filter: brightness(1.25); }
+
+@media (max-width: 900px) {
+    .daw-editing-toolbar {
+        padding: 4px 6px;
+        gap: 2px;
+    }
+    .daw-transport-group {
+        padding: 0 4px;
+        gap: 4px;
+    }
+    .daw-tbtn {
+        width: 32px;
+        height: 28px;
+    }
+    .daw-tbtn-trans {
+        width: 36px;
+        font-size: 0.62rem;
+    }
+    .daw-zoom-slider {
+        width: 64px;
+    }
+}
 
 /* ═══════════════════════ MAIN AREA ═══════════════════════ */
 .daw-main {
@@ -1739,7 +1774,6 @@ tr.daw-track-selected:nth-child(4n+4) {
     font-size: 0.62rem !important;
     padding: 0 3px !important;
 }
-.track-compact .clear-cell { display: none !important; }
 
 /* Medium mode (48px canvas – default) */
 .track-medium .track-inst-label { display: none; }
@@ -1756,7 +1790,7 @@ tr.daw-track-selected:nth-child(4n+4) {
     font-size: 0.76rem !important;
 }
 
-/* Timeline cell with embedded controls */
+/* Timeline cell */
 td.track-timeline-cell {
     padding: 0 !important;
     line-height: 0;
@@ -1766,49 +1800,64 @@ td.track-timeline-cell canvas {
     width: 100%;
 }
 
-/* Inline controls bar (inside timeline cell, visible in large mode) */
+/* Ruler row (bar/beat markers above tracks) */
+.daw-ruler-row td {
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+}
+.daw-ruler-row canvas {
+    display: block;
+    border-bottom: 1px solid rgba(255,255,255,0.15);
+}
+
+/* Inline controls (inside instrument cell, visible in medium+large) */
 .track-inline-controls {
     display: none;
-    align-items: center;
-    gap: 6px;
-    padding: 1px 8px;
-    background: rgba(20, 20, 40, 0.5);
-    border-top: 1px solid rgba(255,255,255,0.04);
-    height: 22px;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px 0 0 0;
     line-height: normal;
 }
+.tic-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    height: 14px;
+}
+.track-medium .track-inline-controls,
 .track-large .track-inline-controls {
     display: flex;
 }
-.tic-icon { font-size: 0.58rem; flex-shrink: 0; }
-.tic-val { font-size: 0.58rem; color: #aaa; min-width: 20px; flex-shrink: 0; white-space: nowrap; }
+.tic-icon { font-size: 0.5rem; flex-shrink: 0; width: 12px; text-align: center; }
+.tic-val { font-size: 0.52rem; color: #aaa; min-width: 16px; flex-shrink: 0; white-space: nowrap; }
 
-/* Inline sliders in timeline controls */
+/* Inline sliders in instrument cell controls */
 .track-inline-slider {
     -webkit-appearance: none;
     appearance: none;
-    height: 6px;
-    border-radius: 3px;
-    background: rgba(255,255,255,0.12);
+    height: 4px;
+    border-radius: 2px;
+    background: rgba(255,255,255,0.15);
     outline: none;
     cursor: pointer;
     flex: 1;
-    min-width: 50px;
-    max-width: 120px;
+    min-width: 30px;
+    max-width: 90px;
 }
 .track-inline-slider::-webkit-slider-thumb {
     -webkit-appearance: none;
     appearance: none;
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: #00d4ff;
     cursor: pointer;
     border: 1px solid rgba(0,0,0,0.3);
 }
 .track-inline-slider::-moz-range-thumb {
-    width: 14px;
-    height: 14px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: #00d4ff;
     cursor: pointer;
@@ -1831,5 +1880,202 @@ td.track-timeline-cell canvas {
 @media (hover: none) and (pointer: coarse) {
     * {
         -webkit-tap-highlight-color: transparent !important;
+    }
+}
+
+/* ═══════════════════════ SCN-001: DAW SHELL REFLOW ═══════════════════════ */
+:root {
+    --daw-shell-gap: 6px;
+    --daw-shell-pad-y: 5px;
+    --daw-shell-pad-x: 10px;
+}
+
+.daw-shell-tier {
+    gap: var(--daw-shell-gap);
+    padding: var(--daw-shell-pad-y) var(--daw-shell-pad-x);
+}
+
+.daw-shell-tier-primary {
+    background: linear-gradient(180deg, #171d2b 0%, #131a28 100%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.daw-shell-tier-secondary {
+    background: linear-gradient(180deg, #121826 0%, #0e1422 100%);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.transport-core-group .daw-tbtn {
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+
+.daw-track-shell {
+    padding: 4px 6px;
+}
+
+.daw-track-shell-scroll {
+    border-color: rgba(255, 255, 255, 0.14) !important;
+    border-radius: 8px !important;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+}
+
+.daw-track-shell-table thead {
+    background: #1a1f2c !important;
+    border-bottom: 2px solid #00b4ff !important;
+}
+
+.daw-track-shell-table thead th {
+    font-size: 0.68rem;
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    color: #d8ecff;
+}
+
+#daw-tracks tr:first-child td {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/* Tablet-first baseline */
+@media (min-width: 768px) and (max-width: 1199px) {
+    .daw-shell-tier {
+        --daw-shell-gap: 5px;
+        --daw-shell-pad-y: 4px;
+        --daw-shell-pad-x: 8px;
+    }
+
+    .daw-transport-group {
+        gap: 5px;
+        padding: 0 6px;
+    }
+
+    .daw-tbtn {
+        width: 34px;
+        height: 29px;
+    }
+
+    .daw-tnumber {
+        width: 52px;
+    }
+
+    .daw-timedisp {
+        width: 6.4em;
+        font-size: 0.9rem;
+    }
+
+    .daw-zoom-slider {
+        width: 72px;
+    }
+}
+
+/* Smartphone portrait/compact */
+@media (max-width: 767px) {
+    .daw-shell-tier {
+        --daw-shell-gap: 4px;
+        --daw-shell-pad-y: 4px;
+        --daw-shell-pad-x: 6px;
+    }
+
+    .daw-transport,
+    .daw-editing-toolbar {
+        align-items: flex-start;
+        overflow-x: hidden;
+    }
+
+    .daw-transport-group {
+        gap: 4px;
+        padding: 0 4px;
+        border-left: none;
+    }
+
+    .transport-core-group { order: 1; }
+    .transport-tempo-group { order: 2; }
+    .transport-time-group {
+        order: 3;
+        flex-basis: 100%;
+        padding-top: 2px;
+    }
+    .transport-panic-group {
+        order: 4;
+        margin-left: 0 !important;
+    }
+
+    .edit-history-group { order: 1; }
+    .edit-transpose-group { order: 2; }
+    .edit-main-group {
+        order: 3;
+        flex-basis: 100%;
+        padding-top: 2px;
+        border-left: none;
+    }
+
+    .daw-tbtn {
+        width: 31px;
+        height: 27px;
+        font-size: 0.7rem;
+    }
+
+    .daw-tbtn-trans {
+        width: 34px;
+        font-size: 0.6rem;
+    }
+
+    .daw-tnumber {
+        width: 48px;
+        height: 26px;
+    }
+
+    .daw-timedisp {
+        width: 5.8em;
+        height: 26px;
+        font-size: 0.8rem;
+        letter-spacing: 0.5px;
+    }
+
+    .daw-tselect {
+        height: 26px;
+        font-size: 0.69rem;
+    }
+
+    .daw-zoom-slider {
+        width: 56px;
+    }
+
+    .daw-track-shell {
+        padding: 3px 4px;
+    }
+
+    .daw-track-shell-table thead th {
+        font-size: 0.62rem;
+        letter-spacing: 0.3px;
+    }
+}
+
+/* Smartphone landscape: recover timeline room */
+@media (max-width: 900px) and (orientation: landscape) {
+    .transport-time-group {
+        flex-basis: auto;
+        order: 3;
+    }
+
+    .edit-main-group {
+        flex-basis: auto;
+        order: 2;
+    }
+
+    .edit-transpose-group {
+        order: 3;
+    }
+
+    .daw-track-shell {
+        padding-left: 5px;
+        padding-right: 5px;
+    }
+}
+
+@media (hover: none) and (pointer: coarse) {
+    .daw-transport,
+    .daw-editing-toolbar {
+        overflow-x: hidden;
+        flex-wrap: wrap;
     }
 }
