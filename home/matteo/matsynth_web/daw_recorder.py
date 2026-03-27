@@ -34,6 +34,13 @@ class MultiTrackDAW:
         # Storage tracce: {channel_id: [(beat_position, midi_msg), ...]}
         # Gli eventi sono salvati in beat (unità musicale) per supportare cambi di BPM
         self.tracks = defaultdict(list)
+
+        # Clip model: one clip per recording take (MVP clip-based workflow)
+        self.clips = defaultdict(list)   # {channel_id: [{id,start_beat,end_beat,name,created_at}, ...]}
+        self._next_clip_id = 1
+        self._recording_channels = []
+        self._record_start_event_index = {}
+        self._record_take_start_beat = 0.0
         
         # Stato di ogni traccia (16 canali MIDI)
         self.armed = {i: False for i in range(16)}      # traccia pronta per registrazione
@@ -259,6 +266,10 @@ class MultiTrackDAW:
             recording_channels = [channel]
         else:
             recording_channels = [ch for ch in range(16) if self.armed[ch]]
+
+        # Capture recording-take boundaries to build clips when recording stops
+        self._recording_channels = list(recording_channels)
+        self._record_start_event_index = {ch: len(self.tracks[ch]) for ch in recording_channels}
         
         # Se ci sono altre tracce con dati (non in registrazione), avvia anche la riproduzione
         has_other_tracks = any(self.has_data[ch] for ch in range(16) if ch not in recording_channels)
@@ -272,6 +283,7 @@ class MultiTrackDAW:
         # NON resettare timeline position - registra dalla posizione corrente
         # (solo REWIND resetta a 0.0)
         initial_position = self.timeline_position
+        self._record_take_start_beat = max(0.0, initial_position / self.beat_duration)
         
         # Thread di registrazione (registra su tutti i canali armati)
         self.record_thread = threading.Thread(
@@ -311,10 +323,44 @@ class MultiTrackDAW:
         
         if self.record_thread:
             self.record_thread.join(timeout=1.0)
+
+        # Build one clip per channel for the just-finished recording take
+        self._finalize_recording_clips()
         
         print("[DAW] Registrazione fermata")
         self._emit_state_change()  # Notifica via WebSocket
         return True
+
+    def _finalize_recording_clips(self):
+        """Create clip objects from events recorded in the last take."""
+        channels = self._recording_channels or []
+        if not channels:
+            return
+
+        for ch in channels:
+            start_idx = self._record_start_event_index.get(ch, len(self.tracks[ch]))
+            new_events = self.tracks[ch][start_idx:]
+            if not new_events:
+                continue
+
+            start_beat = min(b for b, _ in new_events)
+            end_beat = max(b for b, _ in new_events)
+            if end_beat <= start_beat:
+                end_beat = start_beat + 0.125
+
+            clip_id = self._next_clip_id
+            self._next_clip_id += 1
+            self.clips[ch].append({
+                'id': clip_id,
+                'start_beat': float(start_beat),
+                'end_beat': float(end_beat),
+                'name': f'Take {clip_id}',
+                'created_at': time.time()
+            })
+
+        self._recording_channels = []
+        self._record_start_event_index = {}
+        self._record_take_start_beat = 0.0
     
     def start_playback(self):
         """Avvia la riproduzione di tutte le tracce registrate"""
@@ -486,6 +532,7 @@ class MultiTrackDAW:
         """Cancella tutti gli eventi di una traccia"""
         self._push_undo()
         self.tracks[channel] = []
+        self.clips[channel] = []
         self.has_data[channel] = False
         self._density_dirty = True
         print(f"[DAW] Traccia {channel} cancellata")
@@ -502,6 +549,10 @@ class MultiTrackDAW:
             (b, msg) for b, msg in self.tracks[channel]
             if b < start_beat or b >= end_beat
         ]
+        self.clips[channel] = [
+            c for c in self.clips[channel]
+            if c['end_beat'] <= start_beat or c['start_beat'] >= end_beat
+        ]
         removed = before - len(self.tracks[channel])
         self.has_data[channel] = len(self.tracks[channel]) > 0
         self._density_dirty = True
@@ -514,6 +565,7 @@ class MultiTrackDAW:
         self._push_undo()
         for ch in range(16):
             self.tracks[ch] = []
+            self.clips[ch] = []
             self.has_data[ch] = False
         self._density_dirty = True
         print("[DAW] Tutte le tracce cancellate")
@@ -528,6 +580,8 @@ class MultiTrackDAW:
         """Cattura stato corrente tracce (shallow copy — tuple sono immutabili)."""
         return {
             'tracks': {ch: list(self.tracks[ch]) for ch in range(16)},
+            'clips': {ch: [dict(c) for c in self.clips[ch]] for ch in range(16)},
+            'next_clip_id': self._next_clip_id,
             'has_data': self.has_data.copy(),
             'track_names': self.track_names.copy(),
             'track_colors': self.track_colors.copy()
@@ -544,7 +598,9 @@ class MultiTrackDAW:
         """Applica uno snapshot alle tracce."""
         for ch in range(16):
             self.tracks[ch] = snapshot['tracks'].get(ch, [])
+            self.clips[ch] = [dict(c) for c in snapshot.get('clips', {}).get(ch, [])]
             self.has_data[ch] = snapshot['has_data'].get(ch, False)
+        self._next_clip_id = int(snapshot.get('next_clip_id', self._next_clip_id))
         if 'track_names' in snapshot:
             self.track_names = snapshot['track_names'].copy()
         if 'track_colors' in snapshot:
@@ -813,6 +869,80 @@ class MultiTrackDAW:
         print(f"[DAW] transpose ch={channel} semitones={semitones} modified={modified} range=({st},{en})")
         return modified
 
+    def get_clips(self, channel):
+        """Return clips for a channel sorted by start beat."""
+        if channel < 0 or channel > 15:
+            return []
+        return sorted([dict(c) for c in self.clips[channel]], key=lambda c: c['start_beat'])
+
+    def move_clip(self, channel, clip_id, target_start_beat):
+        """Move a clip and all events in its beat-range to a target start beat."""
+        if self.is_recording or self.is_playing:
+            return None
+        if channel < 0 or channel > 15:
+            return False
+
+        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+        if not clip:
+            return False
+
+        old_start = float(clip['start_beat'])
+        old_end = float(clip['end_beat'])
+        target_start = max(0.0, float(target_start_beat))
+        delta = target_start - old_start
+        if abs(delta) < 1e-9:
+            return True
+
+        self._push_undo()
+        moved = []
+        for beat, msg_bytes in self.tracks[channel]:
+            if old_start <= beat < old_end:
+                moved.append((max(0.0, beat + delta), msg_bytes))
+            else:
+                moved.append((beat, msg_bytes))
+        moved.sort(key=lambda x: x[0])
+        self.tracks[channel] = moved
+
+        clip['start_beat'] = max(0.0, old_start + delta)
+        clip['end_beat'] = max(clip['start_beat'] + 0.01, old_end + delta)
+        self._density_dirty = True
+        self._emit_state_change()
+        return True
+
+    def delete_clip(self, channel, clip_id):
+        """Delete a clip and remove all events in its beat-range."""
+        if self.is_recording or self.is_playing:
+            return None
+        if channel < 0 or channel > 15:
+            return False
+
+        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+        if not clip:
+            return False
+
+        start_beat = float(clip['start_beat'])
+        end_beat = float(clip['end_beat'])
+
+        self._push_undo()
+        self.tracks[channel] = [
+            (b, msg) for b, msg in self.tracks[channel]
+            if b < start_beat or b >= end_beat
+        ]
+        self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) != int(clip_id)]
+        self.has_data[channel] = len(self.tracks[channel]) > 0
+        self._density_dirty = True
+        self._emit_state_change()
+        return True
+
+    def transpose_clip(self, channel, clip_id, semitones):
+        """Transpose note events inside one clip range."""
+        if channel < 0 or channel > 15:
+            return 0
+        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+        if not clip:
+            return 0
+        return self.transpose_notes(channel, semitones, clip['start_beat'], clip['end_beat'])
+
     def set_bpm(self, bpm):
         """
         Imposta il tempo (BPM)
@@ -871,7 +1001,8 @@ class MultiTrackDAW:
             'can_undo': len(self._undo_stack) > 0,
             'can_redo': len(self._redo_stack) > 0,
             'track_names': self.track_names.copy(),
-            'track_colors': self.track_colors.copy()
+            'track_colors': self.track_colors.copy(),
+            'clips': {ch: self.get_clips(ch) for ch in range(16)}
         }
 
     # --- MIDI note name helper ---

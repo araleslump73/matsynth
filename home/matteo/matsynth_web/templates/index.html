@@ -65,6 +65,22 @@
                     <i class="fas fa-paste"></i> Paste at Playhead <span class="daw-shortcut">Ctrl+V</span>
                 </button>
                 <div class="daw-dropdown-sep"></div>
+                <button class="daw-dropdown-item" onclick="dawMoveLastClip(-1); closeMenus()">
+                    <i class="fas fa-arrow-left"></i> Move Last Clip Left (1 beat)
+                </button>
+                <button class="daw-dropdown-item" onclick="dawMoveLastClip(1); closeMenus()">
+                    <i class="fas fa-arrow-right"></i> Move Last Clip Right (1 beat)
+                </button>
+                <button class="daw-dropdown-item" onclick="dawTransposeLastClip(-1); closeMenus()">
+                    <i class="fas fa-arrow-down"></i> Transpose Last Clip -1
+                </button>
+                <button class="daw-dropdown-item" onclick="dawTransposeLastClip(1); closeMenus()">
+                    <i class="fas fa-arrow-up"></i> Transpose Last Clip +1
+                </button>
+                <button class="daw-dropdown-item" onclick="dawDeleteLastClip(); closeMenus()">
+                    <i class="fas fa-trash-alt"></i> Delete Last Clip
+                </button>
+                <div class="daw-dropdown-sep"></div>
                 <button class="daw-dropdown-item" onclick="dawToggleSelectMode(); closeMenus()">
                     <i class="fas fa-i-cursor"></i> Select Mode
                 </button>
@@ -1016,6 +1032,147 @@ let selectionOutBeat = null;  // mark-out beat position
 let selectMode = false;       // drag-to-select mode toggle
 
 let hiddenTracks = new Set();
+
+// Clip drag state for drag-on-canvas clip moving
+let clipDrag = null; // { ch, clipId, startBeat, endBeat, offsetBeat, ghostBeat }
+
+function hitTestClip(ch, canvas, localX) {
+    if (!dawState || !dawState.clips) return null;
+    const clips = dawState.clips[ch] || [];
+    if (!clips.length) return null;
+    const tapeStartTime = trackView.startTime;
+    for (let i = clips.length - 1; i >= 0; i--) {
+        const clip = clips[i];
+        const cx0 = (clip.start_beat - tapeStartTime) * trackView.zoomLevel;
+        const cx1 = (clip.end_beat - tapeStartTime) * trackView.zoomLevel;
+        if (localX >= cx0 && localX <= cx1) return clip;
+    }
+    return null;
+}
+
+async function commitClipDrag() {
+    if (!clipDrag || !clipDrag.changed) { clipDrag = null; return; }
+    const targetBeat = Math.max(0, snapToGrid(clipDrag.ghostBeat));
+    try {
+        const res = await fetch('/api/daw/clip/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                channel: clipDrag.ch,
+                clip_id: clipDrag.clipId,
+                target_start_beat: targetBeat
+            })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showStatus(`Clip moved to beat ${targetBeat.toFixed(1)}`, 'success');
+            await refreshDensityMap(true);
+            await dawLoadInitialState();
+        } else {
+            showStatus(data.message || 'Clip move failed', 'danger');
+        }
+    } catch (err) {
+        console.error('Clip drag commit error:', err);
+    }
+    clipDrag = null;
+}
+
+function getLastClip(channel) {
+    if (!dawState || !dawState.clips) return null;
+    const list = dawState.clips[channel] || [];
+    if (!list.length) return null;
+    return list[list.length - 1];
+}
+
+async function dawMoveLastClip(deltaBeat) {
+    const ch = activeControlChannel;
+    const clip = getLastClip(ch);
+    if (!clip) {
+        showStatus('No clip on active track', 'warning');
+        return;
+    }
+    if (!dawState || dawState.is_playing || dawState.is_recording) {
+        showStatus('Stop playback/recording before moving clip', 'warning');
+        return;
+    }
+    try {
+        const res = await fetch('/api/daw/clip/move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                channel: ch,
+                clip_id: clip.id,
+                target_start_beat: Math.max(0, (clip.start_beat || 0) + deltaBeat)
+            })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showStatus(`Clip moved ${deltaBeat > 0 ? 'right' : 'left'} by ${Math.abs(deltaBeat)} beat`, 'success');
+            await refreshDensityMap(true);
+            await dawLoadInitialState();
+        } else {
+            showStatus(data.message || 'Clip move failed', 'danger');
+        }
+    } catch (e) {
+        console.error('Move clip error:', e);
+    }
+}
+
+async function dawDeleteLastClip() {
+    const ch = activeControlChannel;
+    const clip = getLastClip(ch);
+    if (!clip) {
+        showStatus('No clip on active track', 'warning');
+        return;
+    }
+    if (!confirm(`Delete last clip on CH ${ch + 1}?`)) return;
+    try {
+        const res = await fetch('/api/daw/clip/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: ch, clip_id: clip.id })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showStatus('Clip deleted', 'success');
+            await refreshDensityMap(true);
+            await dawLoadInitialState();
+        } else {
+            showStatus(data.message || 'Clip delete failed', 'danger');
+        }
+    } catch (e) {
+        console.error('Delete clip error:', e);
+    }
+}
+
+async function dawTransposeLastClip(semitones) {
+    const ch = activeControlChannel;
+    const clip = getLastClip(ch);
+    if (!clip) {
+        showStatus('No clip on active track', 'warning');
+        return;
+    }
+    if (!dawState || dawState.is_playing || dawState.is_recording) {
+        showStatus('Stop playback/recording before transpose', 'warning');
+        return;
+    }
+    try {
+        const res = await fetch('/api/daw/clip/transpose', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ channel: ch, clip_id: clip.id, semitones })
+        });
+        const data = await res.json();
+        if (data.status === 'ok') {
+            showStatus(`Clip transpose ${semitones > 0 ? '+' : ''}${semitones} · ${data.modified} events`, 'success');
+            await refreshDensityMap(true);
+        } else {
+            showStatus(data.message || 'Clip transpose failed', 'danger');
+        }
+    } catch (e) {
+        console.error('Transpose clip error:', e);
+    }
+}
 
 // Interactive piano roll editor state
 let noteEditor = {
@@ -2413,6 +2570,24 @@ function onCanvasPointerDown(e) {
             ensureRenderLoop();
             return;
         }
+
+        // Clip drag: click on a clip block to start dragging
+        const clipHit = hitTestClip(ch, e.target, localX);
+        if (clipHit) {
+            const clickBeat = trackView.startTime + (localX / trackView.zoomLevel);
+            clipDrag = {
+                ch,
+                clipId: clipHit.id,
+                startBeat: clipHit.start_beat,
+                endBeat: clipHit.end_beat,
+                offsetBeat: clickBeat - clipHit.start_beat,
+                ghostBeat: clipHit.start_beat,
+                changed: false
+            };
+            e.target.setPointerCapture(e.pointerId);
+            ensureRenderLoop();
+            return;
+        }
     }
 
     trackView.drag.active = true;
@@ -2437,6 +2612,17 @@ function onCanvasPointerDown(e) {
 }
 
 function onCanvasPointerMove(e) {
+    // Clip drag in progress
+    if (clipDrag) {
+        const rect = e.target.getBoundingClientRect();
+        const localX = e.clientX - rect.left;
+        const curBeat = trackView.startTime + (localX / trackView.zoomLevel);
+        clipDrag.ghostBeat = Math.max(0, curBeat - clipDrag.offsetBeat);
+        if (Math.abs(clipDrag.ghostBeat - clipDrag.startBeat) > 0.05) clipDrag.changed = true;
+        ensureRenderLoop();
+        return;
+    }
+
     // Note drag/resize in progress
     if (noteEditor.drag && noteEditor.drag.originals && noteEditor.drag.originals.length) {
         const d = noteEditor.drag;
@@ -2561,6 +2747,13 @@ async function commitNoteDragEdit() {
 }
 
 function onCanvasPointerUp(e) {
+    // Clip drag commit
+    if (clipDrag) {
+        try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
+        commitClipDrag().catch(err => console.error('Clip drag error:', err));
+        return;
+    }
+
     if (noteEditor.drag) {
         try { e.target.releasePointerCapture(e.pointerId); } catch (_) {}
         commitNoteDragEdit().catch(err => console.error('Note edit commit error:', err));
@@ -3101,6 +3294,65 @@ function renderAllTracks() {
                 }
                 if (selX1 >= 0 && selX1 <= w) {
                     vctx.beginPath(); vctx.moveTo(selX1, 0); vctx.lineTo(selX1, h); vctx.stroke();
+                }
+            }
+        }
+
+        // Clip overlay (MVP): draw clip blocks as recording-session objects
+        const clipList = (dawState.clips && dawState.clips[ch]) ? dawState.clips[ch] : [];
+        if (clipList.length) {
+            for (const clip of clipList) {
+                const isDragging = clipDrag && clipDrag.ch === ch && clipDrag.clipId === clip.id;
+                // If dragging this clip, draw ghost at new position; dim the original
+                const drawStart = isDragging ? clipDrag.ghostBeat : clip.start_beat;
+                const drawEnd = isDragging ? (clipDrag.ghostBeat + (clip.end_beat - clip.start_beat)) : clip.end_beat;
+
+                // Draw original position dimmed while dragging
+                if (isDragging) {
+                    const ox0 = (clip.start_beat - tapeStartTime) * trackView.zoomLevel;
+                    const ox1 = (clip.end_beat - tapeStartTime) * trackView.zoomLevel;
+                    if (ox1 > 0 && ox0 < w) {
+                        const origX = Math.max(0, ox0);
+                        const origEx = Math.min(w, ox1);
+                        vctx.fillStyle = 'rgba(255, 193, 7, 0.08)';
+                        vctx.fillRect(origX, 2, Math.max(1, origEx - origX), Math.max(8, h - 4));
+                        vctx.strokeStyle = 'rgba(255, 193, 7, 0.25)';
+                        vctx.lineWidth = 1;
+                        vctx.setLineDash([3, 3]);
+                        vctx.strokeRect(origX + 0.5, 2.5, Math.max(1, origEx - origX - 1), Math.max(7, h - 5));
+                        vctx.setLineDash([]);
+                    }
+                }
+
+                const cx0 = (drawStart - tapeStartTime) * trackView.zoomLevel;
+                const cx1 = (drawEnd - tapeStartTime) * trackView.zoomLevel;
+                if (cx1 <= 0 || cx0 >= w) continue;
+                const x = Math.max(0, cx0);
+                const ex = Math.min(w, cx1);
+                const cw = Math.max(1, ex - x);
+                if (isDragging) {
+                    // Ghost clip: brighter, with dashed border
+                    vctx.fillStyle = 'rgba(255, 193, 7, 0.35)';
+                    vctx.fillRect(x, 2, cw, Math.max(8, h - 4));
+                    vctx.strokeStyle = 'rgba(255, 193, 7, 0.9)';
+                    vctx.lineWidth = 2;
+                    vctx.strokeRect(x + 0.5, 2.5, Math.max(1, cw - 1), Math.max(7, h - 5));
+                } else {
+                    const clipColor = ch === activeControlChannel
+                        ? 'rgba(255, 193, 7, 0.22)'
+                        : 'rgba(13, 202, 240, 0.14)';
+                    vctx.fillStyle = clipColor;
+                    vctx.fillRect(x, 2, cw, Math.max(8, h - 4));
+                    vctx.strokeStyle = ch === activeControlChannel
+                        ? 'rgba(255, 193, 7, 0.75)'
+                        : 'rgba(13, 202, 240, 0.55)';
+                    vctx.lineWidth = 1;
+                    vctx.strokeRect(x + 0.5, 2.5, Math.max(1, cw - 1), Math.max(7, h - 5));
+                }
+                if (cw > 40) {
+                    vctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    vctx.font = '10px sans-serif';
+                    vctx.fillText(clip.name || `Clip ${clip.id}`, x + 4, 13);
                 }
             }
         }

@@ -1237,6 +1237,82 @@ def daw_paste():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/clips', methods=['GET'])
+def daw_track_clips(channel):
+    """Return clip objects for one track/channel."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        return jsonify({"status": "ok", "clips": daw.get_clips(channel)})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/move', methods=['POST'])
+def daw_move_clip():
+    """Move one clip to a new start beat."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        clip_id = int(data.get('clip_id', -1))
+        target_start_beat = float(data.get('target_start_beat', 0.0))
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+
+        result = daw.move_clip(channel, clip_id, target_start_beat)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot move clip during recording/playback"}), 409
+        if not result:
+            return jsonify({"status": "error", "message": "Clip not found"}), 404
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/delete', methods=['POST'])
+def daw_delete_clip():
+    """Delete one clip and its events."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        clip_id = int(data.get('clip_id', -1))
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+
+        result = daw.delete_clip(channel, clip_id)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot delete clip during recording/playback"}), 409
+        if not result:
+            return jsonify({"status": "error", "message": "Clip not found"}), 404
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/transpose', methods=['POST'])
+def daw_transpose_clip():
+    """Transpose note events inside one clip range."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        clip_id = int(data.get('clip_id', -1))
+        semitones = int(data.get('semitones', 0))
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+        if semitones < -24 or semitones > 24:
+            return jsonify({"status": "error", "message": "semitones must be between -24 and 24"}), 400
+
+        modified = daw.transpose_clip(channel, clip_id, semitones)
+        if modified is None:
+            return jsonify({"status": "error", "message": "Cannot transpose during recording/playback"}), 409
+        return jsonify({"status": "ok", "modified": modified})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/track/<int:channel>/duplicate', methods=['POST'])
 def daw_duplicate_track(channel):
     """Duplicate track events to a user-chosen channel. Instrument and CC stay unchanged on dest."""
