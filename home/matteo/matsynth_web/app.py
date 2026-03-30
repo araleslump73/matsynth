@@ -1452,6 +1452,27 @@ def daw_delete_event(channel, index):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/add_note', methods=['POST'])
+def daw_add_note(channel):
+    """Add a note to a track (Piano Roll draw tool)."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.get_json(force=True)
+        note = int(data.get('note', 60))
+        velocity = int(data.get('velocity', 100))
+        start_beat = float(data.get('start_beat', 0))
+        length_beats = float(data.get('length_beats', 0.5))
+        if not (0 <= note <= 127 and 0 <= velocity <= 127):
+            return jsonify({"status": "error", "message": "Note/velocity out of range"}), 400
+        ok = daw.add_note(channel, note, velocity, start_beat, length_beats)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot add note (recording?)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 startup_init_once()
 
 # ==========================================
