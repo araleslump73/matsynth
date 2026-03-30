@@ -504,6 +504,25 @@
         <!-- Header bar — draggable on desktop -->
         <div id="pr-header" style="display:flex; align-items:center; justify-content:space-between; padding:2px 10px; background:rgba(30,30,50,0.95); border-bottom:1px solid rgba(255,255,255,0.1); cursor:default; flex-shrink:0; user-select:none;">
             <span style="color:#0dcaf0; font-size:0.8rem; font-weight:600; letter-spacing:0.5px;"><i class="fas fa-music me-2"></i>PIANO ROLL: <span id="pr-ch-display" class="badge bg-info ms-1" style="font-size:0.85rem;">1</span></span>
+            <!-- Tool mode buttons -->
+            <div id="pr-toolbar" style="display:flex; gap:3px; align-items:center;">
+                <button class="btn btn-sm pr-tool-btn active" data-pr-tool="select" onclick="setPRTool('select')" title="Select (1)" style="padding:1px 7px; font-size:0.65rem; line-height:1.4;"><i class="fas fa-mouse-pointer"></i></button>
+                <button class="btn btn-sm pr-tool-btn" data-pr-tool="draw" onclick="setPRTool('draw')" title="Draw (2)" style="padding:1px 7px; font-size:0.65rem; line-height:1.4;"><i class="fas fa-pencil-alt"></i></button>
+                <button class="btn btn-sm pr-tool-btn" data-pr-tool="erase" onclick="setPRTool('erase')" title="Erase (3)" style="padding:1px 7px; font-size:0.65rem; line-height:1.4;"><i class="fas fa-eraser"></i></button>
+                <span style="color:rgba(255,255,255,0.2); margin:0 4px;">|</span>
+                <span style="color:rgba(255,255,255,0.5); font-size:0.6rem; letter-spacing:0.5px;">SNAP:</span>
+                <select id="pr-snap-grid" onchange="updatePRSnap(this.value)" style="background:rgba(40,40,60,0.9); color:#ccc; border:1px solid rgba(255,255,255,0.15); border-radius:3px; font-size:0.6rem; padding:0 3px; height:20px;">
+                    <option value="0">Free</option>
+                    <option value="1">1</option>
+                    <option value="0.5">1/2</option>
+                    <option value="0.25" selected>1/4</option>
+                    <option value="0.125">1/8</option>
+                    <option value="0.0625">1/16</option>
+                </select>
+                <span style="color:rgba(255,255,255,0.2); margin:0 4px;">|</span>
+                <span style="color:rgba(255,255,255,0.5); font-size:0.6rem;">VEL:</span>
+                <input id="pr-vel-input" type="number" min="1" max="127" value="100" onchange="pianoRoll.defaultVelocity=Math.max(1,Math.min(127,+this.value))" style="width:36px; background:rgba(40,40,60,0.9); color:#ccc; border:1px solid rgba(255,255,255,0.15); border-radius:3px; font-size:0.6rem; padding:0 2px; height:20px; text-align:center;">
+            </div>
             <button class="btn btn-sm btn-outline-secondary" style="padding:0 6px; font-size:0.65rem; line-height:1.4;" onclick="togglePianoRoll();"><i class="fas fa-times"></i></button>
         </div>
         <div id="pr-body" style="display:flex; flex-direction:column; flex:1; min-height:0;">
@@ -1073,10 +1092,21 @@ const pianoRoll = {
     lastTapTime: 0,       // for double-tap detection on canvas
     lastTapCh: -1,
     bodyHeight: 280,      // user-resizable panel height (px)
+    tool: 'select',       // 'select' | 'draw' | 'erase'
+    defaultVelocity: 100, // velocity for newly drawn notes
+    defaultLength: 1,     // default note length in beats for draw tool
 };
 const PR_DOUBLETAP_MS = 400;
 const PR_BLACK_KEYS = new Set([1, 3, 6, 8, 10]);
 const PR_NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+
+// Piano Roll interactive editor drag/selection state
+let prEditor = {
+    drag: null,       // { mode:'move'|'resize-right'|'draw'|'box'|'vel', ch, startX, startY, originals, ... }
+    ghostNote: null,  // { note, startBeat, endBeat } preview while drawing
+    boxSel: null,     // { x0, y0, x1, y1 } box selection rectangle (canvas coords)
+    velDrag: null,    // { ch, noteId, startY, origVel } velocity lane drag
+};
 
 function hitTestClip(ch, canvas, localX) {
     if (!dawState || !dawState.clips) return null;
@@ -2769,32 +2799,17 @@ async function commitNoteDragEdit() {
         const n = findCurrentNoteById(d.ch, o.id);
         if (!n) continue;
 
-        // Update note_on event
-        if (o.onIdx >= 0) {
-            const updatesOn = {};
-            if (Math.abs(n[2] - o.start) > 0.0001) updatesOn.beat = n[2];
-            if (n[0] !== o.note) updatesOn.note = n[0];
-            if (Object.keys(updatesOn).length) {
-                await fetch(`/api/daw/track/${d.ch}/events/${o.onIdx}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(updatesOn)
-                });
-            }
-        }
-
-        // Update note_off event
-        if (o.offIdx >= 0) {
-            const updatesOff = {};
-            if (Math.abs(n[3] - o.end) > 0.0001) updatesOff.beat = n[3];
-            if (n[0] !== o.note) updatesOff.note = n[0];
-            if (Object.keys(updatesOff).length) {
-                await fetch(`/api/daw/track/${d.ch}/events/${o.offIdx}`, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(updatesOff)
-                });
-            }
+        // Atomic note pair update: on_beat + off_beat + note in a single call
+        const updates = {};
+        if (Math.abs(n[2] - o.start) > 0.0001) updates.on_beat = n[2];
+        if (Math.abs(n[3] - o.end) > 0.0001) updates.off_beat = n[3];
+        if (n[0] !== o.note) updates.note = n[0];
+        if (Object.keys(updates).length) {
+            await fetch(`/api/daw/track/${d.ch}/edit_note_pair`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ on_idx: o.onIdx, off_idx: o.offIdx, ...updates })
+            });
         }
     }
     await refreshDensityMap(true);
@@ -3652,7 +3667,7 @@ function renderPianoRoll() {
             }
 
             // Selected note outline
-            const nid = n[4] !== undefined ? `${ch}_${n[4]}` : null;
+            const nid = noteEntryId(ch, n);
             if (nid && noteEditor.selected.has(nid)) {
                 ctx.strokeStyle = 'rgba(255, 200, 50, 0.95)';
                 ctx.lineWidth = 2;
@@ -3674,9 +3689,45 @@ function renderPianoRoll() {
         }
     }
 
+    // === GHOST NOTE (draw tool preview) ===
+    if (prEditor.ghostNote) {
+        const gn = prEditor.ghostNote;
+        const gnRow = topNote - gn.note;
+        const gnY = gnRow * rH + 1;
+        const gnX = (gn.startBeat - startBeat) * trackView.zoomLevel;
+        const gnW = Math.max(2, (gn.endBeat - gn.startBeat) * trackView.zoomLevel);
+        ctx.globalAlpha = 0.35;
+        ctx.fillStyle = tColor;
+        ctx.fillRect(gnX, gnY, gnW, rH - 2);
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.strokeRect(gnX, gnY, gnW, rH - 2);
+        ctx.setLineDash([]);
+    }
+
+    // === BOX SELECTION RECTANGLE ===
+    if (prEditor.boxSel) {
+        const bs = prEditor.boxSel;
+        const bx = Math.min(bs.x0, bs.x1);
+        const by = Math.min(bs.y0, bs.y1);
+        const bw = Math.abs(bs.x1 - bs.x0);
+        const bh = Math.abs(bs.y1 - bs.y0);
+        ctx.fillStyle = 'rgba(255,200,50,0.08)';
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeStyle = 'rgba(255,200,50,0.5)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(bx, by, bw, bh);
+        ctx.setLineDash([]);
+    }
+
     // === PLAYHEAD ===
     if (dawState && dawState.timeline_position != null) {
-        const phX = (dawState.timeline_position - startBeat) * trackView.zoomLevel;
+        const beatDuration = dawState.bpm ? 60 / dawState.bpm : 0;
+        const currentBeat = beatDuration > 0 ? (dawState.timeline_position / beatDuration) : 0;
+        const phX = (currentBeat - startBeat) * trackView.zoomLevel;
         if (phX >= 0 && phX <= gW) {
             ctx.strokeStyle = '#ff2222';
             ctx.lineWidth = 1.5;
@@ -3687,6 +3738,542 @@ function renderPianoRoll() {
         }
     }
 }
+
+// ═══════════════ PIANO ROLL TOOL & INTERACTION ═══════════════
+
+function setPRTool(tool) {
+    pianoRoll.tool = tool;
+    document.querySelectorAll('.pr-tool-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.prTool === tool);
+    });
+    const grid = document.getElementById('pr-grid');
+    if (grid) {
+        grid.style.cursor = tool === 'draw' ? 'crosshair' : (tool === 'erase' ? 'pointer' : 'default');
+    }
+    prEditor.ghostNote = null;
+    ensureRenderLoop();
+}
+
+function updatePRSnap(val) {
+    // Sync with main DAW snap grid
+    const dawSnap = document.getElementById('daw-snap-grid');
+    if (dawSnap) dawSnap.value = val;
+}
+
+function prSnapBeat(beat) {
+    const sel = document.getElementById('pr-snap-grid');
+    const snap = sel ? parseFloat(sel.value) : 0;
+    if (!snap || snap <= 0) return Math.max(0, beat);
+    return Math.max(0, Math.round(beat / snap) * snap);
+}
+
+// Piano Roll coordinate helpers
+function prBeatFromX(x) { return trackView.startTime + (x / trackView.zoomLevel); }
+function prNoteFromY(y) { return pianoRoll.scrollNote - Math.floor(y / pianoRoll.rowHeight); }
+function prXFromBeat(beat) { return (beat - trackView.startTime) * trackView.zoomLevel; }
+function prYFromNote(note) { return (pianoRoll.scrollNote - note) * pianoRoll.rowHeight; }
+
+// Hit-test notes within the Piano Roll grid canvas
+function hitTestPRNote(ch, px, py) {
+    const trackData = trackView.noteMap[ch];
+    if (!trackData || !trackData.notes) return null;
+    const rH = pianoRoll.rowHeight;
+    const topNote = pianoRoll.scrollNote;
+    const startBeat = trackView.startTime;
+    const gridCanvas = document.getElementById('pr-grid');
+    const gW = gridCanvas ? gridCanvas.clientWidth : 800;
+
+    for (let i = trackData.notes.length - 1; i >= 0; i--) {
+        const n = trackData.notes[i];
+        const note = n[0], nStart = n[2], nEnd = n[3];
+        const x = (nStart - startBeat) * trackView.zoomLevel;
+        const w = Math.max(2, (nEnd - nStart) * trackView.zoomLevel);
+        if (x + w < 0 || x > gW) continue;
+
+        const noteRow = topNote - note;
+        const y = noteRow * rH;
+        const ny = y + 1;
+        const nh = rH - 2;
+
+        if (px >= x && px <= x + w && py >= ny && py <= ny + nh) {
+            const edgePad = Math.min(8, Math.max(3, w * 0.2));
+            let edge = null;
+            if ((x + w) - px <= edgePad) edge = 'right';
+            else if (px - x <= edgePad) edge = 'left';
+            return { entry: n, index: i, x, y: ny, w, h: nh, edge, id: noteEntryId(ch, n) };
+        }
+    }
+    return null;
+}
+
+// Hit-test a note bar in the velocity lane
+function hitTestPRVelocity(ch, px) {
+    const trackData = trackView.noteMap[ch];
+    if (!trackData || !trackData.notes) return null;
+    const startBeat = trackView.startTime;
+
+    for (let i = trackData.notes.length - 1; i >= 0; i--) {
+        const n = trackData.notes[i];
+        const nStart = n[2], nEnd = n[3];
+        const x = (nStart - startBeat) * trackView.zoomLevel;
+        const w = Math.max(4, (nEnd - nStart) * trackView.zoomLevel);
+        if (px >= x && px <= x + w) {
+            return { entry: n, index: i, id: noteEntryId(ch, n) };
+        }
+    }
+    return null;
+}
+
+// Delete selected notes via API (atomic: on+off pair per call)
+async function prDeleteSelectedNotes() {
+    const ch = activeControlChannel;
+    const trackData = trackView.noteMap[ch];
+    if (!trackData || !trackData.notes || noteEditor.selected.size === 0) return;
+
+    for (const id of noteEditor.selected) {
+        const n = findCurrentNoteById(ch, id);
+        if (!n) continue;
+        const onIdx = n.length > 4 ? n[4] : -1;
+        const offIdx = n.length > 5 ? n[5] : -1;
+        await fetch(`/api/daw/track/${ch}/delete_note_pair`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ on_idx: onIdx, off_idx: offIdx })
+        });
+    }
+    noteEditor.selected.clear();
+    await refreshDensityMap(true);
+}
+
+// Add a new note via API (draw tool)
+async function prAddNote(ch, note, velocity, startBeat, lengthBeats) {
+    await fetch(`/api/daw/track/${ch}/add_note`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note, velocity, start_beat: startBeat, length_beats: lengthBeats })
+    });
+    await refreshDensityMap(true);
+}
+
+// Commit drag edits from PR (move/resize) to API — atomic note pair update
+async function prCommitDragEdit() {
+    const d = prEditor.drag;
+    if (!d || !d.changed) return;
+    for (const o of d.originals) {
+        const n = findCurrentNoteById(d.ch, o.id);
+        if (!n) continue;
+        const updates = {};
+        if (Math.abs(n[2] - o.start) > 0.0001) updates.on_beat = n[2];
+        if (Math.abs(n[3] - o.end) > 0.0001) updates.off_beat = n[3];
+        if (n[0] !== o.note) updates.note = n[0];
+        if (Object.keys(updates).length) {
+            await fetch(`/api/daw/track/${d.ch}/edit_note_pair`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ on_idx: o.onIdx, off_idx: o.offIdx, ...updates })
+            });
+        }
+    }
+    await refreshDensityMap(true);
+}
+
+// Commit velocity change from PR velocity lane (atomic pair API)
+async function prCommitVelocityEdit(ch, noteId, newVel) {
+    const n = findCurrentNoteById(ch, noteId);
+    if (!n) return;
+    const onIdx = n.length > 4 ? n[4] : -1;
+    const offIdx = n.length > 5 ? n[5] : -1;
+    await fetch(`/api/daw/track/${ch}/edit_note_pair`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            on_idx: onIdx, off_idx: offIdx,
+            velocity: Math.max(1, Math.min(127, Math.round(newVel)))
+        })
+    });
+    await refreshDensityMap(true);
+}
+
+// ═══════════════ PIANO ROLL GRID INTERACTION ═══════════════
+(function initPianoRollGridInteraction() {
+    const grid = document.getElementById('pr-grid');
+    if (!grid) return;
+    grid.style.touchAction = 'none';
+
+    grid.addEventListener('pointerdown', onPRGridDown);
+    grid.addEventListener('pointermove', onPRGridMove);
+    grid.addEventListener('pointerup', onPRGridUp);
+    grid.addEventListener('pointercancel', onPRGridUp);
+
+    function isEditable() {
+        return dawState && !dawState.is_playing && !dawState.is_recording;
+    }
+
+    function onPRGridDown(e) {
+        if (!pianoRoll.visible || !isEditable()) return;
+        const rect = grid.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        const ch = activeControlChannel;
+        const tool = pianoRoll.tool;
+
+        const hit = hitTestPRNote(ch, px, py);
+
+        // === ERASE TOOL ===
+        if (tool === 'erase') {
+            if (hit) {
+                noteEditor.selected.clear();
+                noteEditor.selected.add(hit.id);
+                prDeleteSelectedNotes();
+            }
+            return;
+        }
+
+        // === DRAW TOOL ===
+        if (tool === 'draw') {
+            if (hit) {
+                // Click existing note in draw mode = erase it (like Ableton)
+                noteEditor.selected.clear();
+                noteEditor.selected.add(hit.id);
+                prDeleteSelectedNotes();
+                return;
+            }
+            const beat = prSnapBeat(prBeatFromX(px));
+            const note = prNoteFromY(py);
+            if (note < 0 || note > 127) return;
+            prEditor.drag = {
+                mode: 'draw', ch, startBeat: beat, note,
+                startX: px, startY: py, changed: false
+            };
+            prEditor.ghostNote = {
+                note, startBeat: beat,
+                endBeat: prSnapBeat(beat + pianoRoll.defaultLength)
+            };
+            grid.setPointerCapture(e.pointerId);
+            ensureRenderLoop();
+            previewNote(ch, note, pianoRoll.defaultVelocity);
+            return;
+        }
+
+        // === SELECT TOOL ===
+        if (hit) {
+            // Click on a note
+            if (e.shiftKey) {
+                if (noteEditor.selected.has(hit.id)) noteEditor.selected.delete(hit.id);
+                else noteEditor.selected.add(hit.id);
+            } else if (!noteEditor.selected.has(hit.id)) {
+                noteEditor.selected.clear();
+                noteEditor.selected.add(hit.id);
+            }
+
+            if (noteEditor.selected.size > 0) {
+                const mode = hit.edge === 'right' ? 'resize-right' : (hit.edge === 'left' ? 'resize-left' : 'move');
+                const originals = [];
+                for (const id of noteEditor.selected) {
+                    const n = findCurrentNoteById(ch, id);
+                    if (!n) continue;
+                    originals.push({
+                        id, note: n[0], vel: n[1], start: n[2], end: n[3],
+                        onIdx: n.length > 4 ? n[4] : -1,
+                        offIdx: n.length > 5 ? n[5] : -1
+                    });
+                }
+                prEditor.drag = {
+                    mode, ch, startX: e.clientX, startY: e.clientY,
+                    originals, changed: false
+                };
+                previewNote(ch, hit.entry[0], hit.entry[1]);
+                grid.setPointerCapture(e.pointerId);
+                ensureRenderLoop();
+                return;
+            }
+        } else {
+            // Click empty space: start box selection (or clear selection if no shift)
+            if (!e.shiftKey) noteEditor.selected.clear();
+            prEditor.boxSel = { x0: px, y0: py, x1: px, y1: py };
+            prEditor.drag = { mode: 'box', ch, startX: px, startY: py };
+            grid.setPointerCapture(e.pointerId);
+            ensureRenderLoop();
+        }
+    }
+
+    function onPRGridMove(e) {
+        if (!pianoRoll.visible) return;
+        const rect = grid.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        const ch = activeControlChannel;
+        const d = prEditor.drag;
+
+        // Update cursor based on hover
+        if (!d && pianoRoll.tool === 'select') {
+            const hit = hitTestPRNote(ch, px, py);
+            if (hit) {
+                grid.style.cursor = hit.edge === 'right' || hit.edge === 'left' ? 'ew-resize' : 'move';
+            } else {
+                grid.style.cursor = 'default';
+            }
+        }
+
+        if (!d) return;
+
+        // === DRAW: extend ghost note duration ===
+        if (d.mode === 'draw') {
+            const beat = prSnapBeat(prBeatFromX(px));
+            const minEnd = prSnapBeat(d.startBeat + 0.125);
+            prEditor.ghostNote = {
+                note: d.note,
+                startBeat: Math.min(d.startBeat, beat),
+                endBeat: Math.max(beat, minEnd)
+            };
+            if (beat !== d.startBeat) d.changed = true;
+            ensureRenderLoop();
+            return;
+        }
+
+        // === BOX SELECTION ===
+        if (d.mode === 'box') {
+            prEditor.boxSel = { x0: d.startX, y0: d.startY, x1: px, y1: py };
+            ensureRenderLoop();
+            return;
+        }
+
+        // === MOVE / RESIZE ===
+        if ((d.mode === 'move' || d.mode === 'resize-right' || d.mode === 'resize-left') && d.originals) {
+            const deltaX = e.clientX - d.startX;
+            const rawDeltaBeat = deltaX / trackView.zoomLevel;
+            const beatDelta = prSnapBeat(rawDeltaBeat) - prSnapBeat(0);
+            const deltaY = d.startY - e.clientY;
+            const semitoneDelta = Math.round(deltaY / pianoRoll.rowHeight);
+
+            for (const o of d.originals) {
+                const n = findCurrentNoteById(d.ch, o.id);
+                if (!n) continue;
+                if (d.mode === 'move') {
+                    const dur = Math.max(0.01, o.end - o.start);
+                    n[2] = Math.max(0, prSnapBeat(o.start + rawDeltaBeat));
+                    n[3] = n[2] + dur;
+                    n[0] = Math.max(0, Math.min(127, o.note + semitoneDelta));
+                } else if (d.mode === 'resize-right') {
+                    n[3] = Math.max(n[2] + 0.01, prSnapBeat(o.end + rawDeltaBeat));
+                } else if (d.mode === 'resize-left') {
+                    const newStart = Math.max(0, prSnapBeat(o.start + rawDeltaBeat));
+                    n[2] = Math.min(newStart, n[3] - 0.01);
+                }
+            }
+            d.changed = true;
+            ensureRenderLoop();
+            return;
+        }
+    }
+
+    function onPRGridUp(e) {
+        if (!pianoRoll.visible) return;
+        const d = prEditor.drag;
+        if (!d) return;
+        try { grid.releasePointerCapture(e.pointerId); } catch (_) {}
+
+        const ch = activeControlChannel;
+
+        // === DRAW: commit new note ===
+        if (d.mode === 'draw' && prEditor.ghostNote) {
+            const gn = prEditor.ghostNote;
+            const len = Math.max(0.125, gn.endBeat - gn.startBeat);
+            prAddNote(ch, gn.note, pianoRoll.defaultVelocity, gn.startBeat, len);
+            prEditor.ghostNote = null;
+            prEditor.drag = null;
+            return;
+        }
+
+        // === BOX SELECT: finalize ===
+        if (d.mode === 'box' && prEditor.boxSel) {
+            const bs = prEditor.boxSel;
+            const x0 = Math.min(bs.x0, bs.x1), x1 = Math.max(bs.x0, bs.x1);
+            const y0 = Math.min(bs.y0, bs.y1), y1 = Math.max(bs.y0, bs.y1);
+
+            const trackData = trackView.noteMap[ch];
+            if (trackData && trackData.notes) {
+                const rH = pianoRoll.rowHeight;
+                const topNote = pianoRoll.scrollNote;
+                const startBeat = trackView.startTime;
+                for (const n of trackData.notes) {
+                    const nx = (n[2] - startBeat) * trackView.zoomLevel;
+                    const nw = Math.max(2, (n[3] - n[2]) * trackView.zoomLevel);
+                    const noteRow = topNote - n[0];
+                    const ny = noteRow * rH + 1;
+                    const nh = rH - 2;
+                    const intersects = !(nx > x1 || (nx + nw) < x0 || ny > y1 || (ny + nh) < y0);
+                    if (intersects) noteEditor.selected.add(noteEntryId(ch, n));
+                }
+            }
+            prEditor.boxSel = null;
+            prEditor.drag = null;
+            ensureRenderLoop();
+            return;
+        }
+
+        // === MOVE/RESIZE: commit ===
+        if ((d.mode === 'move' || d.mode === 'resize-right' || d.mode === 'resize-left') && d.changed) {
+            prCommitDragEdit().catch(err => console.error('[PR] Drag commit error:', err));
+        }
+
+        prEditor.drag = null;
+        ensureRenderLoop();
+    }
+})();
+
+// ═══════════════ PIANO ROLL VELOCITY LANE INTERACTION ═══════════════
+(function initPRVelocityInteraction() {
+    const vel = document.getElementById('pr-velocity');
+    if (!vel) return;
+    vel.style.touchAction = 'none';
+
+    vel.addEventListener('pointerdown', onVelDown);
+    vel.addEventListener('pointermove', onVelMove);
+    vel.addEventListener('pointerup', onVelUp);
+    vel.addEventListener('pointercancel', onVelUp);
+
+    function onVelDown(e) {
+        if (!pianoRoll.visible) return;
+        if (dawState && (dawState.is_playing || dawState.is_recording)) return;
+        const rect = vel.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+        const ch = activeControlChannel;
+        const hit = hitTestPRVelocity(ch, px);
+        if (!hit) return;
+
+        const velH = vel.clientHeight || 56;
+        const newVel = Math.max(1, Math.min(127, Math.round(127 * (1 - (py / (velH - 3))))));
+        hit.entry[1] = newVel;
+
+        prEditor.velDrag = { ch, noteId: hit.id, startY: py, origVel: hit.entry[1] };
+        vel.setPointerCapture(e.pointerId);
+        ensureRenderLoop();
+    }
+
+    function onVelMove(e) {
+        const vd = prEditor.velDrag;
+        if (!vd) return;
+        const rect = vel.getBoundingClientRect();
+        const py = e.clientY - rect.top;
+        const velH = vel.clientHeight || 56;
+        const newVel = Math.max(1, Math.min(127, Math.round(127 * (1 - (py / (velH - 3))))));
+
+        const n = findCurrentNoteById(vd.ch, vd.noteId);
+        if (n) n[1] = newVel;
+        ensureRenderLoop();
+    }
+
+    function onVelUp(e) {
+        const vd = prEditor.velDrag;
+        if (!vd) return;
+        try { vel.releasePointerCapture(e.pointerId); } catch (_) {}
+
+        const n = findCurrentNoteById(vd.ch, vd.noteId);
+        if (n) {
+            prCommitVelocityEdit(vd.ch, vd.noteId, n[1]).catch(err => console.error('[PR] Vel edit error:', err));
+        }
+        prEditor.velDrag = null;
+    }
+})();
+
+// ═══════════════ PIANO ROLL KEYBOARD INTERACTION (note preview) ═══════════════
+(function initPRKeyboardInteraction() {
+    const kb = document.getElementById('pr-keyboard');
+    if (!kb) return;
+    kb.style.touchAction = 'none';
+    kb.addEventListener('pointerdown', function(e) {
+        if (!pianoRoll.visible) return;
+        const rect = kb.getBoundingClientRect();
+        const py = e.clientY - rect.top;
+        const note = prNoteFromY(py);
+        if (note >= 0 && note <= 127) {
+            previewNote(activeControlChannel, note, pianoRoll.defaultVelocity);
+        }
+    });
+})();
+
+// ═══════════════ PIANO ROLL KEYBOARD SHORTCUTS ═══════════════
+(function initPRKeyboardShortcuts() {
+    document.addEventListener('keydown', function(e) {
+        if (!pianoRoll.visible) return;
+        // Don't capture when typing in inputs
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+
+        const isEditable = dawState && !dawState.is_playing && !dawState.is_recording;
+
+        // Tool switching: 1=Select, 2=Draw, 3=Erase
+        if (e.key === '1' && !e.ctrlKey && !e.altKey) { setPRTool('select'); return; }
+        if (e.key === '2' && !e.ctrlKey && !e.altKey) { setPRTool('draw'); return; }
+        if (e.key === '3' && !e.ctrlKey && !e.altKey) { setPRTool('erase'); return; }
+
+        // Delete selected notes
+        if ((e.key === 'Delete' || e.key === 'Backspace') && isEditable && noteEditor.selected.size > 0) {
+            e.preventDefault();
+            prDeleteSelectedNotes();
+            return;
+        }
+
+        // Ctrl+A = select all notes in current channel
+        if (e.key === 'a' && e.ctrlKey && !e.shiftKey) {
+            e.preventDefault();
+            const ch = activeControlChannel;
+            const td = trackView.noteMap[ch];
+            if (td && td.notes) {
+                for (const n of td.notes) {
+                    noteEditor.selected.add(noteEntryId(ch, n));
+                }
+                ensureRenderLoop();
+            }
+            return;
+        }
+
+        // Escape = deselect all
+        if (e.key === 'Escape') {
+            noteEditor.selected.clear();
+            prEditor.ghostNote = null;
+            prEditor.boxSel = null;
+            prEditor.drag = null;
+            ensureRenderLoop();
+            return;
+        }
+
+        // Arrow key nudge (selected notes)
+        if (isEditable && noteEditor.selected.size > 0 && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)) {
+            e.preventDefault();
+            const ch = activeControlChannel;
+            const snap = parseFloat(document.getElementById('pr-snap-grid')?.value || '0.25') || 0.25;
+
+            // Capture originals BEFORE modifying
+            const originals = [];
+            for (const id of noteEditor.selected) {
+                const n = findCurrentNoteById(ch, id);
+                if (!n) continue;
+                originals.push({
+                    id, note: n[0], vel: n[1], start: n[2], end: n[3],
+                    onIdx: n.length > 4 ? n[4] : -1,
+                    offIdx: n.length > 5 ? n[5] : -1
+                });
+            }
+
+            // Now modify the notes in-place
+            for (const id of noteEditor.selected) {
+                const n = findCurrentNoteById(ch, id);
+                if (!n) continue;
+                if (e.key === 'ArrowUp') n[0] = Math.min(127, n[0] + 1);
+                if (e.key === 'ArrowDown') n[0] = Math.max(0, n[0] - 1);
+                if (e.key === 'ArrowRight') { n[2] += snap; n[3] += snap; }
+                if (e.key === 'ArrowLeft') { n[2] = Math.max(0, n[2] - snap); n[3] = Math.max(n[2] + 0.01, n[3] - snap); }
+            }
+
+            prEditor.drag = { ch, mode: 'move', originals, changed: true, startX: 0, startY: 0 };
+            prCommitDragEdit().then(() => { prEditor.drag = null; }).catch(err => console.error('[PR] Nudge error:', err));
+            ensureRenderLoop();
+            return;
+        }
+    });
+})();
 
 // Piano Roll vertical scroll (wheel) + Ctrl+wheel = zoom row height
 (function initPianoRollWheel() {
@@ -3700,6 +4287,10 @@ function renderPianoRoll() {
         if (e.ctrlKey) {
             // Zoom row height
             pianoRoll.rowHeight = Math.max(6, Math.min(32, pianoRoll.rowHeight + (e.deltaY < 0 ? 1 : -1)));
+        } else if (e.shiftKey) {
+            // Horizontal scroll (shift+wheel)
+            const hDelta = e.deltaY > 0 ? 2 : -2;
+            trackView.startTime = Math.max(0, trackView.startTime + hDelta);
         } else {
             const delta = e.deltaY > 0 ? -3 : 3;
             pianoRoll.scrollNote = Math.max(12, Math.min(120, pianoRoll.scrollNote + delta));

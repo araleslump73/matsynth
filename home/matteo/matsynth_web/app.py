@@ -1473,6 +1473,44 @@ def daw_add_note(channel):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/edit_note_pair', methods=['PUT'])
+def daw_edit_note_pair(channel):
+    """Atomically edit both note_on and note_off of a note (avoids index desync on sort)."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.get_json(force=True)
+        on_idx = int(data.get('on_idx', -1))
+        off_idx = int(data.get('off_idx', -1))
+        allowed = ('on_beat', 'off_beat', 'note', 'velocity')
+        updates = {k: data[k] for k in allowed if k in data}
+        if not updates:
+            return jsonify({"status": "error", "message": "No updates provided"}), 400
+        ok = daw.edit_note_pair(channel, on_idx, off_idx, updates)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot edit (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/delete_note_pair', methods=['DELETE'])
+def daw_delete_note_pair(channel):
+    """Atomically delete both note_on and note_off events of a note."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.get_json(force=True)
+        on_idx = int(data.get('on_idx', -1))
+        off_idx = int(data.get('off_idx', -1))
+        ok = daw.delete_note_pair(channel, on_idx, off_idx)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot delete (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 startup_init_once()
 
 # ==========================================

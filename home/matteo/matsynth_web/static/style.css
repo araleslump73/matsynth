@@ -529,6 +529,26 @@ body.container {
     );
 }
 
+/* ═══════════════════════ PIANO ROLL TOOLBAR ═══════════════════════ */
+.pr-tool-btn {
+    background: rgba(50,50,70,0.7);
+    color: rgba(255,255,255,0.6);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 3px;
+    transition: all 0.12s;
+}
+.pr-tool-btn:hover {
+    background: rgba(70,70,100,0.8);
+    color: rgba(255,255,255,0.9);
+    border-color: rgba(255,255,255,0.25);
+}
+.pr-tool-btn.active {
+    background: rgba(13,202,240,0.25);
+    color: #0dcaf0;
+    border-color: #0dcaf0;
+    box-shadow: 0 0 6px rgba(13,202,240,0.3);
+}
+
 /* ═══════════════════════ BOTTOM PANELS ═══════════════════════ */
 .daw-panel {
     border-top: 1px solid #1e1e30;

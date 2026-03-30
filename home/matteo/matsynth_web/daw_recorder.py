@@ -1132,6 +1132,117 @@ class MultiTrackDAW:
         self._emit_state_change()
         return True
 
+    # ── Atomic note-pair operations (note = note_on + note_off) ──
+
+    def add_note(self, channel, note, velocity, start_beat, length_beats):
+        """
+        Add a complete note (note_on + note_off) to a track.
+        Inserts both events, sorts once. Returns True on success.
+        """
+        if self.is_recording:
+            return False
+        if channel < 0 or channel > 15:
+            return False
+        note = max(0, min(127, int(note)))
+        velocity = max(1, min(127, int(velocity)))
+        start_beat = max(0.0, float(start_beat))
+        length_beats = max(0.001, float(length_beats))
+        end_beat = start_beat + length_beats
+
+        self._push_undo()
+        events = self.tracks.setdefault(channel, [])
+        msg_on = mido.Message('note_on', channel=channel, note=note, velocity=velocity)
+        msg_off = mido.Message('note_off', channel=channel, note=note, velocity=0)
+        events.append((start_beat, msg_on.bytes()))
+        events.append((end_beat, msg_off.bytes()))
+        events.sort(key=lambda x: x[0])
+        self.has_data[channel] = True
+        self._density_dirty = True
+        self._emit_state_change()
+        return True
+
+    def edit_note_pair(self, channel, on_idx, off_idx, updates):
+        """
+        Atomically edit both note_on and note_off events for a single note.
+        updates may contain: on_beat, off_beat, note, velocity.
+        Sorts the events list once at the end. Returns True on success.
+        """
+        if self.is_recording:
+            return False
+        events = self.tracks.get(channel)
+        if not events:
+            return False
+        n_events = len(events)
+        if on_idx < 0 or on_idx >= n_events:
+            return False
+        if off_idx >= 0 and off_idx >= n_events:
+            return False
+
+        self._push_undo()
+        need_sort = False
+
+        # Edit note_on event
+        if on_idx >= 0:
+            beat_pos, msg_bytes = events[on_idx]
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+            except Exception:
+                return False
+            if 'on_beat' in updates:
+                beat_pos = float(updates['on_beat'])
+                need_sort = True
+            if 'note' in updates and hasattr(msg, 'note'):
+                msg = msg.copy(note=max(0, min(127, int(updates['note']))))
+            if 'velocity' in updates and hasattr(msg, 'velocity'):
+                msg = msg.copy(velocity=max(0, min(127, int(updates['velocity']))))
+            events[on_idx] = (beat_pos, msg.bytes())
+
+        # Edit note_off event
+        if off_idx >= 0:
+            beat_pos, msg_bytes = events[off_idx]
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+            except Exception:
+                return False
+            if 'off_beat' in updates:
+                beat_pos = float(updates['off_beat'])
+                need_sort = True
+            if 'note' in updates and hasattr(msg, 'note'):
+                msg = msg.copy(note=max(0, min(127, int(updates['note']))))
+            events[off_idx] = (beat_pos, msg.bytes())
+
+        if need_sort:
+            events.sort(key=lambda x: x[0])
+
+        self._density_dirty = True
+        self._emit_state_change()
+        return True
+
+    def delete_note_pair(self, channel, on_idx, off_idx):
+        """
+        Atomically delete both note_on and note_off events for a note.
+        Handles index adjustment internally. Returns True on success.
+        """
+        if self.is_recording:
+            return False
+        events = self.tracks.get(channel)
+        if not events:
+            return False
+
+        # Collect valid indices, sort descending to delete from the end first
+        indices = sorted(set(i for i in [on_idx, off_idx] if 0 <= i < len(events)), reverse=True)
+        if not indices:
+            return False
+
+        self._push_undo()
+        for idx in indices:
+            del events[idx]
+        if not events:
+            self.has_data[channel] = False
+        self._density_dirty = True
+        self._emit_state_change()
+        return True
+
     def get_track_activity(self, channel, start_beat=0.0, end_beat=9999.0):
         """Restituisce intervalli uniti di attività note per una traccia nel range richiesto."""
         events = self.tracks.get(channel)
