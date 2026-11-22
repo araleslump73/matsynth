@@ -42,6 +42,12 @@ if [ "$MIDI_DEVICE" == "null" ]; then
     MIDI_DEVICE=""
 fi
 
+# 7. Modalita' MIDI (contracts sez. 10): default legacy, managed solo opt-in
+MIDI_MODE=$(jq -r '.midi_mode // "legacy"' "$STATE_FILE" 2>/dev/null)
+[ "$MIDI_MODE" = "managed" ] || MIDI_MODE="legacy"
+if [ "$MIDI_MODE" = "managed" ]; then AUTOCONNECT=0; else AUTOCONNECT=1; fi
+export MATSYNTH_MIDI_MODE="$MIDI_MODE"
+
 # Pulizia preventiva
 sudo killall -9 fluidsynth 2>/dev/null
 sudo killall -9 python3 2>/dev/null
@@ -54,6 +60,7 @@ echo "Audio Device:  $AUDIO_DEVICE"
 echo "Master Gain:   $GAIN"
 echo "Reverb Level:  $REVERB"
 echo "Chorus Level:  $CHORUS"
+echo "MIDI Mode:     $MIDI_MODE"
 if [ -n "$MIDI_DEVICE" ]; then
     echo "MIDI Device:   $MIDI_DEVICE"
 else
@@ -69,7 +76,7 @@ fluidsynth -i -s \
   -a alsa \
   -o audio.alsa.device="$AUDIO_DEVICE" \
   -o synth.cpu-cores=3 \
-  -o midi.autoconnect=1 \
+  -o midi.autoconnect=$AUTOCONNECT \
   -o synth.reverb.active=yes \
   -o synth.reverb.level="$REVERB" \
   -o synth.reverb.room-size=0.9 \
@@ -85,8 +92,8 @@ fluidsynth -i -s \
 # Attendi che FluidSynth si avvii
 sleep 2
 
-# Connetti il dispositivo MIDI specifico se configurato
-if [ -n "$MIDI_DEVICE" ]; then
+# Connetti il dispositivo MIDI specifico se configurato (solo legacy: in managed il monitor e' del router)
+if [ "$MIDI_MODE" = "legacy" ] && [ -n "$MIDI_DEVICE" ]; then
     echo "Connecting MIDI device $MIDI_DEVICE to FluidSynth..."
     # Trova il port di FluidSynth (solitamente 128:0)
     FLUID_PORT=$(aconnect -o | grep -i "FLUID Synth" | head -1 | cut -d' ' -f2 | cut -d':' -f1)

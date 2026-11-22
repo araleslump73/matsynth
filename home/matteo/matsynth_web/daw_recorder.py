@@ -10,6 +10,10 @@ import math
 import threading
 from collections import defaultdict
 
+import midi_router
+
+RECORD_GRACE_S = 0.01   # ignora i primi 10 ms di Record (eventi residui)
+
 
 class MultiTrackDAW:
     """
@@ -17,13 +21,16 @@ class MultiTrackDAW:
     con sincronizzazione automatica e routing intelligente
     """
     
-    def __init__(self, bpm=120, socketio=None):
+    def __init__(self, bpm=120, socketio=None, router=None):
         """
         Inizializza il sistema DAW
         
         Args:
             bpm: Beats per minute (default 120)
             socketio: Flask-SocketIO instance per eventi real-time (optional)
+            router: midi_router.MidiRouter configurato (app.py). Se None la DAW
+                crea un router solo in memoria (bootstrap del registro dalle
+                porte enumerate, parti di default, legacy, nessun disco).
         """
         self.bpm = bpm
         self.beat_duration = 60.0 / bpm  # durata di un beat in secondi
@@ -92,55 +99,53 @@ class MultiTrackDAW:
         self._clipboard = []        # list of (relative_beat, midi_bytes)
         self._clipboard_channel = 0  # source channel
         
-        # Porte MIDI
-        self.midi_input = None
-        self.midi_output = None
+        # Porte MIDI: tutte tramite il router (unico lettore per input,
+        # unica risoluzione delle destinazioni, tracciamento note).
+        self._audible = bytearray(b'\x01' * 16)   # gate mute/solo letto sotto il lock della porta
+        self._rec_lock = threading.Lock()
+        self._rec_tracks = frozenset()
+        self._rec_start_time = 0.0
+        self._rec_initial_pos = 0.0
+        self.last_error = None       # {code, message, details, http} dell'ultimo rifiuto
+        self.last_warnings = []
+        self.last_panic = []
+        self._owns_router = router is None
+        self.router = router
         self._init_midi_ports()
         
         # Avvia thread per aggiornamenti periodici WebSocket
         self._start_update_thread()
     
     def _init_midi_ports(self):
-        """Inizializza le porte MIDI virtuali e fisiche"""
-        try:
-            # Trova la tastiera fisica (FANTOM, SINCO, USB, etc.)
-            available_inputs = mido.get_input_names()
-            physical_keyboard = None
-            
-            # Priorità: FANTOM > SINCO > USB > altro (escludi Midi Through)
-            keywords = ['FANTOM', 'SINCO', 'USB']
-            for keyword in keywords:
-                for port_name in available_inputs:
-                    if keyword in port_name.upper() and 'MIDI THROUGH' not in port_name.upper():
-                        physical_keyboard = port_name
-                        break
-                if physical_keyboard:
-                    break
-            
-            if physical_keyboard:
-                self.midi_input = mido.open_input(physical_keyboard)
-                print(f"[DAW] MIDI Input connesso: {physical_keyboard}")
-            else:
-                print("[DAW] ATTENZIONE: Nessuna tastiera MIDI fisica trovata")
-                print(f"[DAW] Porte disponibili: {available_inputs}")
-            
-            # Trova FluidSynth come output
-            available_outputs = mido.get_output_names()
-            fluidsynth_port = None
-            
-            for port_name in available_outputs:
-                if 'FLUID' in port_name or '128:0' in port_name:
-                    fluidsynth_port = port_name
-                    break
-            
-            if fluidsynth_port:
-                self.midi_output = mido.open_output(fluidsynth_port)
-                print(f"[DAW] MIDI Output connesso: {fluidsynth_port}")
-            else:
-                print("[DAW] ATTENZIONE: FluidSynth non trovato come output MIDI")
-                
-        except Exception as e:
-            print(f"[DAW] Errore inizializzazione MIDI: {e}")
+        """Collega la DAW al router; senza router esterno ne crea uno in memoria."""
+        if self.router is None:
+            self.router = midi_router.MidiRouter()
+            self.router.start(poll=False, check_alsa=False)
+        self.router.set_recorder(self._on_router_input)
+        print(f"[DAW] MIDI input: {getattr(self.midi_input, 'name', None)}, "
+              f"interno: {self.router.internal_status()}")
+
+    @property
+    def midi_input(self):
+        """Compatibilita': porta di `keyboard-main` aperta dal router (o None)."""
+        return self.router.primary_input_port() if self.router else None
+
+    @property
+    def midi_output(self):
+        """Compatibilita': porta interna FluidSynth aperta dal router (o None)."""
+        return self.router.internal_port_object() if self.router else None
+
+    def _fail(self, code, message, details=None, http=None):
+        self.last_error = {'code': code, 'message': message,
+                           'details': details or {}, 'http': http}
+        print(f"[DAW] {code}: {message}")
+        return False
+
+    def _update_audible(self):
+        any_solo = any(self.solo.values())
+        self._any_solo = any_solo
+        for ch in range(16):
+            self._audible[ch] = 1 if (self.solo[ch] if any_solo else not self.muted[ch]) else 0
     
     def _emit_state_change(self):
         """Emette lo stato DAW corrente via WebSocket"""
@@ -228,44 +233,41 @@ class MultiTrackDAW:
             bool: True se registrazione avviata, False altrimenti
         """
         print(f"[DAW] start_recording chiamato con channel={channel}")
-        print(f"[DAW] armed state: {self.armed}")
-        print(f"[DAW] is_recording: {self.is_recording}")
+        self.last_error = None
         
         # Se channel specificato, verifica che sia armato
         if channel is not None:
             if not self.armed[channel]:
-                print(f"[DAW] Canale {channel} non armato, esco")
-                return False
+                return self._fail('NO_ARMED_TRACK', f"Canale {channel} non armato")
         else:
             # Se nessun channel specificato, verifica che almeno uno sia armato
             if not any(self.armed.values()):
-                print(f"[DAW] Nessun canale armato, esco")
-                return False
+                return self._fail('NO_ARMED_TRACK', "Nessun canale armato")
         
         if self.is_recording:
-            print(f"[DAW] Già in registrazione, esco")
-            return False
-        
-        # FLUSH della coda MIDI per evitare messaggi accumulati
-        if self.midi_input:
-            # Svuota tutti i messaggi in attesa prima di iniziare
-            discarded_count = 0
-            for _ in self.midi_input.iter_pending():
-                discarded_count += 1
-            if discarded_count > 0:
-                print(f"[DAW] Scartati {discarded_count} messaggi MIDI in buffer prima di registrare")
-        
-        # Invia "All Notes Off" per sicurezza (pulisce eventuali note stuck)
-        self._send_all_notes_off()
-        
-        # Breve pausa per stabilizzare il sistema
-        time.sleep(0.05)  # 50ms
+            return self._fail('TRANSPORT_ACTIVE', "Registrazione gia' in corso",
+                              {'is_playing': self.is_playing, 'is_recording': True}, http=400)
+        if self.is_playing:
+            # A23: niente secondo thread di playback.
+            return self._fail('TRANSPORT_ACTIVE', "Ferma la riproduzione prima di registrare",
+                              {'is_playing': True, 'is_recording': False})
         
         # Determina i canali da registrare
         if channel is not None:
             recording_channels = [channel]
         else:
             recording_channels = [ch for ch in range(16) if self.armed[ch]]
+
+        # Preflight (A3, D7): ogni traccia armata deve avere un input disponibile,
+        # verificato PRIMA di impostare is_recording.
+        problems = self.router.record_preflight(recording_channels)
+        if problems:
+            return self._fail('PORT_UNAVAILABLE', 'Ingresso MIDI non disponibile per: ' +
+                              ', '.join(f"traccia {p['track'] + 1}" for p in problems),
+                              {'tracks': problems})
+        
+        # Rilascio delle note rimaste aperte (solo canali toccati da MatSynth)
+        self._send_all_notes_off()
 
         # Capture recording-take boundaries to build clips when recording stops
         self._recording_channels = list(recording_channels)
@@ -284,6 +286,13 @@ class MultiTrackDAW:
         # (solo REWIND resetta a 0.0)
         initial_position = self.timeline_position
         self._record_take_start_beat = max(0.0, initial_position / self.beat_duration)
+
+        # Gli eventi arrivano dalla callback del router (_on_router_input);
+        # il thread di Record fa solo avanzare la timeline.
+        with self._rec_lock:
+            self._rec_start_time = time.time()
+            self._rec_initial_pos = initial_position
+            self._rec_tracks = frozenset(recording_channels)
         
         # Thread di registrazione (registra su tutti i canali armati)
         self.record_thread = threading.Thread(
@@ -315,6 +324,9 @@ class MultiTrackDAW:
         if not self.is_recording:
             return False
         
+        stop_beat = max(0.0, self.timeline_position / self.beat_duration)
+        with self._rec_lock:
+            self._rec_tracks = frozenset()     # la callback del router smette di registrare
         self.is_recording = False
         self.stop_event.set()
 
@@ -324,12 +336,56 @@ class MultiTrackDAW:
         if self.record_thread:
             self.record_thread.join(timeout=1.0)
 
+        for ch in self._recording_channels:
+            self._close_open_recorded_notes(ch, stop_beat)
+            if self.tracks[ch]:
+                self.tracks[ch].sort(key=lambda x: x[0])
+                self.has_data[ch] = True
+                self._density_dirty = True
+                print(f"[DAW] Registrati {len(self.tracks[ch])} eventi su canale {ch}")
+
         # Build one clip per channel for the just-finished recording take
         self._finalize_recording_clips()
         
         print("[DAW] Registrazione fermata")
         self._emit_state_change()  # Notifica via WebSocket
         return True
+
+    def _close_open_recorded_notes(self, ch, stop_beat):
+        """Note-on senza note-off e CC64 >= 64 non chiuso nel take appena
+        registrato ricevono note-off / CC64=0 al beat di stop (sez. 3.7)."""
+        start_idx = self._record_start_event_index.get(ch, len(self.tracks[ch]))
+        new_events = self.tracks[ch][start_idx:]
+        if not new_events:
+            return
+        open_notes = {}
+        sustain = {}
+        last_beat = 0.0
+        for beat, data in new_events:
+            last_beat = max(last_beat, beat)
+            if len(data) < 3:
+                continue
+            kind, mch = data[0] & 0xF0, data[0] & 0x0F
+            if kind == 0x90 and data[2] > 0:
+                open_notes[(mch, data[1])] = open_notes.get((mch, data[1]), 0) + 1
+            elif kind == 0x80 or kind == 0x90:
+                key = (mch, data[1])
+                if open_notes.get(key):
+                    open_notes[key] -= 1
+            elif kind == 0xB0 and data[1] == 64:
+                sustain[mch] = data[2] >= 64
+        beat = max(stop_beat, last_beat)
+        added = 0
+        for (mch, note), count in sorted(open_notes.items()):
+            for _ in range(count):
+                self.tracks[ch].append((beat, [0x80 | mch, note, 0]))
+                added += 1
+        for mch, held in sorted(sustain.items()):
+            if held:
+                self.tracks[ch].append((beat, [0xB0 | mch, 64, 0]))
+                added += 1
+        if added:
+            print(f"[DAW] Stop Record: chiusi {added} eventi aperti su traccia {ch}")
 
     def _finalize_recording_clips(self):
         """Create clip objects from events recorded in the last take."""
@@ -364,12 +420,27 @@ class MultiTrackDAW:
     
     def start_playback(self):
         """Avvia la riproduzione di tutte le tracce registrate"""
+        self.last_error = None
+        self.last_warnings = []
         if self.is_playing or self.is_recording:
-            return False
+            return self._fail('NOTHING_TO_PLAY', "Riproduzione o registrazione gia' in corso")
         
         # Verifica che ci siano tracce da riprodurre
         if not any(self.has_data.values()):
-            return False
+            return self._fail('NOTHING_TO_PLAY', 'Nessuna traccia da riprodurre')
+
+        # Preflight (A3): nessuna destinazione disponibile -> rifiuto; alcune -> warning.
+        self._update_audible()
+        tracks = [ch for ch in range(16) if self.has_data[ch] and self._audible[ch]] \
+            or [ch for ch in range(16) if self.has_data[ch]]
+        problems = self.router.playback_preflight(tracks)
+        if len(problems) == len(tracks):
+            return self._fail('PORT_UNAVAILABLE', 'Nessuna destinazione MIDI disponibile per la riproduzione',
+                              {'tracks': problems})
+        if problems:
+            self.last_warnings = [{'code': 'PLAYBACK_TRACKS_UNAVAILABLE',
+                                   'message': 'Alcune tracce non hanno una destinazione disponibile',
+                                   'details': {'tracks': problems}}]
         
         # Assicura che non ci siano note bloccate prima di iniziare
         self._send_all_notes_off()
@@ -421,8 +492,9 @@ class MultiTrackDAW:
         return True
 
     def panic(self):
-        """Invia All Notes Off e All Sound Off su tutti i canali (PANIC reset)"""
-        self._send_all_notes_off()
+        """PANIC (sez. 3.7) su tutte le destinazioni aperte: note-off tracciati,
+        CC64=0, CC123, CC120 sui 16 canali. Esito per porta in `last_panic`."""
+        self.last_panic = self.router.panic()
         return True
     
     def rewind(self):
@@ -515,6 +587,7 @@ class MultiTrackDAW:
             muted: True per mutare, False per smutare
         """
         self.muted[channel] = muted
+        self._apply_audibility()
         self._emit_state_change()  # Notifica via WebSocket
         return True
     
@@ -524,9 +597,19 @@ class MultiTrackDAW:
         Quando almeno una traccia è in solo, solo quelle producono suono.
         """
         self.solo[channel] = solo
-        self._any_solo = any(self.solo.values())
+        self._apply_audibility()
         self._emit_state_change()
         return True
+
+    def _apply_audibility(self):
+        """Mute/solo con effetto immediato (A25): il gate viene letto dal
+        router sotto il lock della porta a ogni invio; le tracce diventate
+        mute rilasciano subito note e sustain."""
+        before = bytes(self._audible)
+        self._update_audible()
+        silenced = [ch for ch in range(16) if before[ch] and not self._audible[ch]]
+        if silenced and self.is_playing:
+            self.router.release_tracks(silenced)
     
     def clear_track(self, channel):
         """Cancella tutti gli eventi di una traccia"""
@@ -1741,14 +1824,16 @@ class MultiTrackDAW:
             print("[DAW] Metronomo fermato")
     
     def _metronome_loop(self):
-        """Loop del metronomo (eseguito in thread separato)"""
-        if not self.midi_output:
+        """Loop del metronomo (eseguito in thread separato). Click solo sulla
+        destinazione interna (sez. 3.5): mai registrato, mai su esterni."""
+        if not self.router.internal_available():
+            print("[DAW] Click non disponibile: destinazione interna assente")
             return
         
-        CLICK_CHANNEL = 9  # Canale 10 (drum channel, 0-indexed)
-        ACCENT_NOTE = 76   # High Wood Block (primo beat della misura)
-        NORMAL_NOTE = 77   # Low Wood Block (altri beat)
-        VELOCITY = 100
+        CLICK_CHANNEL = midi_router.CLICK_CHANNEL      # Canale 10 (drum channel, 0-indexed)
+        ACCENT_NOTE = midi_router.CLICK_ACCENT_NOTE    # High Wood Block (primo beat della misura)
+        NORMAL_NOTE = midi_router.CLICK_NOTE           # Low Wood Block (altri beat)
+        VELOCITY = midi_router.CLICK_VELOCITY
         NOTE_DURATION = 0.05  # 50ms
         
         try:
@@ -1769,7 +1854,7 @@ class MultiTrackDAW:
                                          channel=CLICK_CHANNEL, 
                                          note=note, 
                                          velocity=VELOCITY)
-                    self.midi_output.send(msg_on)
+                    self.router.send_internal(msg_on)
                     
                     # Breve durata
                     time.sleep(NOTE_DURATION)
@@ -1779,7 +1864,7 @@ class MultiTrackDAW:
                                           channel=CLICK_CHANNEL, 
                                           note=note, 
                                           velocity=0)
-                    self.midi_output.send(msg_off)
+                    self.router.send_internal(msg_off)
                 
                 # Sleep fino al prossimo possibile beat (con margine)
                 time_to_next_beat = self.beat_duration - (self.timeline_position % self.beat_duration)
@@ -1789,101 +1874,63 @@ class MultiTrackDAW:
             print(f"[DAW] Errore nel metronomo: {e}")
     
     def _record_loop(self, recording_channels, initial_position=0.0):
-        """Loop di registrazione (eseguito in thread separato)
-        
-        Args:
-            recording_channels: Lista di canali su cui registrare (es. [0, 1, 2])
-            initial_position: Posizione iniziale della timeline (offset temporale)
-        """
-        if not self.midi_input:
-            print("[DAW] Errore: Nessun input MIDI disponibile")
-            return
-        
-        start_time = time.time()
-        GRACE_PERIOD = 0.01  # Ignora i primi 10ms per evitare messaggi residui
-        
+        """Thread di Record: fa solo avanzare la timeline. Gli eventi MIDI
+        arrivano dalla callback del router (_on_router_input)."""
+        start_time = self._rec_start_time or time.time()
         try:
             while not self.stop_event.is_set():
-                # Calcola posizione corrente sulla timeline
-                current_time = initial_position + (time.time() - start_time)
-                
-                # Aggiorna sempre la timeline position (scorre continuamente)
-                self.timeline_position = current_time
-                
-                # Polling veloce con timeout minimo
-                for msg in self.midi_input.iter_pending():
-                    # Filtra solo messaggi dei canali in registrazione
-                    if hasattr(msg, 'channel') and msg.channel in recording_channels:
-                        elapsed_time = time.time() - start_time
-                        
-                        # Ignora messaggi nei primi millisecondi (grace period)
-                        # per evitare di registrare eventi residui nel buffer
-                        if elapsed_time < GRACE_PERIOD:
-                            continue
-                        
-                        # Timestamp assoluto sulla timeline in secondi
-                        timestamp_seconds = initial_position + elapsed_time
-                        
-                        # Converti in beat (posizione musicale) per supportare cambi di BPM
-                        beat_position = timestamp_seconds / self.beat_duration
-                        
-                        # Salva evento in formato tuple leggera (beat, msg_bytes)
-                        self.tracks[msg.channel].append((beat_position, msg.bytes()))
-
-                        # Emit live event for Event Viewer (lightweight)
-                        if self.socketio:
-                            ev_data = {
-                                'ch': msg.channel,
-                                'beat': round(beat_position, 4),
-                                'type': msg.type,
-                                'idx': len(self.tracks[msg.channel]) - 1
-                            }
-                            if msg.type in ('note_on', 'note_off'):
-                                ev_data['note'] = self._midi_note_name(msg.note)
-                                ev_data['note_num'] = msg.note
-                                ev_data['vel'] = msg.velocity
-                            elif msg.type == 'control_change':
-                                ev_data['cc_num'] = msg.control
-                                ev_data['cc_val'] = msg.value
-                            self.socketio.emit('midi_event_new', ev_data)
-
-                        # Aggiorna conteggio note attive per streaming leggero
-                        if msg.type == 'note_on' and msg.velocity > 0:
-                            self.active_notes[msg.channel] += 1
-                        elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
-                            self.active_notes[msg.channel] = max(0, self.active_notes[msg.channel] - 1)
-                        
-                        # NON fare thru a FluidSynth - è già collegato direttamente alla tastiera
-                        # Il monitoring real-time avviene tramite la connessione diretta aconnect
-                
-                # Sleep minimo per non sovraccaricare CPU
-                time.sleep(0.001)  # 1ms polling
-            
-            # Marca le tracce come aventi dati e riordina gli eventi per beat position
-            for channel in recording_channels:
-                if len(self.tracks[channel]) > 0:
-                    # Riordina gli eventi per beat position (potrebbero essere stati aggiunti in ordine sparso)
-                    self.tracks[channel].sort(key=lambda x: x[0])
-                    self.has_data[channel] = True
-                    self._density_dirty = True
-                    print(f"[DAW] Registrati {len(self.tracks[channel])} eventi su canale {channel}")
-                self.active_notes[channel] = 0
-                
+                self.timeline_position = initial_position + (time.time() - start_time)
+                time.sleep(0.005)
         except Exception as e:
             print(f"[DAW] Errore nel loop di registrazione: {e}")
-    
+
+    def _on_router_input(self, parts, msg, t):
+        """Callback del router per ogni messaggio canale ricevuto da un input.
+        `parts` = tracce il cui input coincide con la porta/canale sorgente."""
+        rec = self._rec_tracks
+        if not rec:
+            return
+        elapsed = t - self._rec_start_time
+        if elapsed < RECORD_GRACE_S:
+            return
+        beat_position = (self._rec_initial_pos + elapsed) / self.beat_duration
+        targets = [ch for ch in parts if ch in rec]
+        if not targets:
+            return
+        emitted = []
+        with self._rec_lock:
+            if self._rec_tracks is not rec:
+                return
+            for ch in targets:
+                data = msg.bytes()
+                data[0] = (data[0] & 0xF0) | ch     # evento salvato sul canale della traccia
+                self.tracks[ch].append((beat_position, data))
+                emitted.append((ch, len(self.tracks[ch]) - 1))
+                if msg.type == 'note_on' and msg.velocity > 0:
+                    self.active_notes[ch] += 1
+                elif msg.type == 'note_off' or (msg.type == 'note_on' and msg.velocity == 0):
+                    self.active_notes[ch] = max(0, self.active_notes[ch] - 1)
+        if not self.socketio:
+            return
+        for ch, idx in emitted:
+            ev_data = {'ch': ch, 'beat': round(beat_position, 4), 'type': msg.type, 'idx': idx}
+            if msg.type in ('note_on', 'note_off'):
+                ev_data['note'] = self._midi_note_name(msg.note)
+                ev_data['note_num'] = msg.note
+                ev_data['vel'] = msg.velocity
+            elif msg.type == 'control_change':
+                ev_data['cc_num'] = msg.control
+                ev_data['cc_val'] = msg.value
+            self.socketio.emit('midi_event_new', ev_data)
+
     def _collect_playback_events(self):
-        """Collect events from playable tracks, respecting solo/mute and loop range."""
+        """Collect events from tracks with data within the loop range.
+        Mute/solo non filtra qui: il gate `_audible` e' applicato all'invio
+        (sotto il lock della porta) cosi' ha effetto immediato (A25)."""
         events = []
         for channel in range(16):
             if not self.has_data[channel]:
                 continue
-            if self._any_solo:
-                if not self.solo[channel]:
-                    continue
-            else:
-                if self.muted[channel]:
-                    continue
             for beat_position, msg_bytes in self.tracks[channel]:
                 if self.loop_enabled and self.loop_end > self.loop_start:
                     if beat_position < self.loop_start or beat_position >= self.loop_end:
@@ -1894,10 +1941,8 @@ class MultiTrackDAW:
 
     def _playback_loop(self):
         """Loop di riproduzione con supporto solo/mute e loop points."""
-        if not self.midi_output:
-            print("[DAW] Errore: Nessun output MIDI disponibile")
-            return
-        
+        send_track = self.router.send_track
+        gate = self._audible
         initial_position = self.timeline_position
         
         try:
@@ -1932,7 +1977,6 @@ class MultiTrackDAW:
                         })
                     
                     if current_time >= loop_end_sec:
-                        self._send_all_notes_off()
                         break
                     
                     while event_index < len(all_events):
@@ -1940,11 +1984,10 @@ class MultiTrackDAW:
                         if timestamp <= current_time:
                             try:
                                 msg = mido.Message.from_bytes(msg_bytes)
-                                # Remap channel to track channel (events may have been copied from another track)
+                                # Il router rimappa sul canale della destinazione della parte
                                 if hasattr(msg, 'channel'):
-                                    msg = msg.copy(channel=channel)
-                                self.midi_output.send(msg)
-                            except:
+                                    send_track(channel, msg, mutable=True, gate=gate)
+                            except Exception:
                                 pass
                             event_index += 1
                         else:
@@ -1961,44 +2004,35 @@ class MultiTrackDAW:
                     break
                 if not self.loop_enabled or self.loop_end <= self.loop_start:
                     break
-                # Restart from loop_start
+                # Restart from loop_start: rilascio note/sustain del giro (sez. 3.7)
+                self.router.release_tracks(range(16))
                 initial_position = self.loop_start * self.beat_duration
                 self.timeline_position = initial_position
             
             if not self.is_recording:
                 self.is_playing = False
-                self._send_all_notes_off()
+                self.router.release_tracks(range(16))
                 print("[DAW] Riproduzione completata")
                 
         except Exception as e:
             print(f"[DAW] Errore nel loop di riproduzione: {e}")
     
     def _send_all_notes_off(self):
-        """Invia All Notes Off su tutti i canali"""
-        if not self.midi_output:
-            return
-        
+        """Rilascio note/sustain su tutte le destinazioni, solo sui canali
+        toccati da MatSynth (sez. 3.7)."""
         try:
-            for channel in range(16):
-                # Control Change 123 (All Notes Off)
-                try:
-                    msg = mido.Message('control_change', channel=channel, control=123, value=0)
-                    self.midi_output.send(msg)
-                except TypeError:
-                    # Alcune porte MIDI potrebbero non supportare send() diretto
-                    pass
+            self.router.release_all()
         except Exception as e:
-            print(f"[DAW] Errore invio All Notes Off: {e}")
+            print(f"[DAW] Errore rilascio note: {e}")
     
     def __del__(self):
         """Cleanup alla chiusura"""
-        self.stop_all()
-        
-        if self.midi_input:
-            self.midi_input.close()
-        
-        if self.midi_output:
-            self.midi_output.close()
+        try:
+            self.stop_all()
+            if getattr(self, '_owns_router', False) and self.router is not None:
+                self.router.close()
+        except Exception:
+            pass
 
     def export_midi(self, channel_programs=None):
         """

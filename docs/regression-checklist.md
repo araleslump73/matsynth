@@ -222,3 +222,12 @@ Vale per tutte le righe della sezione 1 che vivevano in `index.html`: il markup 
 - Test automatico (`node --test tests/js`, 47 test): nessun ID duplicato nella pagina composta (A9), ogni handler `onclick/onchange/oninput` esiste, un solo `io()`, `shell.showView/openPanel/closePanel` senza rete, `units.SNAP_OPTIONS` = contratto 1.3 (A12).
 - Browser headless (Chromium, server Flask locale con `helpers.import_app`, 1024x768): nessun errore JS; 21 cicli Suona/Studio/editor + apri/chiudi Libreria = 0 fetch e 0 emit, un socket connesso. Unico 404 atteso: `GET /api/parts` (route di `ui-routing`, il client ha il fallback su `/get_state`).
 - Da verificare in browser reale: viewport 360x800, 390x844, 768x1024, 1366x768; tutte le righe 1-61 cliccate a mano.
+
+### `ui-routing` (2026-11-23)
+
+Backend MIDI ricablato sul router unico (`midi_router.py`); il frontend non e' cambiato.
+
+- Righe 1-3 (strumenti, CC, effetti): stesse route e stessi eventi socket; per le parti interne i comandi restano quelli della console 9800. Le parti esterne vengono rifiutate dalle route legacy (409). `/set_effect` ora accetta solo `gain`, `reverb.level` e `chorus.level`.
+- Trasporto, PANIC, preview: busta nuova (`ok`, `error.code`) con `status`/`message` invariati per i chiamanti legacy. Coperti da `tests/test_routing.py` e `tests/test_baseline_smoke.py`.
+- Browser headless: shell senza errori JS, dati letti da `/api/parts`.
+- Da verificare sul Pi: righe di registrazione/playback/monitor con la tastiera reale, in `legacy` (default) e in `managed`; vedi `docs/handoff/ui-routing.md`.

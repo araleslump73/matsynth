@@ -7,6 +7,9 @@ import json
 import time
 import subprocess
 import threading
+import copy
+import midi_router
+from api_common import ok, err, ack_ok, ack_err, from_router_error
 from daw_recorder import MultiTrackDAW
 
 app = Flask(__name__)
@@ -19,14 +22,17 @@ FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
 MIDI_DIR = '/home/matteo/matsynth_web/midi/'  # Directory per i file MIDI salvati
+DEVICES_FILE = '/home/matteo/matsynth_web/midi_devices.json'  # Registro alias dispositivi MIDI (ui-routing)
 sf_id = 1 # Global variable to track the active soundfont ID
 STATE_LOCK = threading.Lock()
+ALLOWED_EFFECT_TYPES = {'reverb.level', 'chorus.level', 'gain'}  # whitelist /set_effect e effect_update
 _INITIALIZED = False
 
 # Debounced state writer — batches rapid CC writes to reduce SD card I/O on Pi Zero
 _state_dirty = False
 _state_pending = {}       # pending flat key→value updates
 _cc_pending = {}          # pending CC updates: (chan_str, cc_name) → value
+_parts_pending = set()    # part_id con CC cambiati da persistere in `parts`
 _state_flush_lock = threading.Lock()
 
 def _schedule_state_flush():
@@ -34,12 +40,14 @@ def _schedule_state_flush():
     global _state_dirty, _state_pending, _cc_pending
     time.sleep(0.5)  # 500ms debounce
     with _state_flush_lock:
-        if not _state_pending and not _cc_pending:
+        if not _state_pending and not _cc_pending and not _parts_pending:
             return
         pending = _state_pending.copy()
         cc_pending = _cc_pending.copy()
+        parts_pending = sorted(_parts_pending)
         _state_pending.clear()
         _cc_pending.clear()
+        _parts_pending.clear()
         _state_dirty = False
     try:
         with STATE_LOCK:
@@ -52,6 +60,8 @@ def _schedule_state_flush():
                     if chan_str not in state['channels']:
                         state['channels'][chan_str] = {}
                     state['channels'][chan_str][cc_name] = val
+            for t in parts_pending:
+                _put_part_in_state(state, router.get_part(t))
             _write_state_atomic(state)
     except Exception as e:
         print(f"[State] Flush error: {e}")
@@ -61,6 +71,17 @@ def save_state_debounced(key, value):
     global _state_dirty
     with _state_flush_lock:
         _state_pending[key] = value
+        should_start = not _state_dirty
+        _state_dirty = True
+    if should_start:
+        threading.Thread(target=_schedule_state_flush, daemon=True).start()
+
+def save_part_debounced(part_id):
+    """Persistenza debounced della parte (CC dagli slider) in `parts` e,
+    per le parti interne, nella voce legacy `channels`."""
+    global _state_dirty
+    with _state_flush_lock:
+        _parts_pending.add(part_id)
         should_start = not _state_dirty
         _state_dirty = True
     if should_start:
@@ -83,9 +104,6 @@ if not os.path.exists(PRESETS_DIR):
 # Crea la directory MIDI se non esiste
 if not os.path.exists(MIDI_DIR):
     os.makedirs(MIDI_DIR)
-
-# Inizializza il sistema DAW Multi-Track
-daw = MultiTrackDAW(bpm=120, socketio=socketio)
 
 def _write_state_atomic(state: dict):
     """Scrive lo stato in modo atomico per evitare file troncati su scritture concorrenti."""
@@ -167,6 +185,70 @@ def get_active_sf_id():
             return parts[0]
     return "1" # Fallback nel caso peggiore
 
+# ==========================================
+# ROUTER MIDI + DAW (ui-routing)
+# ==========================================
+
+def _console(command):
+    # Risolve send_fluid a ogni chiamata (i test la sostituiscono dopo l'import).
+    return send_fluid(command)
+
+_boot_state = get_last_state()
+EFFECTIVE_MIDI_MODE = midi_router.resolve_effective_mode(os.environ.get('MATSYNTH_MIDI_MODE'), _boot_state)
+router = midi_router.MidiRouter(
+    backend=midi_router.MidoBackend(),
+    parts=midi_router.parts_from_state(_boot_state)[0],
+    registry=midi_router.load_registry_file(DEVICES_FILE),
+    mode=EFFECTIVE_MIDI_MODE,
+    devices_file=DEVICES_FILE,
+    emit=lambda event, payload: socketio.emit(event, payload),
+    console=_console,
+    sf_id=lambda: sf_id,
+)
+router.start(poll=True)
+print(f"[Init] Modalita' MIDI effettiva: {EFFECTIVE_MIDI_MODE}")
+del _boot_state
+
+# Inizializza il sistema DAW Multi-Track
+daw = MultiTrackDAW(bpm=120, socketio=socketio, router=router)
+
+
+def _put_part_in_state(state, part):
+    """Scrive una parte in `state['parts']` e, se interna, nella voce legacy
+    `channels[part_id]` (sez. 3.3). Chiamare sotto STATE_LOCK."""
+    parts, _ = midi_router.parts_from_state(state)
+    t = part['part_id']
+    parts[t] = copy.deepcopy(part)
+    state['parts'] = parts
+    if part['destination']['kind'] == 'internal':
+        channels = state.get('channels')
+        if not isinstance(channels, dict):
+            channels = state['channels'] = {}
+        entry = channels.get(str(t))
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        entry.update(midi_router.legacy_channel_entry(part))
+        channels[str(t)] = entry
+
+
+def save_part(part):
+    """Persistenza di una parte: `parts` + voce legacy `channels`, una sola
+    scrittura atomica sotto STATE_LOCK (API per ui-persistence)."""
+    with STATE_LOCK:
+        state = get_last_state()
+        _put_part_in_state(state, part)
+        _write_state_atomic(state)
+
+
+def midi_mode_info():
+    configured = midi_router.configured_mode(get_last_state())
+    return {'effective': EFFECTIVE_MIDI_MODE, 'configured': configured,
+            'restart_required': configured != EFFECTIVE_MIDI_MODE}
+
+
+def _part_id_or_none(t):
+    return t if isinstance(t, int) and 0 <= t <= 15 else None
+
+
 def restore_settings():
     state = get_last_state()
     gain = state.get('gain', 0.7)
@@ -196,6 +278,23 @@ def restore_settings():
             sf_id = get_active_sf_id()
         else:
             print(f"[Init] Saved font not found: {path}")
+
+    # Parti: con `parts` valida le interne vanno via console, le esterne via
+    # router (richiamo completo); senza `parts` resta il ripristino legacy.
+    parts, source = midi_router.parts_from_state(state)
+    for p in parts:
+        if p['destination']['kind'] == 'external':
+            try:
+                report = router.apply_part(p, send='all')
+                print(f"[Init] Parte esterna {p['part_id']}: {report['delivery']}")
+            except Exception as e:
+                print(f"[Init] Parte {p['part_id']} non applicata: {e}")
+    if source == 'parts':
+        for p in parts:
+            if p['destination']['kind'] == 'internal':
+                for _, cmd in midi_router.internal_console_commands(p, sf_id):
+                    send_fluid(cmd)
+        return
 
     # Applica banche, programmi e CC salvati per ogni canale
     saved_channels = state.get('channels', {})
@@ -294,30 +393,27 @@ def get_instruments():
 
 @app.route('/select_prog/<int:chan>/<int:bank>/<int:prog>')
 def select_prog(chan, bank, prog):
-    # Usa l'ID già caricato in memoria (molto più veloce!)
-    comando = f"select {chan} {sf_id} {bank} {prog}"
-    send_fluid(comando)
-    
-    # Salva lo stato del canale per il preset
-    with STATE_LOCK:
-        state = get_last_state()
-        if 'channels' not in state:
-            state['channels'] = {}
-        
-        # Preserva i dati esistenti del canale (CC, ecc.)
-        if str(chan) not in state['channels']:
-            state['channels'][str(chan)] = {}
-        
-        state['channels'][str(chan)]['bank'] = bank
-        state['channels'][str(chan)]['program'] = prog
-        
-        print(f"[Channel] Saved ch {chan}: bank={bank}, prog={prog}")
-        _write_state_atomic(state)
-    
+    """`chan` = ID parte; solo parti interne (sez. 8.1)."""
+    if _part_id_or_none(chan) is None:
+        return "Parte non valida", 400
+    part = router.get_part(chan)
+    if part['destination']['kind'] != 'internal':
+        return "Parte esterna", 409
+    part['sound'] = {'bank': bank, 'program': prog, 'name': part['sound'].get('name')}
+    try:
+        # select verso il canale di destinazione della parte, via console (D20)
+        router.apply_part(part, send='all', cc_keys=[])
+    except midi_router.RouterError as e:
+        return f"Errore: {e.message}", 400
+    save_part(part)
+    notify_parts_changed([chan])
+    print(f"[Channel] Saved part {chan}: bank={bank}, prog={prog}")
     return "OK"
 
 @app.route('/set_effect/<type>/<val>')
 def set_effect(type, val):
+    if type not in ALLOWED_EFFECT_TYPES:
+        return "Error", 400
     try:
         f_val = float(val)
         send_fluid(f"set synth.{type} {f_val}")
@@ -327,22 +423,30 @@ def set_effect(type, val):
         print(f"[Effect] Invalid value type={type} val={val}: {e}")
         return "Error", 400
 
+def _send_part_cc(chan, cc, val):
+    """CC di una parte verso la sua destinazione + persistenza debounced."""
+    delivery = router.send_part_cc(chan, cc, val)
+    if str(cc) in midi_router.CC_KEYS:
+        save_part_debounced(chan)
+        notify_parts_changed([chan])
+    return delivery
+
 @app.route('/cc/<int:chan>/<int:cc>/<int:val>')
 def control(chan, cc, val):
-    send_fluid(f"cc {chan} {cc} {val}")
-    
-    # Save important CCs for presets (debounced to reduce SD card I/O)
-    cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
-                73: 'attack', 74: 'cutoff', 75: 'decay'}
-    if cc in cc_names:
-        save_cc_debounced(chan, cc_names[cc], val)
-    
+    if _part_id_or_none(chan) is None or not (0 <= cc <= 127 and 0 <= val <= 127):
+        return "Error", 400
+    _send_part_cc(chan, cc, val)
     return "OK"
 
 @app.route('/reset_channel/<int:chan>')
 def reset_channel(chan):
     """Reset di tutti i controller MIDI del canale (più veloce di singoli CC)"""
-    send_fluid(f"reset {chan}")
+    if _part_id_or_none(chan) is None:
+        return "Parte non valida", 400
+    part = router.get_part(chan)
+    if part['destination']['kind'] != 'internal':
+        return "Parte esterna", 409
+    send_fluid(f"reset {part['destination']['channel']}")
     return "OK"
 
 @app.route('/refresh_status')
@@ -353,7 +457,10 @@ def refresh_status():
 @app.route('/get_state')
 def get_state():
     """Restituisce tutto lo stato salvato (font, volumi, ecc)"""
-    return jsonify(get_last_state())
+    state = get_last_state()
+    state['parts'] = router.get_parts()
+    state['midi_mode'] = midi_mode_info()
+    return jsonify(state)
 
 @app.route('/api/capture_current_config')
 def api_capture_current_config():
@@ -756,104 +863,88 @@ def daw_get_state():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+def _daw_refusal(code, message, http=None):
+    """Busta d'errore dall'ultimo rifiuto della DAW (`daw.last_error`)."""
+    e = daw.last_error or {}
+    return err(e.get('code', code), e.get('message', message), e.get('details'),
+               http=e.get('http') or http)
+
+
+def _transport_start_record(channel):
+    """Logica comune HTTP/socket per Record. Ritorna (body, http)."""
+    armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
+    if not armed_channels:
+        return err('NO_ARMED_TRACK', "Nessun canale armato. Attiva ARM su almeno un canale.")
+    if channel is not None:
+        if not isinstance(channel, int) or not 0 <= channel <= 15:
+            return err('BAD_REQUEST', 'channel deve essere 0-15', {'field': 'channel'})
+        if not daw.armed.get(channel):
+            return err('NO_ARMED_TRACK', f"Canale {channel} non è armato. Attiva ARM prima di registrare.")
+        success = daw.start_recording(channel)
+        armed_channels = [channel]
+    else:
+        success = daw.start_recording()
+    if success:
+        return ok(f"Registrazione avviata su canali {armed_channels}"), 200
+    return _daw_refusal('INTERNAL', 'Impossibile avviare registrazione', http=400)
+
+
+def _transport_start_play():
+    if daw.start_playback():
+        return ok("Riproduzione avviata", warnings=daw.last_warnings), 200
+    return _daw_refusal('NOTHING_TO_PLAY', "Nessuna traccia da riprodurre o già in riproduzione")
+
+
 @app.route('/api/daw/record/start', methods=['POST'])
 def daw_start_recording():
     """Avvia la registrazione su tutti i canali armati"""
     try:
-        data = request.json or {}
-        channel = data.get('channel', None)
-        
-        print(f"[DAW API] === START RECORDING REQUEST ===")
-        print(f"[DAW API] request.json: {request.json}")
-        print(f"[DAW API] data: {data}")
-        print(f"[DAW API] channel param: {channel}")
-        print(f"[DAW API] daw.armed dict: {daw.armed}")
-        
-        # Trova i canali armati
-        armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
-        print(f"[DAW API] armed_channels list: {armed_channels}")
-        
-        if not armed_channels:
-            print(f"[DAW API] ERRORE: Nessun canale armato!")
-            return jsonify({
-                "status": "error", 
-                "message": "Nessun canale armato. Attiva ARM su almeno un canale."
-            }), 400
-        
-        if channel is not None:
-            # Registrazione su canale specifico (backward compatibility)
-            print(f"[DAW API] Richiesta start recording su canale {channel}")
-            if not daw.armed.get(channel):
-                print(f"[DAW API] ERRORE: Canale {channel} non armato!")
-                return jsonify({
-                    "status": "error", 
-                    "message": f"Canale {channel} non è armato. Attiva ARM prima di registrare."
-                }), 400
-            success = daw.start_recording(channel)
-        else:
-            # Registrazione su tutti i canali armati (nuovo workflow)
-            print(f"[DAW API] Richiesta start recording su canali armati: {armed_channels}")
-            print(f"[DAW API] Stato is_recording: {daw.is_recording}")
-            success = daw.start_recording()
-        
-        print(f"[DAW API] start_recording ritorna: {success}")
-        
-        if success:
-            return jsonify({"status": "ok", "message": f"Registrazione avviata su canali {armed_channels}"})
-        else:
-            print(f"[DAW API] ERRORE: Impossibile avviare registrazione")
-            return jsonify({"status": "error", "message": "Impossibile avviare registrazione"}), 400
-            
+        data = request.get_json(silent=True) or {}
+        body, http = _transport_start_record(data.get('channel', None))
+        return jsonify(body), http
     except Exception as e:
         print(f"[DAW API] ECCEZIONE in start_recording: {e}")
         import traceback
         traceback.print_exc()
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/record/stop', methods=['POST'])
 def daw_stop_recording():
-    """Ferma la registrazione in corso"""
+    """Ferma la registrazione in corso (chiude note/sustain aperti)"""
     try:
-        success = daw.stop_recording()
-        
-        if success:
-            return jsonify({"status": "ok", "message": "Registrazione fermata"})
-        else:
-            return jsonify({"status": "error", "message": "Nessuna registrazione in corso"}), 400
-            
+        if daw.stop_recording():
+            return jsonify(ok("Registrazione fermata"))
+        body, http = err('BAD_REQUEST', "Nessuna registrazione in corso")
+        return jsonify(body), http
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/play/start', methods=['POST'])
 def daw_start_playback():
     """Avvia la riproduzione di tutte le tracce"""
     try:
-        success = daw.start_playback()
-        
-        if success:
-            return jsonify({"status": "ok", "message": "Riproduzione avviata"})
-        else:
-            return jsonify({"status": "error", "message": "Nessuna traccia da riprodurre o già in riproduzione"}), 400
-            
+        body, http = _transport_start_play()
+        return jsonify(body), http
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/play/stop', methods=['POST'])
 def daw_stop_playback():
     """Ferma la riproduzione"""
     try:
-        success = daw.stop_playback()
-        
-        if success:
-            return jsonify({"status": "ok", "message": "Riproduzione fermata"})
-        else:
-            return jsonify({"status": "error", "message": "Nessuna riproduzione in corso"}), 400
-            
+        if daw.stop_playback():
+            return jsonify(ok("Riproduzione fermata"))
+        body, http = err('BAD_REQUEST', "Nessuna riproduzione in corso")
+        return jsonify(body), http
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/stop_all', methods=['POST'])
@@ -861,19 +952,21 @@ def daw_stop_all():
     """Ferma tutto: registrazione e riproduzione"""
     try:
         daw.stop_all()
-        return jsonify({"status": "ok", "message": "Tutto fermato"})
+        return jsonify(ok("Tutto fermato"))
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/panic', methods=['POST'])
 def daw_panic():
-    """Invia All Notes Off e All Sound Off su tutti i canali MIDI"""
+    """PANIC su tutte le destinazioni aperte (sez. 3.7)"""
     try:
         daw.panic()
-        return jsonify({"status": "ok", "message": "PANIC inviato"})
+        return jsonify(ok("PANIC inviato", ports=daw.last_panic))
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/rewind', methods=['POST'])
@@ -881,9 +974,10 @@ def daw_rewind():
     """Riporta la timeline a 00:00:00"""
     try:
         daw.rewind()
-        return jsonify({"status": "ok", "message": "Timeline resettata"})
+        return jsonify(ok("Timeline resettata"))
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/track/<int:channel>/arm', methods=['POST'])
@@ -919,11 +1013,8 @@ def daw_mute_track(channel):
         
         daw.mute_track(channel, muted)
         
-        return jsonify({
-            "status": "ok", 
-            "message": f"Traccia {channel} {'mutata' if muted else 'smutata'}",
-            "muted": daw.muted[channel]  # Ritorna lo stato effettivo
-        })
+        return jsonify(ok(f"Traccia {channel} {'mutata' if muted else 'smutata'}",
+                          muted=daw.muted[channel]))  # Ritorna lo stato effettivo
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -939,11 +1030,8 @@ def daw_solo_track(channel):
         
         daw.solo_track(channel, solo)
         
-        return jsonify({
-            "status": "ok",
-            "message": f"Traccia {channel} solo {'attivato' if solo else 'disattivato'}",
-            "solo": daw.solo[channel]
-        })
+        return jsonify(ok(f"Traccia {channel} solo {'attivato' if solo else 'disattivato'}",
+                          solo=daw.solo[channel]))
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1188,26 +1276,24 @@ def daw_preview_note():
         length_ms = int(data.get('length_ms', 120))
 
         if channel < 0 or channel > 15:
-            return jsonify({"status": "error", "message": "channel must be 0-15"}), 400
+            body, http = err('BAD_REQUEST', "channel must be 0-15", {'field': 'channel'})
+            return jsonify(body), http
 
         note = max(0, min(127, note))
         velocity = max(1, min(127, velocity))
         length_ms = max(40, min(400, length_ms))
 
-        send_fluid(f"noteon {channel} {note} {velocity}")
-
-        def _noteoff():
-            try:
-                time.sleep(length_ms / 1000.0)
-                send_fluid(f"noteoff {channel} {note}")
-            except Exception as ex:
-                print(f"[DAW] preview noteoff error: {ex}")
-
-        threading.Thread(target=_noteoff, daemon=True).start()
-        return jsonify({"status": "ok"})
+        # Destinazione della traccia via router; note-off sulla stessa porta/canale.
+        if not router.preview_note(channel, note, velocity, length_ms):
+            body, http = err('PORT_UNAVAILABLE', 'Destinazione della traccia non disponibile',
+                             {'tracks': [{'track': channel,
+                                          'status': router.destination_status(router.get_part(channel))}]})
+            return jsonify(body), http
+        return jsonify(ok())
     except Exception as e:
         print(f"[DAW] preview error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/copy', methods=['POST'])
@@ -1504,13 +1590,16 @@ def daw_seek_beat():
         data = request.json or {}
         beat = data.get('beat')
         if beat is None or not isinstance(beat, (int, float)):
-            return jsonify({"status": "error", "message": "Missing or invalid beat"}), 400
+            body, http = err('BAD_REQUEST', "Missing or invalid beat", {'field': 'beat'})
+            return jsonify(body), http
         success = daw.seek_to_beat(float(beat))
         if not success:
-            return jsonify({"status": "error", "message": "Cannot seek during recording"}), 409
-        return jsonify({"status": "ok"})
+            body, http = err('RECORDING_ACTIVE', "Cannot seek during recording")
+            return jsonify(body), http
+        return jsonify(ok())
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        body, http = err('INTERNAL', str(e))
+        return jsonify(body), http
 
 
 @app.route('/api/daw/track/<int:channel>/activity')
@@ -1627,32 +1716,213 @@ def daw_delete_note_pair(channel):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+# ==========================================
+# SISTEMA, PORTE MIDI, PARTI (ui-routing, contracts sez. 8.2)
+# ==========================================
+
+def _json_body():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else None
+
+
+def _respond(body_http):
+    body, http = body_http
+    return jsonify(body), http
+
+
+def _router_call(fn, *args):
+    """Esegue un'operazione del registro: RouterError -> busta; errori disco -> DISK_*."""
+    try:
+        return fn(*args), None
+    except midi_router.RouterError as e:
+        return None, from_router_error(e)
+    except OSError as e:
+        code = 'DISK_FULL' if getattr(e, 'errno', None) == 28 else 'DISK_ERROR'
+        return None, err(code, f'Scrittura registro fallita: {e}')
+
+
+def _console_available():
+    try:
+        with socket.create_connection((FLUID_HOST, FLUID_PORT), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+@app.route('/api/system/status')
+def api_system_status():
+    state = get_last_state()
+    internal = router.internal_status()
+    soundfont = {'state': 'idle', 'file': state.get('font'), 'sf_id': sf_id, 'error': None,
+                 'started_at': None, 'finished_at': None}
+    return jsonify(ok(midi_mode=midi_mode_info(),
+                      synth={'console': 'available' if _console_available() else 'missing',
+                             'midi_port': internal,
+                             'click': 'available' if router.internal_available() else internal},
+                      soundfont=soundfont,
+                      revision=getattr(daw, 'revision', None),
+                      warnings=list(router.startup_warnings)))
+
+
+@app.route('/api/system/mode', methods=['PUT'])
+def api_system_mode():
+    data = _json_body()
+    mode = data.get('mode') if data else None
+    if mode not in midi_router.MODES:
+        return _respond(err('BAD_REQUEST', "mode deve essere 'legacy' o 'managed'", {'field': 'mode'}))
+    try:
+        with STATE_LOCK:
+            state = get_last_state()
+            state['midi_mode'] = mode
+            _write_state_atomic(state)
+    except OSError as e:
+        return _respond(err('DISK_FULL' if getattr(e, 'errno', None) == 28 else 'DISK_ERROR', str(e)))
+    info = midi_mode_info()
+    msg = 'Riavvia il servizio per applicare la modalita' if info['restart_required'] else None
+    return jsonify(ok(msg, midi_mode=info))
+
+
+@app.route('/api/midi/ports')
+def api_midi_ports():
+    include_all = request.args.get('all') in ('1', 'true')
+    return jsonify(ok(**router.describe_ports(include_all)))
+
+
+@app.route('/api/midi/devices')
+def api_midi_devices_list():
+    return jsonify(ok(devices=router.describe_devices()))
+
+
+@app.route('/api/midi/devices/<alias>', methods=['PUT'])
+def api_midi_device_put(alias):
+    data = _json_body()
+    if data is None:
+        return _respond(err('BAD_REQUEST', 'Corpo JSON oggetto atteso', {'field': ''}))
+    res, error = _router_call(router.set_device, alias, data)
+    if error:
+        return _respond(error)
+    created, _ = res
+    return jsonify(ok(device=router.describe_device(alias))), (201 if created else 200)
+
+
+@app.route('/api/midi/devices/<alias>', methods=['DELETE'])
+def api_midi_device_delete(alias):
+    _, error = _router_call(router.delete_device, alias)
+    if error:
+        return _respond(error)
+    return jsonify(ok())
+
+
+@app.route('/api/midi/devices/<alias>/select', methods=['POST'])
+def api_midi_device_select(alias):
+    data = _json_body()
+    if data is None:
+        return _respond(err('BAD_REQUEST', 'Corpo JSON oggetto atteso', {'field': ''}))
+    device, error = _router_call(router.select_port, alias, data.get('direction'), data.get('port'))
+    if error:
+        return _respond(error)
+    return jsonify(ok(device=device))
+
+
+_parts_update_pending = set()
+_parts_update_lock = threading.Lock()
+
+
+def _flush_parts_update():
+    with _parts_update_lock:
+        ids = sorted(_parts_update_pending)
+        _parts_update_pending.clear()
+    if not ids:
+        return
+    parts = router.get_parts()
+    socketio.emit('parts_update', {'parts': [parts[t] for t in ids],
+                                   'runtime': [router.part_runtime(t, parts[t]) for t in ids],
+                                   'conflicts': midi_router.compute_conflicts(parts)})
+
+
+def notify_parts_changed(part_ids):
+    """`parts_update` coalescato (max 10 Hz, ultimo valore vince)."""
+    with _parts_update_lock:
+        _parts_update_pending.update(part_ids)
+    router.call_later(0.1, _flush_parts_update, key='parts_update')
+
+
+@app.route('/api/parts')
+def api_parts_list():
+    parts = router.get_parts()
+    return jsonify(ok(parts=parts,
+                      runtime=[router.part_runtime(t, parts[t]) for t in range(16)],
+                      conflicts=midi_router.compute_conflicts(parts),
+                      midi_mode=midi_mode_info()))
+
+
+@app.route('/api/parts/<int:t>')
+def api_part_get(t):
+    if _part_id_or_none(t) is None:
+        return _respond(err('NOT_FOUND', f'Parte {t} inesistente', {'kind': 'part'}))
+    part = router.get_part(t)
+    return jsonify(ok(part=part, runtime=router.part_runtime(t, part)))
+
+
+@app.route('/api/parts/<int:t>', methods=['PATCH'])
+def api_part_patch(t):
+    if _part_id_or_none(t) is None:
+        return _respond(err('NOT_FOUND', f'Parte {t} inesistente', {'kind': 'part'}))
+    data = _json_body()
+    if data is None:
+        return _respond(err('BAD_REQUEST', 'Corpo JSON oggetto atteso', {'field': ''}))
+    current = router.get_part(t)
+    try:
+        new = midi_router.merge_part_patch(current, data)
+    except midi_router.RouterError as e:
+        details = dict(e.details or {})
+        if 'path' in details:
+            details['path'] = f"parts[{t}].{details['path']}" if details['path'] else f'parts[{t}]'
+        return _respond(err(e.code, e.message, details))
+    if new['input'] != current['input'] and daw.is_recording:
+        return _respond(err('RECORDING_ACTIVE', "Non si cambia l'ingresso durante la registrazione",
+                            {'part_id': t}))
+    try:
+        applied = router.apply_part(new, send='diff')
+    except midi_router.RouterError as e:
+        return _respond(from_router_error(e))
+    try:
+        save_part(new)
+    except OSError as e:
+        return _respond(err('DISK_FULL' if getattr(e, 'errno', None) == 28 else 'DISK_ERROR',
+                            f'Parte applicata ma non salvata: {e}'))
+    parts = router.get_parts()
+    runtime = router.part_runtime(t, parts[t])
+    notify_parts_changed([t])
+    return jsonify(ok(part=parts[t], runtime=runtime,
+                      conflicts=midi_router.compute_conflicts(parts), applied=applied))
+
+
 startup_init_once()
 
 # ==========================================
 # SOCKETIO EVENT HANDLERS (Hybrid approach)
 # ==========================================
 
-ALLOWED_EFFECT_TYPES = {'reverb.level', 'chorus.level', 'gain'}
 
 @socketio.on('cc_update')
 def handle_cc_update(data):
-    """Handle CC messages via WebSocket for lower latency"""
+    """CC dagli slider (fast path): `chan` = ID parte, inviato alla sua destinazione."""
     try:
         chan = int(data['chan'])
         cc_num = int(data['cc'])
         val = int(data['val'])
         if not (0 <= chan <= 15 and 0 <= cc_num <= 127 and 0 <= val <= 127):
-            return {'status': 'error', 'message': 'Values out of range'}
-        send_fluid(f"cc {chan} {cc_num} {val}")
-        cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
-                    73: 'attack', 74: 'cutoff', 75: 'decay'}
-        if cc_num in cc_names:
-            save_cc_debounced(chan, cc_names[cc_num], val)
-        return {'status': 'ok'}
+            return ack_err('BAD_REQUEST', 'Values out of range')
+        delivery = _send_part_cc(chan, cc_num, val)
+        if delivery == 'failed':
+            code = 'SYNTH_UNAVAILABLE' if router.get_part(chan)['destination']['kind'] == 'internal' \
+                else 'PORT_UNAVAILABLE'
+            return ack_err(code, 'Invio CC fallito', {'part_id': chan}, delivery=delivery)
+        return ack_ok(delivery=delivery)
     except Exception as e:
         print(f"[WS] cc_update error: {e}")
-        return {'status': 'error', 'message': str(e)}
+        return ack_err('BAD_REQUEST', str(e))
 
 
 @socketio.on('effect_update')
@@ -1661,69 +1931,67 @@ def handle_effect_update(data):
     try:
         etype = str(data['type'])
         if etype not in ALLOWED_EFFECT_TYPES:
-            return {'status': 'error', 'message': f'Invalid effect type: {etype}'}
+            return ack_err('BAD_REQUEST', f'Invalid effect type: {etype}', {'field': 'type'})
         val = float(data['val'])
         send_fluid(f"set synth.{etype} {val}")
         save_state(etype, val)
-        return {'status': 'ok'}
+        return ack_ok()
     except Exception as e:
         print(f"[WS] effect_update error: {e}")
-        return {'status': 'error', 'message': str(e)}
+        return ack_err('BAD_REQUEST', str(e))
 
 
 @socketio.on('transport_cmd')
 def handle_transport_cmd(data):
-    """Handle transport commands via WebSocket for lower latency"""
+    """Comandi di trasporto via WebSocket: ack con gli stessi `code` delle route HTTP."""
     try:
         cmd = data.get('cmd')
         if cmd == 'play_start':
-            success = daw.start_playback()
-        elif cmd == 'play_stop':
-            success = daw.stop_playback()
-        elif cmd == 'record_start':
-            channel = data.get('channel')
-            armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
-            if not armed_channels:
-                return {'status': 'error', 'message': 'Nessun canale armato. Attiva ARM su almeno un canale.'}
-            success = daw.start_recording(channel) if channel is not None else daw.start_recording()
-        elif cmd == 'record_stop':
-            success = daw.stop_recording()
-        elif cmd == 'stop_all':
+            return _transport_start_play()[0]
+        if cmd == 'record_start':
+            return _transport_start_record(data.get('channel'))[0]
+        if cmd == 'play_stop':
+            return ack_ok() if daw.stop_playback() else ack_err('BAD_REQUEST', 'Nessuna riproduzione in corso')
+        if cmd == 'record_stop':
+            return ack_ok() if daw.stop_recording() else ack_err('BAD_REQUEST', 'Nessuna registrazione in corso')
+        if cmd == 'stop_all':
             daw.stop_all()
-            success = True
-        elif cmd == 'panic':
+            return ack_ok()
+        if cmd == 'panic':
             daw.panic()
-            success = True
-        elif cmd == 'rewind':
+            return ack_ok(ports=daw.last_panic)
+        if cmd == 'rewind':
             daw.rewind()
-            success = True
-        elif cmd == 'seek':
+            return ack_ok()
+        if cmd == 'seek':
             position = data.get('position')
             if position is None or not isinstance(position, (int, float)):
-                return {'status': 'error', 'message': 'Missing or invalid position'}
-            success = daw.set_position(position)
-            if not success:
-                return {'status': 'error', 'message': 'Cannot seek while playing or recording'}
-        elif cmd == 'seek_beat':
+                return ack_err('BAD_REQUEST', 'Missing or invalid position', {'field': 'position'})
+            if not daw.set_position(position):
+                return ack_err('TRANSPORT_ACTIVE', 'Cannot seek while playing or recording',
+                               {'is_playing': daw.is_playing, 'is_recording': daw.is_recording})
+            return ack_ok()
+        if cmd == 'seek_beat':
             beat = data.get('beat')
             if beat is None or not isinstance(beat, (int, float)):
-                return {'status': 'error', 'message': 'Missing or invalid beat'}
-            success = daw.seek_to_beat(float(beat))
-            if not success:
-                return {'status': 'error', 'message': 'Cannot seek during recording'}
-        elif cmd == 'undo':
-            success = daw.undo()
-        elif cmd == 'redo':
-            success = daw.redo()
-        elif cmd == 'toggle_loop':
+                return ack_err('BAD_REQUEST', 'Missing or invalid beat', {'field': 'beat'})
+            if not daw.seek_to_beat(float(beat)):
+                return ack_err('RECORDING_ACTIVE', 'Cannot seek during recording')
+            return ack_ok()
+        if cmd in ('undo', 'redo'):
+            if (daw.undo() if cmd == 'undo' else daw.redo()):
+                return ack_ok()
+            if daw.is_playing or daw.is_recording:
+                return ack_err('TRANSPORT_ACTIVE', f'{cmd} non disponibile durante Play/Record',
+                               {'is_playing': daw.is_playing, 'is_recording': daw.is_recording})
+            return ack_err('NOTHING_TO_UNDO', f'Niente da {"annullare" if cmd == "undo" else "ripristinare"}')
+        if cmd == 'toggle_loop':
             daw.toggle_loop()
-            success = True
-        else:
-            return {'status': 'error', 'message': f'Unknown command: {cmd}'}
-        return {'status': 'ok'} if success else {'status': 'error', 'message': f'{cmd} failed'}
+            return ack_ok()
+        return ack_err('BAD_REQUEST', f'Unknown command: {cmd}', {'field': 'cmd'})
     except Exception as e:
         print(f"[WS] transport_cmd error: {e}")
-        return {'status': 'error', 'message': str(e)}
+        return ack_err('INTERNAL', str(e))
 
 
 @app.route('/api/daw/midi/save', methods=['POST'])

@@ -122,6 +122,7 @@ dmypy.json
 
 # State and runtime files
 last_state.json
+midi_devices.json
 *.log
 
 # OS files

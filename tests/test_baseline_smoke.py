@@ -49,15 +49,18 @@ class DawInstantiationTests(unittest.TestCase):
         self.assertIs(daw.midi_output, fo)
 
     def test_input_selection_keyword_priority_and_midi_through(self):
-        # Priorita' FANTOM > SINCO > USB, 'Midi Through' escluso.
+        # ui-routing: la priorita' FANTOM > SINCO > USB serve solo al bootstrap
+        # di keyboard-main (contracts 3.4); 'Midi Through' escluso.
         daw, fi, _ = make_daw(input_names=['Midi Through Port-0', 'USB Generic', 'FANTOM-08 MIDI'])
         self.assertEqual(fi.name, 'FANTOM-08 MIDI')
+        self.assertIs(daw.midi_input, fi)
 
-    def test_input_selection_ambiguous_takes_first_no_error(self):
-        # Comportamento ATTUALE: con due porte equivalenti vince la prima,
-        # senza errore. Il piano (sez. 12) vuole errore/stato non disponibile.
+    def test_input_bootstrap_ambiguous_opens_nothing(self):
+        # Due candidati per la parola chiave vincente: keyboard-main senza
+        # input (stato 'unbound'), nessuna porta aperta (contracts 3.4).
         daw, fi, _ = make_daw(input_names=['USB Keyboard A', 'USB Keyboard B'])
-        self.assertEqual(fi.name, 'USB Keyboard A')
+        self.assertIsNone(daw.midi_input)
+        self.assertEqual(daw.router.port_status('keyboard-main', 'input'), 'unbound')
 
     def test_input_not_found_leaves_none(self):
         daw, fi, fo = make_daw(input_names=['Midi Through Port-0'])
@@ -68,8 +71,9 @@ class DawInstantiationTests(unittest.TestCase):
         daw, _, fo = make_daw(output_names=['Other Synth', 'Midi Through:Midi Through Port-0 14:0',
                                             'FLUID Synth (123):Synth input port 128:0'])
         self.assertTrue(fo.name.startswith('FLUID'))
+        # ui-routing: '128:0' da solo non identifica piu' FluidSynth.
         daw, _, fo = make_daw(output_names=['Something 128:0'])
-        self.assertEqual(fo.name, 'Something 128:0')
+        self.assertIsNone(daw.midi_output)
 
 
 class RecordingTests(unittest.TestCase):
@@ -113,7 +117,8 @@ class RecordingTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: len(daw.tracks[0]) == 1))
         time.sleep(0.02)
         daw.stop_recording()
-        self.assertEqual(len(daw.tracks[0]), 1)
+        # Lo stop chiude la nota rimasta aperta con un note-off (sez. 3.7).
+        self.assertEqual([b for _, b in daw.tracks[0]], [[0x90, 62, 90], [0x80, 62, 0]])
         self.assertEqual(len(daw.tracks[5]), 0)
 
     def test_record_does_not_thru_to_output(self):
@@ -131,24 +136,12 @@ class RecordingTests(unittest.TestCase):
         self.assertFalse(daw.start_recording())
         self.assertFalse(daw.is_recording)
 
-    def test_record_without_input_port_sets_is_recording_but_records_nothing(self):
-        # Anomalia ATTUALE (da non correggere qui): senza porta di input
-        # start_recording ritorna True e is_recording=True, ma il thread esce
-        # subito. Il piano (sez. 12) vuole "nessuno stato recording fittizio".
-        daw, _, _ = make_daw(with_input=False)
-        daw.arm_track(0, True)
-        self.assertTrue(daw.start_recording(0))
-        self.assertTrue(daw.is_recording)
-        self.assertTrue(wait_until(lambda: not daw.record_thread.is_alive()))
-        self.assertTrue(daw.is_recording)           # resta "fittizio" fino a stop esplicito
-        daw.stop_recording()
-        self.assertEqual(len(daw.tracks[0]), 0)
-
-    @unittest.expectedFailure
     def test_DESIRED_record_without_input_port_is_refused(self):
         daw, _, _ = make_daw(with_input=False)
         daw.arm_track(0, True)
         self.assertFalse(daw.start_recording(0))
+        self.assertFalse(daw.is_recording)
+        self.assertEqual(daw.last_error['code'], 'PORT_UNAVAILABLE')
 
 
 class PlaybackAndEditTests(unittest.TestCase):
@@ -174,8 +167,11 @@ class PlaybackAndEditTests(unittest.TestCase):
         notes = fo.notes()
         self.assertEqual([(m.type, m.channel, m.note) for m in notes],
                          [('note_on', 3, 64), ('note_off', 3, 64)])
-        cc123 = [m for m in fo.sent if m.type == 'control_change' and m.control == 123]
-        self.assertGreaterEqual(len(cc123), 16)     # almeno un giro di All Notes Off
+        # Rilascio a fine playback solo sul canale toccato: CC64=0 + CC123.
+        ccs = [(m.channel, m.control, m.value) for m in fo.sent if m.type == 'control_change']
+        self.assertIn((3, 64, 0), ccs)
+        self.assertIn((3, 123, 0), ccs)
+        self.assertEqual({c for c, _, _ in ccs}, {3})
 
     def test_mute_excludes_track_from_playback(self):
         daw, _, fo = make_daw()
@@ -187,19 +183,20 @@ class PlaybackAndEditTests(unittest.TestCase):
         self.assertTrue(wait_until(lambda: not daw.is_playing, timeout=3))
         self.assertEqual({m.channel for m in fo.notes()}, {1})
 
-    def test_panic_sends_cc123_on_all_16_channels(self):
+    def test_panic_sends_cc64_cc123_cc120_on_all_16_channels(self):
         daw, _, fo = make_daw()
         daw.panic()
-        self.assertEqual([m.channel for m in fo.sent if m.control == 123], list(range(16)))
+        cc = [m for m in fo.sent if m.type == 'control_change']
+        for ctl in (64, 123, 120):
+            self.assertEqual([m.channel for m in cc if m.control == ctl], list(range(16)))
+        self.assertEqual(daw.last_panic, [{'port': fo.name, 'delivery': 'sent'}])
 
-    def test_playback_without_output_port_exits_leaving_is_playing_true(self):
-        # Come per il record: stato "fittizio" ATTUALE (documentato, non corretto).
+    def test_playback_without_output_port_is_refused(self):
         daw, _, _ = make_daw(with_output=False)
         daw.add_note(0, 60, 100, 0.0, 0.25)
-        self.assertTrue(daw.start_playback())
-        self.assertTrue(wait_until(lambda: not daw.playback_thread.is_alive()))
-        self.assertTrue(daw.is_playing)
-        daw.stop_playback()
+        self.assertFalse(daw.start_playback())
+        self.assertFalse(daw.is_playing)
+        self.assertEqual(daw.last_error['code'], 'PORT_UNAVAILABLE')
 
 
 class SmfRoundTripTests(unittest.TestCase):
