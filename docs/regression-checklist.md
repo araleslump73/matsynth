@@ -212,3 +212,13 @@ Namespace `/`; `async_mode='threading'`, `cors_allowed_origins="*"`. Il client u
 - Ogni riga della sezione 1 deve avere una posizione nuova verificata prima di `ui-acceptance`.
 - Test automatici di partenza: `tests/test_baseline_smoke.py` (copre soprattutto righe 15-17, 20-22, 51, 61 e i preset 4-9); il resto va verificato in browser o sul Pi.
 - Quando una route o un evento cambia contratto, aggiornare le sezioni 2-3 e `docs/contracts.md`.
+
+## 5. Registro verifiche per fase
+
+### `ui-shell` (2026-11-22)
+
+Vale per tutte le righe della sezione 1 che vivevano in `index.html`: il markup e' stato spostato **senza cambi di comportamento** in `templates/partials/studio_legacy.html` + `legacy_modals.html` e il JS inline in `static/js/legacy_daw.js`; la collocazione canonica futura non e' ancora implementata (fasi successive).
+
+- Test automatico (`node --test tests/js`, 47 test): nessun ID duplicato nella pagina composta (A9), ogni handler `onclick/onchange/oninput` esiste, un solo `io()`, `shell.showView/openPanel/closePanel` senza rete, `units.SNAP_OPTIONS` = contratto 1.3 (A12).
+- Browser headless (Chromium, server Flask locale con `helpers.import_app`, 1024x768): nessun errore JS; 21 cicli Suona/Studio/editor + apri/chiudi Libreria = 0 fetch e 0 emit, un socket connesso. Unico 404 atteso: `GET /api/parts` (route di `ui-routing`, il client ha il fallback su `/get_state`).
+- Da verificare in browser reale: viewport 360x800, 390x844, 768x1024, 1366x768; tutte le righe 1-61 cliccate a mano.

@@ -1,0 +1,82 @@
+{# Modali del DAW attuale (Event Viewer, MIDI File Manager). Fuori da #view-studio perche' sono overlay
+   fissi apribili anche dalla Libreria. A9: l'input file del modale ha ora ID proprio (midi-file-input-modal). #}
+<!-- MIDI Event Viewer Modal -->
+<div id="midi-event-viewer-modal" class="modal-overlay" style="display:none;" onclick="dawCloseEventViewer(event)">
+    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:850px; max-height:85vh; display:flex; flex-direction:column;">
+        <div class="modal-header" style="flex-shrink:0;">
+            <h5 class="modal-title"><i class="fas fa-list-ol"></i> MIDI Event Viewer</h5>
+            <div class="d-flex align-items-center gap-2" style="margin-left:auto; margin-right:12px;">
+                <label class="small text-muted mb-0">Channel:</label>
+                <select id="ev-channel-filter" class="daw-tselect" style="min-width:100px;" onchange="dawEventViewerFilter()">
+                    <option value="-1">All</option>
+                </select>
+                <span id="ev-event-count" class="daw-tbadge" style="font-size:0.72rem;">0 events</span>
+            </div>
+            <button class="btn-close-modal" onclick="dawCloseEventViewer()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body" style="padding:0; overflow:hidden; flex:1; display:flex; flex-direction:column;">
+            <div id="ev-table-wrap" style="overflow-y:auto; flex:1;">
+                <table class="table table-sm table-dark table-striped mb-0" style="font-size:0.78rem;">
+                    <thead style="position:sticky; top:0; z-index:1; background:#1e1e2e;">
+                        <tr>
+                            <th style="width:60px;">Beat</th>
+                            <th style="width:80px;">Type</th>
+                            <th style="width:50px;">Note</th>
+                            <th style="width:40px;">Vel</th>
+                            <th style="width:35px;">Ch</th>
+                            <th style="width:55px;">Dur</th>
+                            <th style="width:40px;">CC#</th>
+                            <th style="width:45px;">Val</th>
+                            <th style="width:80px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ev-table-body">
+                        <tr><td colspan="9" class="text-center text-muted py-3">No events</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- MIDI File Manager Modal -->
+<div id="midi-manager-modal" class="modal-overlay" style="display:none;" onclick="dawCloseMidiManager(event)">
+    <div class="modal-content" onclick="event.stopPropagation()" style="max-width:550px;">
+        <div class="modal-header">
+            <h5 class="modal-title"><i class="fas fa-music"></i> MIDI File Manager</h5>
+            <button class="btn-close-modal" onclick="dawCloseMidiManager()">
+                <i class="fas fa-times"></i>
+            </button>
+        </div>
+        <div class="modal-body" style="padding:20px;">
+            <!-- Save Section -->
+            <div style="margin-bottom:18px;">
+                <label class="small text-muted mb-1 d-block">Salva sessione corrente</label>
+                <div class="d-flex gap-2">
+                    <input type="text" id="midi-save-name" class="form-control form-control-sm flex-fill"
+                           placeholder="Nome sessione..."
+                           style="background:rgba(42,42,60,0.8); color:white; border:1px solid rgba(0,255,136,0.3);">
+                    <button class="btn btn-outline-success btn-sm" onclick="dawSaveMidi()">
+                        <i class="fas fa-save"></i> SAVE
+                    </button>
+                </div>
+            </div>
+            <!-- Upload Section -->
+            <div style="margin-bottom:18px;">
+                <label class="small text-muted mb-1 d-block">Importa file MIDI dal PC</label>
+                <button class="btn btn-outline-warning btn-sm w-100" onclick="document.getElementById('midi-file-input-modal').click()">
+                    <i class="fas fa-upload"></i> IMPORTA DA PC
+                </button>
+                <input type="file" id="midi-file-input-modal" accept=".mid,.midi" style="display:none;" onchange="dawUploadMidi(this)">
+            </div>
+            <!-- File List -->
+            <div>
+                <label class="small text-muted mb-1 d-block">File MIDI salvati</label>
+                <div id="midi-file-list" style="max-height:250px; overflow-y:auto; border:1px solid rgba(0,212,255,0.15); border-radius:8px; padding:6px;">
+                    <div class="text-center text-muted small py-3"><i class="fas fa-spinner fa-spin"></i></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

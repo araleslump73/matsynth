@@ -1,0 +1,15 @@
+{# Segnaposto per ui-offline-settings (possiede questo file, settings.js e settings.css).
+   Il foglio qui sotto e' la struttura del pannello; le route /settings e /presets restano invariate. #}
+<div class="ms-panel-sheet">
+    <header class="ms-panel-head">
+        <h2 id="ms-panel-settings-title">Impostazioni</h2>
+        <button type="button" class="ms-icon-btn" data-close-panel aria-label="Chiudi le Impostazioni"><i class="fas fa-times" aria-hidden="true"></i></button>
+    </header>
+    <div class="ms-panel-body">
+        <p class="ms-note">Hardware audio/MIDI, rete e riavvio si gestiscono oggi dalla pagina Impostazioni.</p>
+        <div class="ms-actions">
+            <a class="ms-btn ms-btn-secondary" href="/settings"><i class="fas fa-cog" aria-hidden="true"></i> Apri Impostazioni</a>
+            <a class="ms-btn ms-btn-secondary" href="/presets"><i class="fas fa-star" aria-hidden="true"></i> Apri Preset</a>
+        </div>
+    </div>
+</div>
