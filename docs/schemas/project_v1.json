@@ -1,0 +1,726 @@
+{
+  "format": "matsynth.project",
+  "schema_version": 1,
+  "id": "p-8c2e4f1a9b30",
+  "name": "Prova serata",
+  "created": "2026-11-21 21:00:00",
+  "modified": "2026-11-21 22:15:03",
+  "transport": {
+    "bpm": 96,
+    "beats_per_measure": 4,
+    "loop": {
+      "enabled": false,
+      "start_beat": 0.0,
+      "end_beat": 8.0
+    }
+  },
+  "sound": {
+    "soundfont": {
+      "file": "GeneralUser-GS.sf2"
+    },
+    "globals": {
+      "gain": 1.0,
+      "reverb_level": 0.4,
+      "chorus_level": 0.2
+    },
+    "parts": [
+      {
+        "part_id": 0,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 0
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 0
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": "Yamaha Grand Piano"
+        },
+        "cc": {
+          "7": 110,
+          "10": 40,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 1,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 1
+        },
+        "destination": {
+          "kind": "external",
+          "device_alias": "fantom",
+          "channel": 4
+        },
+        "monitor": false,
+        "sound": {
+          "bank_msb": 87,
+          "bank_lsb": 64,
+          "program": 7,
+          "name": "Pad FANTOM (utente)"
+        },
+        "cc": {
+          "7": 100,
+          "74": 80
+        }
+      },
+      {
+        "part_id": 2,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 2
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 2
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 3,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 3
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 3
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 4,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 4
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 4
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 5,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 5
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 5
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 6,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 6
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 6
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 7,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 7
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 7
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 8,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 8
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 8
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 9,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 9
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 9
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 128,
+          "program": 0,
+          "name": "Standard"
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 10,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 10
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 10
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 11,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 11
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 11
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 12,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 12
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 12
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 13,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 13
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 13
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 14,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 14
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 14
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      },
+      {
+        "part_id": 15,
+        "input": {
+          "device_alias": "keyboard-main",
+          "channel": 15
+        },
+        "destination": {
+          "kind": "internal",
+          "device_alias": null,
+          "channel": 15
+        },
+        "monitor": true,
+        "sound": {
+          "bank": 0,
+          "program": 0,
+          "name": null
+        },
+        "cc": {
+          "7": 100,
+          "10": 64,
+          "71": 64,
+          "72": 64,
+          "73": 64,
+          "74": 64,
+          "75": 64
+        }
+      }
+    ]
+  },
+  "source_scene": {
+    "id": "s-3fa91c0b7d22",
+    "name": "Concerto - apertura"
+  },
+  "devices": {
+    "keyboard-main": {
+      "label": "Tastiera principale",
+      "input": {
+        "client": "FANTOM-08",
+        "port": "FANTOM-08 MIDI 1"
+      },
+      "output": null
+    },
+    "fantom": {
+      "label": "FANTOM-08",
+      "input": {
+        "client": "FANTOM-08",
+        "port": "FANTOM-08 MIDI 1"
+      },
+      "output": {
+        "client": "FANTOM-08",
+        "port": "FANTOM-08 MIDI 1"
+      }
+    }
+  },
+  "tracks": [
+    {
+      "id": 0,
+      "name": "Piano",
+      "color": 0,
+      "mute": false,
+      "solo": false,
+      "events": [
+        [
+          0.0,
+          [
+            144,
+            60,
+            100
+          ]
+        ],
+        [
+          0.9871,
+          [
+            128,
+            60,
+            0
+          ]
+        ],
+        [
+          1.0,
+          [
+            144,
+            64,
+            90
+          ]
+        ],
+        [
+          1.0,
+          [
+            176,
+            64,
+            127
+          ]
+        ],
+        [
+          2.5,
+          [
+            128,
+            64,
+            0
+          ]
+        ],
+        [
+          3.0,
+          [
+            176,
+            64,
+            0
+          ]
+        ]
+      ],
+      "clips": [
+        {
+          "id": 1,
+          "start_beat": 0.0,
+          "end_beat": 3.125,
+          "name": "Take 1",
+          "created_at": 1763758800.0
+        }
+      ]
+    },
+    {
+      "id": 1,
+      "name": "Pad esterno",
+      "color": 1,
+      "mute": false,
+      "solo": false,
+      "events": [
+        [
+          0.0,
+          [
+            145,
+            67,
+            80
+          ]
+        ],
+        [
+          0.5,
+          [
+            129,
+            67,
+            0
+          ]
+        ],
+        [
+          2.0,
+          [
+            225,
+            0,
+            80
+          ]
+        ],
+        [
+          4.0,
+          [
+            193,
+            12
+          ]
+        ]
+      ],
+      "clips": [
+        {
+          "id": 2,
+          "start_beat": 0.0,
+          "end_beat": 4.5,
+          "name": "Take 2",
+          "created_at": 1763758860.0
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Track 3",
+      "color": 2,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 3,
+      "name": "Track 4",
+      "color": 3,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 4,
+      "name": "Track 5",
+      "color": 4,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 5,
+      "name": "Track 6",
+      "color": 5,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 6,
+      "name": "Track 7",
+      "color": 6,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 7,
+      "name": "Track 8",
+      "color": 7,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 8,
+      "name": "Track 9",
+      "color": 8,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 9,
+      "name": "Track 10",
+      "color": 9,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 10,
+      "name": "Track 11",
+      "color": 10,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 11,
+      "name": "Track 12",
+      "color": 11,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 12,
+      "name": "Track 13",
+      "color": 12,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 13,
+      "name": "Track 14",
+      "color": 13,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 14,
+      "name": "Track 15",
+      "color": 14,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    },
+    {
+      "id": 15,
+      "name": "Track 16",
+      "color": 15,
+      "mute": false,
+      "solo": false,
+      "events": [],
+      "clips": []
+    }
+  ],
+  "next_clip_id": 3
+}

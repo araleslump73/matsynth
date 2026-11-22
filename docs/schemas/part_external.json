@@ -1,0 +1,23 @@
+{
+  "part_id": 1,
+  "input": {
+    "device_alias": "keyboard-main",
+    "channel": 1
+  },
+  "destination": {
+    "kind": "external",
+    "device_alias": "fantom",
+    "channel": 4
+  },
+  "monitor": false,
+  "sound": {
+    "bank_msb": 87,
+    "bank_lsb": 64,
+    "program": 7,
+    "name": "Pad FANTOM (utente)"
+  },
+  "cc": {
+    "7": 100,
+    "74": 80
+  }
+}

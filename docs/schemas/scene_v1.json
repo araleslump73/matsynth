@@ -1,0 +1,446 @@
+{
+  "format": "matsynth.scene",
+  "schema_version": 1,
+  "id": "s-3fa91c0b7d22",
+  "name": "Concerto - apertura",
+  "created": "2026-11-20 18:30:00",
+  "modified": "2026-11-21 09:12:44",
+  "soundfont": {
+    "file": "GeneralUser-GS.sf2"
+  },
+  "globals": {
+    "gain": 1.0,
+    "reverb_level": 0.4,
+    "chorus_level": 0.2
+  },
+  "parts": [
+    {
+      "part_id": 0,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 0
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 0
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": "Yamaha Grand Piano"
+      },
+      "cc": {
+        "7": 110,
+        "10": 40,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 1,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 1
+      },
+      "destination": {
+        "kind": "external",
+        "device_alias": "fantom",
+        "channel": 4
+      },
+      "monitor": false,
+      "sound": {
+        "bank_msb": 87,
+        "bank_lsb": 64,
+        "program": 7,
+        "name": "Pad FANTOM (utente)"
+      },
+      "cc": {
+        "7": 100,
+        "74": 80
+      }
+    },
+    {
+      "part_id": 2,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 2
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 2
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 3,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 3
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 3
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 4,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 4
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 4
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 5,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 5
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 5
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 6,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 6
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 6
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 7,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 7
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 7
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 8,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 8
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 8
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 9,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 9
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 9
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 128,
+        "program": 0,
+        "name": "Standard"
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 10,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 10
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 10
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 11,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 11
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 11
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 12,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 12
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 12
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 13,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 13
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 13
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 14,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 14
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 14
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    },
+    {
+      "part_id": 15,
+      "input": {
+        "device_alias": "keyboard-main",
+        "channel": 15
+      },
+      "destination": {
+        "kind": "internal",
+        "device_alias": null,
+        "channel": 15
+      },
+      "monitor": true,
+      "sound": {
+        "bank": 0,
+        "program": 0,
+        "name": null
+      },
+      "cc": {
+        "7": 100,
+        "10": 64,
+        "71": 64,
+        "72": 64,
+        "73": 64,
+        "74": 64,
+        "75": 64
+      }
+    }
+  ]
+}

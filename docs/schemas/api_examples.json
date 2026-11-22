@@ -1,0 +1,247 @@
+{
+  "_comment": "Esempi normativi di richieste/risposte (docs/contracts.md sez. 2 e 8). Verificati da tests/test_contract_examples.py: busta, codice HTTP coerente con la tabella 2.3, warning della lista 2.4, oggetti part/scene validi.",
+  "examples": [
+    {
+      "name": "PATCH parte 1 verso esterno (FANTOM canale 5 = 4 zero-based), monitor spento di default",
+      "method": "PATCH", "path": "/api/parts/1", "http": 200,
+      "request": {"destination": {"kind": "external", "device_alias": "fantom", "channel": 4},
+                  "sound": {"bank_msb": 87, "bank_lsb": 64, "program": 7, "name": "Pad FANTOM (utente)"}},
+      "response": {
+        "ok": true, "status": "ok",
+        "part": {"part_id": 1,
+                 "input": {"device_alias": "keyboard-main", "channel": 1},
+                 "destination": {"kind": "external", "device_alias": "fantom", "channel": 4},
+                 "monitor": false,
+                 "sound": {"bank_msb": 87, "bank_lsb": 64, "program": 7, "name": "Pad FANTOM (utente)"},
+                 "cc": {}},
+        "runtime": {"part_id": 1, "input_status": "available", "destination_status": "available",
+                    "monitor_effective": false, "warnings": []},
+        "conflicts": [],
+        "applied": {"delivery": "sent", "sent": ["bank_msb", "bank_lsb", "program"], "destination_status": "available"},
+        "warnings": []
+      }
+    },
+    {
+      "name": "PATCH parte in modalita' legacy: monitor gestito da ALSA",
+      "method": "PATCH", "path": "/api/parts/2", "http": 200,
+      "request": {"monitor": true},
+      "response": {
+        "ok": true, "status": "ok",
+        "part": {"part_id": 2,
+                 "input": {"device_alias": "keyboard-main", "channel": 2},
+                 "destination": {"kind": "internal", "device_alias": null, "channel": 2},
+                 "monitor": true,
+                 "sound": {"bank": 0, "program": 48, "name": "Strings"},
+                 "cc": {"7": 100, "10": 64, "71": 64, "72": 64, "73": 64, "74": 64, "75": 64}},
+        "runtime": {"part_id": 2, "input_status": "available", "destination_status": "available",
+                    "monitor_effective": false, "warnings": [{"code": "MONITOR_HANDLED_BY_ALSA", "message": "Modalita' legacy: il monitor e' il collegamento ALSA diretto", "details": {}}]},
+        "conflicts": [],
+        "applied": {"delivery": "skipped", "sent": [], "destination_status": "available"},
+        "warnings": [{"code": "MONITOR_HANDLED_BY_ALSA", "message": "Modalita' legacy: il monitor e' il collegamento ALSA diretto", "details": {}}]
+      }
+    },
+    {
+      "name": "Modifica coppia con revisione obsoleta",
+      "method": "PUT", "path": "/api/daw/track/0/edit_note_pair", "http": 409,
+      "request": {"on_idx": 4, "off_idx": 5, "on_beat": 2.0, "expected_revision": 1763758800041},
+      "response": {"ok": false, "status": "error", "message": "Revisione obsoleta: aggiorna e riprova",
+                   "error": {"code": "REVISION_CONFLICT", "message": "Revisione obsoleta: aggiorna e riprova",
+                             "details": {"expected_revision": 1763758800041, "current_revision": 1763758800043}}}
+    },
+    {
+      "name": "Modifica batch di note (gesto unico, un undo)",
+      "method": "PUT", "path": "/api/daw/track/0/notes/batch", "http": 200,
+      "request": {"expected_revision": 1763758800043,
+                  "edits": [{"on_idx": 0, "off_idx": 1, "on_beat": 0.25, "off_beat": 1.25},
+                            {"on_idx": 2, "off_idx": 4, "velocity": 70}]},
+      "response": {"ok": true, "status": "ok", "modified": 2, "revision": 1763758800044}
+    },
+    {
+      "name": "Batch senza expected_revision",
+      "method": "PUT", "path": "/api/daw/track/0/notes/batch", "http": 400,
+      "request": {"edits": [{"on_idx": 0, "off_idx": 1, "velocity": 70}]},
+      "response": {"ok": false, "status": "error", "message": "expected_revision obbligatoria",
+                   "error": {"code": "BAD_REQUEST", "message": "expected_revision obbligatoria",
+                             "details": {"field": "expected_revision"}}}
+    },
+    {
+      "name": "Taglia intervallo (coppie complete, un undo)",
+      "method": "POST", "path": "/api/daw/cut", "http": 200,
+      "request": {"channel": 0, "start_beat": 0.5, "end_beat": 2.0, "expected_revision": 1763758800044},
+      "response": {"ok": true, "status": "ok", "copied": 4, "removed": 4,
+                   "clipboard": {"kind": "range", "length_beats": 1.5, "source_track": 0},
+                   "revision": 1763758800045}
+    },
+    {
+      "name": "Incolla clip su zona occupata",
+      "method": "POST", "path": "/api/daw/paste", "http": 409,
+      "request": {"channel": 1, "beat": 2.0, "expected_revision": 1763758800045},
+      "response": {"ok": false, "status": "error", "message": "Il clip incollato si sovrapporrebbe a un clip esistente",
+                   "error": {"code": "CLIP_OVERLAP", "message": "Il clip incollato si sovrapporrebbe a un clip esistente",
+                             "details": {"clip_ids": [2]}}}
+    },
+    {
+      "name": "Split clip (route esistente, busta estesa: new_clip_id conservato)",
+      "method": "POST", "path": "/api/daw/clip/split", "http": 200,
+      "request": {"channel": 0, "clip_id": 1, "split_beat": 1.5, "expected_revision": 1763758800045},
+      "response": {"ok": true, "status": "ok", "new_clip_id": 3, "revision": 1763758800046}
+    },
+    {
+      "name": "Undo con pila vuota (HTTP 400 legacy conservato)",
+      "method": "POST", "path": "/api/daw/undo", "http": 400,
+      "request": {},
+      "response": {"ok": false, "status": "error", "message": "Niente da annullare",
+                   "error": {"code": "NOTHING_TO_UNDO", "message": "Niente da annullare", "details": {}}}
+    },
+    {
+      "name": "Record senza input utilizzabile su una traccia armata",
+      "method": "POST", "path": "/api/daw/record/start", "http": 503,
+      "request": {},
+      "response": {"ok": false, "status": "error", "message": "Traccia 2: ingresso 'keyboard-main' assente",
+                   "error": {"code": "PORT_UNAVAILABLE", "message": "Traccia 2: ingresso 'keyboard-main' assente",
+                             "details": {"tracks": [{"track": 1, "alias": "keyboard-main", "status": "missing"}]}}}
+    },
+    {
+      "name": "Richiamo scena con Play attivo: bloccato, nessuno stop automatico",
+      "method": "POST", "path": "/api/scenes/s-3fa91c0b7d22/recall", "http": 409,
+      "request": {},
+      "response": {"ok": false, "status": "error", "message": "Ferma Play/Record prima di richiamare una scena",
+                   "error": {"code": "TRANSPORT_ACTIVE", "message": "Ferma Play/Record prima di richiamare una scena",
+                             "details": {"is_playing": true, "is_recording": false}}}
+    },
+    {
+      "name": "Richiamo scena con modifiche non salvate",
+      "method": "POST", "path": "/api/scenes/s-3fa91c0b7d22/recall", "http": 409,
+      "request": {},
+      "response": {"ok": false, "status": "error", "message": "La scena corrente ha modifiche non salvate",
+                   "error": {"code": "UNSAVED_CHANGES", "message": "La scena corrente ha modifiche non salvate",
+                             "details": {"scope": "scene"}}}
+    },
+    {
+      "name": "Richiamo scena con SoundFont diverso",
+      "method": "POST", "path": "/api/scenes/s-3fa91c0b7d22/recall", "http": 409,
+      "request": {"discard_changes": true},
+      "response": {"ok": false, "status": "error", "message": "La scena richiede GeneralUser-GS.sf2",
+                   "error": {"code": "SOUNDFONT_CHANGE_REQUIRED", "message": "La scena richiede GeneralUser-GS.sf2",
+                             "details": {"required": "GeneralUser-GS.sf2", "loaded": "FluidR3_GM.sf2"}}}
+    },
+    {
+      "name": "Richiamo scena con porta esterna assente, senza consenso",
+      "method": "POST", "path": "/api/scenes/s-3fa91c0b7d22/recall", "http": 409,
+      "request": {"discard_changes": true},
+      "response": {"ok": false, "status": "error", "message": "Strumento 'fantom' non collegato",
+                   "error": {"code": "PORTS_UNAVAILABLE", "message": "Strumento 'fantom' non collegato",
+                             "details": {"parts": [{"part_id": 1, "alias": "fantom", "direction": "output", "status": "missing"}]}}}
+    },
+    {
+      "name": "Richiamo scena parziale con consenso",
+      "method": "POST", "path": "/api/scenes/s-3fa91c0b7d22/recall", "http": 200,
+      "request": {"discard_changes": true, "allow_partial": true},
+      "response": {"ok": true, "status": "ok", "message": "Scena richiamata parzialmente",
+                   "recall": {"scene_id": "s-3fa91c0b7d22",
+                              "parts": [{"part_id": 0, "result": "sent", "delivery": "sent"},
+                                        {"part_id": 1, "result": "skipped_unavailable", "delivery": "failed"}]},
+                   "warnings": [{"code": "PART_UNAVAILABLE", "message": "Parte 2 non disponibile: 'fantom' assente",
+                                 "details": {"part_id": 1, "alias": "fantom"}}]}
+    },
+    {
+      "name": "Richiamo interrotto a meta' (console FluidSynth caduta)",
+      "method": "POST", "path": "/api/scenes/s-3fa91c0b7d22/recall", "http": 503,
+      "request": {"discard_changes": true},
+      "response": {"ok": false, "status": "error", "message": "Richiamo incompleto: FluidSynth non risponde",
+                   "error": {"code": "PARTIAL_APPLY", "message": "Richiamo incompleto: FluidSynth non risponde",
+                             "details": {"committed": true, "applied_parts": [0, 1, 2], "failed_parts": [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]}}}
+    },
+    {
+      "name": "Avvio caricamento SoundFont",
+      "method": "POST", "path": "/api/soundfont/load", "http": 202,
+      "request": {"file": "GeneralUser-GS.sf2"},
+      "response": {"ok": true, "status": "ok",
+                   "job": {"state": "loading", "file": "GeneralUser-GS.sf2", "sf_id": null, "error": null,
+                           "started_at": "2026-11-22 10:00:00", "finished_at": null}}
+    },
+    {
+      "name": "Stato SoundFont verificato",
+      "method": "GET", "path": "/api/soundfont/status", "http": 200,
+      "request": null,
+      "response": {"ok": true, "status": "ok",
+                   "soundfont": {"state": "loaded", "file": "GeneralUser-GS.sf2", "sf_id": 2, "error": null,
+                                 "started_at": "2026-11-22 10:00:00", "finished_at": "2026-11-22 10:00:07"}}
+    },
+    {
+      "name": "Apri progetto di versione futura",
+      "method": "POST", "path": "/api/projects/open", "http": 422,
+      "request": {"id": "p-8c2e4f1a9b30", "discard_changes": true},
+      "response": {"ok": false, "status": "error", "message": "Progetto creato da una versione piu' recente di MatSynth",
+                   "error": {"code": "UNSUPPORTED_VERSION", "message": "Progetto creato da una versione piu' recente di MatSynth",
+                             "details": {"found": 2, "supported": 1, "path": "schema_version", "reason": "versione 2 > 1"}}}
+    },
+    {
+      "name": "Apri progetto con evento invalido: sessione corrente intatta",
+      "method": "POST", "path": "/api/projects/open", "http": 422,
+      "request": {"id": "p-8c2e4f1a9b30", "discard_changes": true},
+      "response": {"ok": false, "status": "error", "message": "Progetto non valido: tracks[0].events[1][1]",
+                   "error": {"code": "VALIDATION_FAILED", "message": "Progetto non valido: tracks[0].events[1][1]",
+                             "details": {"path": "tracks[0].events[1][1]", "reason": "solo messaggi di canale (status 0x80..0xEF)"}}}
+    },
+    {
+      "name": "Nuovo progetto con modifiche non salvate",
+      "method": "POST", "path": "/api/projects/new", "http": 409,
+      "request": {},
+      "response": {"ok": false, "status": "error", "message": "Il progetto ha modifiche non salvate",
+                   "error": {"code": "UNSAVED_CHANGES", "message": "Il progetto ha modifiche non salvate",
+                             "details": {"scope": "project"}}}
+    },
+    {
+      "name": "Stato progetto corrente",
+      "method": "GET", "path": "/api/projects/current", "http": 200,
+      "request": null,
+      "response": {"ok": true, "status": "ok",
+                   "project_state": {"id": "p-8c2e4f1a9b30", "name": "Prova serata", "dirty": true,
+                                     "file_stat": [1763759703000000000, 13643]},
+                   "revision": 1763758800046}
+    },
+    {
+      "name": "Salva come con nome esistente",
+      "method": "POST", "path": "/api/projects/save_as", "http": 409,
+      "request": {"name": "Prova serata"},
+      "response": {"ok": false, "status": "error", "message": "Esiste gia' un progetto con questo nome",
+                   "error": {"code": "NAME_EXISTS", "message": "Esiste gia' un progetto con questo nome",
+                             "details": {"existing_id": "p-8c2e4f1a9b30"}}}
+    },
+    {
+      "name": "Salvataggio con disco pieno: file precedente intatto",
+      "method": "POST", "path": "/api/projects/save", "http": 500,
+      "request": {},
+      "response": {"ok": false, "status": "error", "message": "Spazio su disco esaurito: progetto non salvato",
+                   "error": {"code": "DISK_FULL", "message": "Spazio su disco esaurito: progetto non salvato", "details": {}}}
+    },
+    {
+      "name": "Stato di sistema e modalita'",
+      "method": "GET", "path": "/api/system/status", "http": 200,
+      "request": null,
+      "response": {"ok": true, "status": "ok",
+                   "midi_mode": {"effective": "legacy", "configured": "managed", "restart_required": true},
+                   "synth": {"console": "available", "midi_port": "available", "click": "available"},
+                   "soundfont": {"state": "loaded", "file": "GeneralUser-GS.sf2", "sf_id": 1, "error": null,
+                                 "started_at": "2026-11-22 09:58:00", "finished_at": "2026-11-22 09:58:06"},
+                   "revision": 1763758800046}
+    },
+    {
+      "name": "Import SMF con tempo map senza conversione",
+      "method": "POST", "path": "/api/daw/midi/upload", "http": 422,
+      "request": {"_form": {"file": "song.mid", "merge": "false", "discard_changes": "false"}},
+      "response": {"ok": false, "status": "error", "message": "Il file contiene cambi di tempo non supportati",
+                   "error": {"code": "IMPORT_NEEDS_CONVERSION", "message": "Il file contiene cambi di tempo non supportati",
+                             "details": {"issues": [{"type": "tempo_map", "count": 3}]}}}
+    },
+    {
+      "name": "Ack socket transport_cmd (stessa busta)",
+      "channel": "socket", "event": "transport_cmd", "http_equivalent": 409,
+      "request": {"cmd": "record_start"},
+      "response": {"ok": false, "status": "error", "message": "Ferma la riproduzione prima di registrare",
+                   "error": {"code": "TRANSPORT_ACTIVE", "message": "Ferma la riproduzione prima di registrare",
+                             "details": {"is_playing": true, "is_recording": false}}}
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "part_id": 0,
+  "input": {
+    "device_alias": "keyboard-main",
+    "channel": 0
+  },
+  "destination": {
+    "kind": "internal",
+    "device_alias": null,
+    "channel": 0
+  },
+  "monitor": true,
+  "sound": {
+    "bank": 0,
+    "program": 0,
+    "name": "Yamaha Grand Piano"
+  },
+  "cc": {
+    "7": 110,
+    "10": 40,
+    "71": 64,
+    "72": 64,
+    "73": 64,
+    "74": 64,
+    "75": 64
+  }
+}

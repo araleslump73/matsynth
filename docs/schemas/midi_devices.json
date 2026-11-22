@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "devices": [
+    {
+      "alias": "keyboard-main",
+      "label": "Tastiera principale",
+      "input": {
+        "client": "FANTOM-08",
+        "port": "FANTOM-08 MIDI 1"
+      },
+      "output": null,
+      "controls": null
+    },
+    {
+      "alias": "fantom",
+      "label": "FANTOM-08",
+      "input": {
+        "client": "FANTOM-08",
+        "port": "FANTOM-08 MIDI 1"
+      },
+      "output": {
+        "client": "FANTOM-08",
+        "port": "FANTOM-08 MIDI 1"
+      },
+      "controls": [
+        "7",
+        "10",
+        "74",
+        "71"
+      ]
+    }
+  ]
+}
