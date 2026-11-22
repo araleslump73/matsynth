@@ -73,12 +73,10 @@
                    "revision": 1763758800045}
     },
     {
-      "name": "Incolla clip su zona occupata",
-      "method": "POST", "path": "/api/daw/paste", "http": 409,
+      "name": "Incolla clip su zona occupata (D3: clip sovrapposti consentiti, nuovo take separato)",
+      "method": "POST", "path": "/api/daw/paste", "http": 200,
       "request": {"channel": 1, "beat": 2.0, "expected_revision": 1763758800045},
-      "response": {"ok": false, "status": "error", "message": "Il clip incollato si sovrapporrebbe a un clip esistente",
-                   "error": {"code": "CLIP_OVERLAP", "message": "Il clip incollato si sovrapporrebbe a un clip esistente",
-                             "details": {"clip_ids": [2]}}}
+      "response": {"ok": true, "status": "ok", "pasted": 6, "new_clip_id": 5, "revision": 1763758800046}
     },
     {
       "name": "Split clip (route esistente, busta estesa: new_clip_id conservato)",

@@ -141,7 +141,7 @@ Regole di compatibilita':
 | `SOUNDFONT_MISSING` | 409 | Il SoundFont richiesto non esiste in `SF2_DIR`. `details.required`. |
 | `SOUNDFONT_LOADING` | 409 | Un caricamento SoundFont e' in corso. |
 | `PORTS_UNAVAILABLE` | 409 | Preflight: parti con porta `missing`/`ambiguous`/`unbound`/`offline` e richiesta senza `allow_partial: true`. `details.parts: [{part_id, alias, direction, status}]`. |
-| `CLIP_OVERLAP` | 409 | L'operazione creerebbe due clip sovrapposti sulla stessa traccia, o agisce su un clip gia' sovrapposto (sez. 6.4). `details.clip_ids`. |
+| `CLIP_OVERLAP` | 409 | Riservato: con l'ownership per ID (D3, sez. 6.4) le operazioni su clip non lo producono piu'. |
 | `CLIP_RESIZE_WOULD_EXCLUDE` | 409 | Ridimensionamento che lascerebbe fuori eventi posseduti. `details.min_end_beat`. |
 | `DEST_NOT_EMPTY` | 409 | Duplicazione su traccia con eventi senza `confirm_overwrite: true`. |
 | `FILE_CHANGED` | 409 | Salva: il file su disco e' cambiato dall'apertura/ultimo salvataggio. Riprovare con `overwrite: true`. |
@@ -164,7 +164,7 @@ Regole di compatibilita':
 
 ### 2.4 Codici di warning (`warnings[].code`)
 
-`SOUNDFONT_UNSPECIFIED` (scena senza SoundFont: applicata sul SoundFont caricato), `PART_UNAVAILABLE` (parte saltata con consenso `allow_partial`), `SHARED_DESTINATION`, `SHARED_INPUT`, `DOUBLE_MONITOR` (sez. 3.6), `MONITOR_HANDLED_BY_ALSA` (modalita' legacy, sez. 10), `UNPAIRED_NOTE_ON` (note-on senza note-off nel documento), `CLIP_OVERLAP_PRESENT` (progetto aperto con clip sovrapposti), `BANK_NOT_REPRESENTABLE` (export SMF, sez. 7.3), `IMPORT_DROPPED_EVENTS` (SysEx/realtime scartati all'import, con conteggi), `IMPORT_CONVERTED` (import con `convert: true`), `PLAYBACK_TRACKS_UNAVAILABLE` (Play avviato ma alcune tracce hanno destinazione non disponibile), `LEGACY_FIELD_DEFAULTED` (scena legacy con campi assenti riempiti dai default, sez. 4.3).
+`SOUNDFONT_UNSPECIFIED` (scena senza SoundFont: applicata sul SoundFont caricato), `PART_UNAVAILABLE` (parte saltata con consenso `allow_partial`), `SHARED_DESTINATION`, `SHARED_INPUT`, `DOUBLE_MONITOR` (sez. 3.6), `MONITOR_HANDLED_BY_ALSA` (modalita' legacy, sez. 10), `UNPAIRED_NOTE_ON` (note-on senza note-off nel documento), `CLIP_OVERLAP_PRESENT` (progetto aperto con clip sovrapposti ed eventi senza `clip_id`: assegnati con la migrazione di 6.4), `BANK_NOT_REPRESENTABLE` (export SMF, sez. 7.3), `IMPORT_DROPPED_EVENTS` (SysEx/realtime scartati all'import, con conteggi), `IMPORT_CONVERTED` (import con `convert: true`), `PLAYBACK_TRACKS_UNAVAILABLE` (Play avviato ma alcune tracce hanno destinazione non disponibile), `LEGACY_FIELD_DEFAULTED` (scena legacy con campi assenti riempiti dai default, sez. 4.3).
 
 ### 2.5 Socket.IO: ack
 
@@ -479,7 +479,7 @@ Esempio: `docs/schemas/project_v1.json`.
 
 ### 5.2 Eventi
 
-- Ogni evento e' `[beat, bytes]`: `beat` numero finito `0 <= beat <= 100000`; `bytes` lista di interi = esattamente `mido.Message.bytes()` (che restituisce una **lista** di int: verificato), cioe' la stessa rappresentazione di `daw_recorder.py:self.tracks[ch]` (tuple `(beat, list)` che `json` serializza gia' come array: nessuna conversione).
+- Ogni evento e' `[beat, bytes]` oppure `[beat, bytes, clip_id]` (D3): `clip_id` int >= 1 = ID di un clip della stessa traccia che possiede l'evento; assente o `0` = evento libero. Il writer scrive il terzo elemento solo se != 0. Un `clip_id` che non corrisponde a un clip della traccia -> `422 VALIDATION_FAILED`. `beat` numero finito `0 <= beat <= 100000`; `bytes` lista di interi = esattamente `mido.Message.bytes()` (che restituisce una **lista** di int: verificato), cioe' la stessa rappresentazione di `daw_recorder.py:self.tracks[ch]` (tuple `(beat, list)` che `json` serializza gia' come array: nessuna conversione).
 - Solo messaggi di canale: status `0x80..0xEF`; lunghezza 3 per note-off/note-on/poly pressure/CC/pitch bend (`0x8n, 0x9n, 0xAn, 0xBn, 0xEn`), 2 per program change/channel pressure (`0xCn, 0xDn`); byte dati `0..127`. E' cio' che il DAW puo' contenere (`_record_loop` e `import_midi` scartano i messaggi senza `channel`).
 - Ordine: `beat` non decrescente nell'array (il DAW li tiene ordinati; `sort` stabile). Il writer DEVE scrivere nell'ordine in memoria.
 - Il **nibble di canale** nei byte NON e' significativo (il playback rimappa sulla traccia/destinazione: `_playback_loop`, `export_midi`). Il loader DEVE accettarlo qualunque sia; il writer DOVREBBE normalizzarlo all'ID traccia.
@@ -493,7 +493,7 @@ Il loader DEVE costruire in memoria la nuova sessione completa (tracce, clip, no
 La validazione NON DEVE essere piu' severa di cio' che il DAW puo' contenere, altrimenti un progetto salvato potrebbe non riaprirsi. Quindi sono **accettati con warning** (mai rifiutati, mai modificati):
 
 - note-on senza note-off (`UNPAIRED_NOTE_ON`, con conteggio per traccia);
-- clip sovrapposti sulla stessa traccia (`CLIP_OVERLAP_PRESENT`, sez. 6.4);
+- clip sovrapposti sulla stessa traccia (consentiti, D3; `CLIP_OVERLAP_PRESENT` solo se mancano i `clip_id`, sez. 6.4);
 - eventi fuori da ogni clip;
 - nibble di canale diverso dall'ID traccia.
 
@@ -572,7 +572,7 @@ Stato in `daw_recorder.py:MultiTrackDAW`. Owner: `ui-persistence` per revisione,
 
 ### 6.1 Eventi e tracce
 
-- `self.tracks[t]` = lista di tuple `(beat, bytes_list)` ordinata per beat, una per traccia logica `t`. Nessun ID per evento (vedi 6.6: bastano revisione + indice, soluzione piu' leggera per il Pi).
+- `self.tracks[t]` = lista di tuple `(beat, bytes_list)` ordinata per beat, una per traccia logica `t`, con accanto `self.event_clips[t]`: `array('H')` parallelo (stessa lunghezza, stesso ordine) con l'ID del clip proprietario di ogni evento (`0` = libero; D3). Ogni mutazione che inserisce, rimuove o riordina eventi DEVE aggiornare le due strutture insieme (riordino: un solo `sort` su indici, poi permutazione di entrambe). Nessun ID univoco per evento (vedi 6.6: bastano revisione + indice).
 - L'indice di un evento e' la sua posizione in `self.tracks[t]`. E' significativo SOLO insieme a `(t, revision)`.
 - Ogni mutazione che cambia l'ordine DEVE riordinare con `sort(key=beat)` stabile prima di rilasciare il lock.
 
@@ -584,7 +584,9 @@ Il piano roll e l'editor usano le coppie `(on_idx, off_idx)` restituite da `get_
 
 ### 6.3 Appartenenza di un evento a un intervallo/clip (ownership)
 
-Regola unica (gia' implementata da `_get_note_pair_indices_in_range`, oggi usata da `clear_range`, `move_clip`, `delete_clip`, `transpose_notes` con intervallo):
+**Clip (D3): per ID.** Un evento appartiene al clip il cui ID e' in `event_clips[t]`; il note-off ha sempre lo stesso ID del suo note-on (coppia FIFO, 6.2). Le operazioni su clip (sposta, elimina, trasponi, copia/duplica clip) agiscono SOLO sugli eventi con quell'ID, anche se altri clip si sovrappongono. Gli eventi aggiunti nel piano roll dentro un clip ricevono l'ID del clip piu' recente (ID maggiore) che contiene il loro beat; fuori da ogni clip restano liberi.
+
+**Intervalli** (copia/taglia/cancella intervallo, trasponi/quantizza intervallo, e scelta degli eventi da assegnare a un clip nuovo): regola unica gia' implementata da `_get_note_pair_indices_in_range` (oggi usata da `clear_range`, `move_clip`, `delete_clip`, `transpose_notes` con intervallo):
 
 - una **nota** appartiene a `[start, end)` se il suo **note-on** cade in `[start, end)`; con lei viaggia **sempre** il suo note-off, anche se fuori intervallo;
 - un note-off la cui nota inizia prima di `start` NON appartiene all'intervallo (resta dov'e');
@@ -598,28 +600,28 @@ Sustain: copia/taglio di un intervallo il cui ultimo CC64 posseduto e' `>= 64` D
 
 Un clip e' un **marcatore di intervallo** sulla traccia (`{id, start_beat, end_beat, name, created_at}`), non un contenitore separato: gli eventi stanno in `self.tracks[t]` e appartengono al clip secondo 6.3. Possono esistere eventi fuori da ogni clip ("liberi": note aggiunte nel piano roll, dati vecchi); suonano normalmente e la timeline DEVE mostrarli (la mappa densita' li include gia').
 
-**Invariante nuova: i clip di una traccia NON si sovrappongono** (intervalli semiaperti: `[0,4)` e `[4,8)` sono adiacenti, non sovrapposti). Motivo: con ownership per intervallo, spostare un clip sovrapposto trascinerebbe le note dell'altro (oggi succede con overdub, `move_clip`, `paste_at`: anomalia A18). Vedi D3.
+**Clip sovrapposti consentiti (D3).** Con l'ownership per ID (6.3) spostare un clip non trascina mai gli eventi di un altro clip (corregge A18). L'intervallo `[start_beat, end_beat)` del clip e' la sua cornice visiva: DEVE contenere tutti i note-on e gli eventi non-nota posseduti (i note-off possono uscirne). `CLIP_OVERLAP` non viene piu' prodotto dalle operazioni su clip; `CLIP_OVERLAP_PRESENT` resta solo come warning informativo all'apertura di progetti v1 senza `clip_id` (vedi "Migrazione" sotto).
 
-- Clip sovrapposti gia' presenti (progetto aperto, sessione in corso) sono accettati con warning `CLIP_OVERLAP_PRESENT`; su un clip coinvolto in una sovrapposizione: elimina, trasponi, rinomina e **unisci** sono consentiti; sposta, ridimensiona, dividi, duplica -> `409 CLIP_OVERLAP` ("unisci prima i clip sovrapposti").
+- Migrazione: eventi senza `clip_id` (progetti salvati prima di D3, sessione importata, dati vecchi) ricevono l'ID con la regola 6.3 "intervalli", applicata clip per clip in ordine di ID crescente: un evento gia' assegnato non cambia clip. Gli eventi che restano fuori sono liberi.
 - `next_clip_id` non decresce mai: undo/redo ripristinano clip con i loro ID ma il contatore resta `max(corrente, snapshot)` (oggi `_restore_snapshot` lo riporta indietro: un ID potrebbe essere riassegnato dopo un undo, anomalia A19).
 
 Operazioni. Ogni operazione che modifica dati: un solo livello di undo, un solo `daw_state_update`, `revision` incrementata, progetto `dirty`. Durante Play o Record: `409 TRANSPORT_ACTIVE` per tutte le operazioni su clip, taglia, incolla, duplica e cancella intervallo (le route clip lo fanno gia'; `paste_at` oggi ritorna 0 in silenzio). Copia e' sempre consentita. Svuota traccia/tutto restano come oggi (nessun controllo di trasporto). Aggiungi/modifica/elimina nota ed eventi restano vietati solo durante Record (come oggi), consentiti in Play: il playback in corso usa la copia di eventi presa a inizio giro.
 
 | Operazione | Semantica normativa | Oggi |
 | --- | --- | --- |
-| Fine Record | Per ogni traccia registrata con eventi nuovi: chiusura note/sustain (3.7), poi un clip `[primo beat, ultimo beat + 0.125)`, nome `Take <id>`. Il margine `+0.125` (lunghezza minima di clip gia' usata dal codice) e' obbligatorio: con intervalli semiaperti un evento esattamente su `end_beat` (i note-off e il CC64=0 di chiusura cadono proprio sull'ultimo beat) NON sarebbe posseduto e uno spostamento lo abbandonerebbe. Se il clip interseca clip esistenti della traccia: **fusione** in un solo clip con l'unione degli intervalli (gia' comprensivi del margine), ID = il minore tra quelli coinvolti, nome di quel clip (l'overdub aggiunge note al take esistente). | `_finalize_recording_clips` usa `[primo, ultimo)` (l'ultimo evento resta fuori) e crea sempre un clip nuovo, anche sovrapposto. |
-| Sposta (`clip/move`) | Delta su note possedute (con i loro note-off) ed eventi non-nota posseduti; il clip mantiene ID e durata. Destinazione che interseca un altro clip -> `409 CLIP_OVERLAP`. Eventi liberi nella zona di arrivo diventano posseduti (documentato all'utente). | invariato salvo controllo sovrapposizione. |
-| Ridimensiona (`clip/resize`, solo fine) | Estensione: consentita se non interseca altri clip. Riduzione: consentita solo se `new_end_beat > ` beat dell'ultimo evento posseduto (note-on o non-nota); altrimenti `409 CLIP_RESIZE_WOULD_EXCLUDE` con `details.min_end_beat` (il client puo' limitare il trascinamento). Minimo `start_beat + 0.125` come oggi. Non cambia mai il playback. Vedi D4. | Riduzione "non distruttiva": le note fuori restano e suonano, senza clip. |
-| Dividi (`clip/split`) | Come oggi: clip originale `[start, split)` stesso ID, nuovo clip `[split, end)` nuovo ID, nome `"<nome> (split)"`; margine 0.01 beat dai bordi; eventi non spostati, playback invariato. Una nota a cavallo resta del clip sinistro (note-on). | invariato. |
-| Unisci (`clip/merge`) | Stessa traccia, >= 2 ID; risultato `[min start, max end)` con **nuovo ID**, nome `"Merged <id>"` (come oggi). Un clip NON selezionato che interseca il risultato -> `409 CLIP_OVERLAP`. | nessun controllo. |
-| Elimina (`clip/delete`) | Rimuove clip ed eventi posseduti (coppie complete). | invariato. |
+| Fine Record | Per ogni traccia registrata con eventi nuovi: chiusura note/sustain (3.7), poi un clip nuovo `[primo beat, ultimo beat + 0.125)`, nome `Take <id>`, a cui appartengono **solo gli eventi di questo take** (gli eventi gia' presenti nell'intervallo mantengono il loro clip). Il margine `+0.125` (lunghezza minima di clip gia' usata dal codice) resta: la cornice deve contenere anche il CC64=0 di chiusura. Un overdub che interseca take esistenti resta un clip separato (D3). | `_finalize_recording_clips` usa `[primo, ultimo)` (l'ultimo evento resta fuori) e crea sempre un clip nuovo, anche sovrapposto. |
+| Sposta (`clip/move`) | Delta su tutti gli eventi con l'ID del clip; il clip mantiene ID e durata. Gli eventi liberi o di altri clip nella zona di arrivo NON cambiano proprietario. Destinazione con `start_beat < 0` -> `400 BAD_REQUEST`. | ownership per intervallo: trascina anche eventi di clip sovrapposti (A18). |
+| Ridimensiona (`clip/resize`, solo fine) | Estensione: sempre consentita; non assegna eventi (i proprietari non cambiano). Riduzione: consentita solo se `new_end_beat > ` beat dell'ultimo evento posseduto (note-on o non-nota); altrimenti `409 CLIP_RESIZE_WOULD_EXCLUDE` con `details.min_end_beat` (il client puo' limitare il trascinamento). Minimo `start_beat + 0.125` come oggi. Non cambia mai il playback. Vedi D4. | Riduzione "non distruttiva": le note fuori restano e suonano, senza clip. |
+| Dividi (`clip/split`) | Clip originale `[start, split)` stesso ID, nuovo clip `[split, end)` nuovo ID, nome `"<nome> (split)"`; margine 0.01 beat dai bordi. Gli eventi del clip con note-on (o beat, se non-nota) `>= split` passano al nuovo ID; una nota a cavallo resta del clip sinistro. Eventi non spostati, playback invariato. | ownership per intervallo. |
+| Unisci (`clip/merge`) | Stessa traccia, >= 2 ID; risultato `[min start, max end)` con **nuovo ID**, nome `"Merged <id>"` (come oggi); gli eventi dei clip uniti passano al nuovo ID, quelli di altri clip no. | ownership per intervallo. |
+| Elimina (`clip/delete`) | Rimuove il clip e gli eventi con il suo ID (coppie complete). | ownership per intervallo. |
 | Trasponi clip | Note possedute (on e off). | invariato. |
-| Crea clip da intervallo (nuova, `clip/create`) | `[start, end)` su traccia senza clip intersecanti; possiede gli eventi gia' presenti secondo 6.3. Permette di rendere selezionabili eventi liberi. | non esiste. |
+| Crea clip da intervallo (nuova, `clip/create`) | `[start, end)` qualsiasi; prende gli eventi **liberi** dell'intervallo (regola 6.3 "intervalli"), non quelli di altri clip. Permette di rendere selezionabili eventi liberi. | non esiste. |
 | Copia (`copy`) | Intervallo `{channel, start_beat, end_beat}` oppure clip `{channel, clip_id}`. Insieme copiato = ownership 6.3 (coppie complete + sustain 6.3). Non modifica il progetto (ne' `revision` ne' `dirty`). Appunti in memoria del server, uno solo, condiviso tra client, mai salvati. Copia di un clip memorizza anche la durata e il nome del clip. | `copy_selection` copia ogni evento con beat nell'intervallo: note-off di note iniziate prima, note-off mancanti per note che finiscono dopo (anomalia A15). |
-| Taglia (nuova, `cut`) | Copia + rimozione dello **stesso** insieme di indici, atomica, un solo undo. I clip interamente contenuti nell'intervallo sono rimossi; quelli parzialmente sovrapposti restano (solo gli eventi posseduti nell'intervallo spariscono). | non esiste (copia + `clear_range` = insiemi diversi). |
+| Taglia (nuova, `cut`) | Copia + rimozione dello **stesso** insieme di indici, atomica, un solo undo. I clip interamente contenuti nell'intervallo sono rimossi; quelli parzialmente sovrapposti restano (solo i loro eventi nell'intervallo spariscono). | non esiste (copia + `clear_range` = insiemi diversi). |
 | Cancella intervallo (`clear_range`) | Stesso insieme e stessa regola clip di Taglia, senza appunti. | elimina anche i clip **parzialmente** sovrapposti (i loro eventi restanti diventano liberi: anomalia A16). |
-| Incolla (`paste`) | Dichiara traccia e beat. Appunti da intervallo: eventi inseriti (beat relativi + destinazione), nessun clip creato, nessun controllo sovrapposizione. Appunti da clip: crea un clip nuovo (nuovo ID, stessa durata e nome + " (copia)") in `[beat, beat+durata)`; se interseca un clip -> `409 CLIP_OVERLAP`. Appunti vuoti -> `409 EMPTY_CLIPBOARD`. Nibble canale normalizzato alla traccia di destinazione. | inserisce solo eventi, mai clip. |
-| Duplica clip (nuova, `clip/duplicate`) | Copia del clip incollata a `end_beat` dello stesso clip sulla stessa traccia; un solo undo; sovrapposizione -> `409 CLIP_OVERLAP`. | non esiste. |
+| Incolla (`paste`) | Dichiara traccia e beat. Appunti da intervallo: eventi inseriti (beat relativi + destinazione), nessun clip creato, nessun controllo sovrapposizione. Appunti da clip: crea un clip nuovo (nuovo ID, stessa durata e nome + " (copia)") in `[beat, beat+durata)`, proprietario degli eventi incollati; sovrapposizioni consentite (D3). Appunti vuoti -> `409 EMPTY_CLIPBOARD`. Nibble canale normalizzato alla traccia di destinazione. | inserisce solo eventi, mai clip. |
+| Duplica clip (nuova, `clip/duplicate`) | Copia del clip (eventi con il suo ID) incollata a `end_beat` dello stesso clip sulla stessa traccia, nuovo ID; un solo undo. | non esiste. |
 | Duplica traccia (`track/<t>/duplicate`) | Campo `include_config` (`false` = variante legacy "solo MIDI"; `true` = anche la parte: routing/suono/CC copiati sulla parte destinazione). Copia eventi **e clip** (nuovi ID). Destinazione con eventi -> `409 DEST_NOT_EMPTY` salvo `confirm_overwrite: true`. Compatibilita': se il client NON invia ne' `include_config` ne' `confirm_overwrite` (index.html attuale), comportamento legacy (sostituzione senza clip) finche' `ui-studio` non rimuove la vecchia UI. | copia solo eventi, sostituisce in silenzio, nessun clip (anomalia A17). |
 | Svuota traccia / tutto | Come oggi (`clear_track`, `clear_all_tracks`), con conferma esplicita lato UI. | invariato. |
 | Quantizza, Trasponi intervallo | Come oggi, accoppiamento FIFO (6.2). | quantize accoppia diversamente. |
@@ -685,7 +687,7 @@ Il dizionario `channel_programs` scambiato con `export_midi`/`import_midi` ha la
 - Restano compatibili: `test_workload_import_export_import_is_stable` (PC iniziali consumati: `total_events == 16000`), `test_sustain_and_pitchbend_survive_round_trip`.
 - Note, CC, sustain, pitch bend, poly/channel pressure preservati. Messaggi senza canale (SysEx, realtime, meta non gestiti) scartati e **contati**: warning `IMPORT_DROPPED_EVENTS` con `details.counts`.
 - Tempo/metro: un solo `set_tempo` (o tutti uguali) e al massimo un `time_signature` con numeratore 3 o 4 e denominatore 4 -> import normale. Altrimenti (tempo map, metri diversi o multipli) -> `422 IMPORT_NEEDS_CONVERSION` con `details.issues` (es. `[{"type":"tempo_map","count":3},{"type":"meter","value":"6/8"}]`) salvo `convert: true` (query/form), che usa il **primo** tempo e 4/4 se il metro non e' supportato, e risponde con warning `IMPORT_CONVERTED`. Oggi vince l'ultimo `set_tempo` in silenzio.
-- **Clip**: l'import crea un clip per traccia importata, `[primo beat, ultimo beat + 0.125)` (stesso margine della fine Record, 6.4: ogni evento importato e' posseduto; anomalia A7). Con Aggiungi, se interseca clip esistenti, fusione come per la fine Record (6.4).
+- **Clip**: l'import crea un clip per traccia importata, `[primo beat, ultimo beat + 0.125)` (stesso margine della fine Record, 6.4: ogni evento importato e' posseduto; anomalia A7). Gli eventi importati appartengono al clip creato; con Aggiungi resta un clip separato anche se interseca clip esistenti (D3).
 - Un solo livello di undo per l'intero import (A13); `revision` +1; progetto `dirty` (5.6, staccato dal file se sostitutivo).
 - Nomi traccia: con Sostituisci, se una traccia SMF contiene un solo canale e un meta `track_name`, quel nome DOVREBBE diventare il nome della traccia (troncato a 32).
 - Applicazione del suono iniziale (route `daw_midi_load`/`daw_midi_upload`), per traccia `t` secondo la sua parte:
@@ -754,7 +756,7 @@ Legenda colonna "Cambia": **=** invariata; **+** estensione additiva (campi nuov
 | POST `/api/daw/transpose` | + | persistence | `expected_revision`; + `revision`. |
 | POST `/api/daw/preview_note` | S | routing | Inviata alla **destinazione della traccia** via router (oggi `noteon`/`noteoff` su console FluidSynth); stessa durata 40-400 ms. |
 | POST `/api/daw/copy` | S | studio | Pair-aware + sustain; `{channel, start_beat, end_beat}` oppure `{channel, clip_id}`; risposta `{copied, clipboard: {kind: "range"|"clip", length_beats, source_track}}`. Non cambia `revision`. |
-| POST `/api/daw/paste` | S | studio | `{channel, beat, expected_revision?}`; risposta `{pasted, new_clip_id|null, revision}`; `409 CLIP_OVERLAP`/`EMPTY_CLIPBOARD`. Con appunti vuoti oggi ritorna `{status: ok, pasted: 0}`: i client legacy ricevono ora 409 (accettabile: era un falso successo). |
+| POST `/api/daw/paste` | S | studio | `{channel, beat, expected_revision?}`; risposta `{pasted, new_clip_id|null, revision}`; `409 EMPTY_CLIPBOARD`. Con appunti vuoti oggi ritorna `{status: ok, pasted: 0}`: i client legacy ricevono ora 409 (accettabile: era un falso successo). |
 | POST `/api/daw/clip/move`, `/resize`, `/split`, `/merge`, `/delete`, `/transpose` | S | studio | Regole 6.4; `expected_revision?`; + `revision`; codici esistenti (400/404/409) invariati. |
 | GET `/api/daw/track/<t>/events` | + | persistence | + `revision`. |
 | PUT/DELETE `/api/daw/track/<t>/events/<index>` | + | persistence | `expected_revision?`; `RECORDING_ACTIVE` mappato sul 400 esistente per compatibilita'; + `revision`. |
@@ -852,8 +854,8 @@ Il fast path degli slider resta `cc_update` (Socket.IO, `chan` = ID parte). Per 
 | Metodo, path | Richiesta | Risposta |
 | --- | --- | --- |
 | POST `/api/daw/cut` | `{channel, start_beat, end_beat, expected_revision}` | `{copied, removed, clipboard, revision}` (6.4) |
-| POST `/api/daw/clip/create` | `{channel, start_beat, end_beat, expected_revision}` | `201 {clip, revision}`; `409 CLIP_OVERLAP` |
-| POST `/api/daw/clip/duplicate` | `{channel, clip_id, expected_revision}` | `201 {new_clip_id, revision}`; `409 CLIP_OVERLAP`; `404` |
+| POST `/api/daw/clip/create` | `{channel, start_beat, end_beat, expected_revision}` | `201 {clip, revision}` |
+| POST `/api/daw/clip/duplicate` | `{channel, clip_id, expected_revision}` | `201 {new_clip_id, revision}`; `404` |
 | PUT `/api/daw/track/<t>/notes/batch` | `{expected_revision, edits: [{on_idx, off_idx, on_beat?, off_beat?, note?, velocity?}]}` (`expected_revision` obbligatoria) | `{modified, revision}`; tutte le modifiche applicate in un solo passaggio sugli indici della revisione attesa, un sort, un undo (`daw_recorder.py:edit_notes_batch`, oggi senza route). Indice fuori intervallo o `on_idx` che non punta a un note-on -> `422 VALIDATION_FAILED` e nessuna modifica (oggi `edit_notes_batch` salta in silenzio le voci invalide). |
 | DELETE `/api/daw/track/<t>/notes/batch` | `{expected_revision, pairs: [{on_idx, off_idx}]}` | `{removed, revision}` (`delete_notes_batch`). |
 
@@ -997,7 +999,7 @@ ui-contracts
 - Corregge: A2 (nessun reload: richiamo dalla shell), A11 (preferiti, reset canale con conferma, uscita MIDI selezionabile nell'UI).
 
 **`ui-studio`** (backend editing + frontend)
-- Possiede: in `daw_recorder.py`: `copy_selection`, `paste_at`, nuove `cut`, `create_clip`, `duplicate_clip`, `clear_range`, `duplicate_track`, `move_clip`, `resize_clip`, `split_clip`, `merge_clips`, `delete_clip`, `transpose_clip`, `_finalize_recording_clips` (fusione overdub), `get_clips`, controllo sovrapposizioni, `next_clip_id` monotono, `edit_notes_batch`/`delete_notes_batch`; in `app.py`: route clip, copy/paste/cut, duplicate, clear/clear_range, nuove `notes/batch`; frontend `templates/partials/studio.html`, `static/js/studio.js`, `static/js/library_projects.js` (sezioni Progetti e MIDI), `static/css/studio.css`; rimuove da `legacy_daw.js` le parti timeline/tracce/trasporto sostituite.
+- Possiede: in `daw_recorder.py`: `copy_selection`, `paste_at`, nuove `cut`, `create_clip`, `duplicate_clip`, `clear_range`, `duplicate_track`, `move_clip`, `resize_clip`, `split_clip`, `merge_clips`, `delete_clip`, `transpose_clip`, `_finalize_recording_clips` (take separato), `get_clips`, `event_clips` (ID clip per evento, D3), `next_clip_id` monotono, `edit_notes_batch`/`delete_notes_batch`; in `app.py`: route clip, copy/paste/cut, duplicate, clear/clear_range, nuove `notes/batch`; frontend `templates/partials/studio.html`, `static/js/studio.js`, `static/js/library_projects.js` (sezioni Progetti e MIDI), `static/css/studio.css`; rimuove da `legacy_daw.js` le parti timeline/tracce/trasporto sostituite.
 - Consuma: 2, 5.6 (operazioni progetto), 6, 7 (import/export UI), 8, 9; monta `part_panel.js` senza modificarlo.
 - NON tocca: router, `project_store.py` (salvo chiamare la sua API), `part_panel.js`, `live.js`.
 - Corregge: A8, A11 (punti A/B diretti, Taglia), A15, A16, A17, A18, A19, A24, A27, A28.
@@ -1034,7 +1036,7 @@ ui-contracts
 | A15 | `copy_selection` non rispetta le coppie | ui-studio | nuovo test taglia/incolla a cavallo del confine |
 | A16 | `clear_range` elimina clip parzialmente sovrapposti | ui-studio | nuovo test |
 | A17 | `duplicate_track` senza clip, sostituzione silenziosa | ui-studio | nuovo test |
-| A18 | Clip sovrapposti (overdub, move, paste): ownership ambigua | ui-studio | nuovi test invariante + fusione overdub |
+| A18 | Clip sovrapposti (overdub, move, paste): ownership ambigua | ui-studio | nuovi test ownership per ID (D3): move/delete di un clip sovrapposto non tocca l'altro |
 | A19 | `next_clip_id` ripristinato dall'undo (ID riusabili) | ui-studio | nuovo test |
 | A20 | `set_bpm`/`set_time_signature` senza `daw_state_update` | ui-persistence | nuovo test con socket finto |
 | A21 | `_push_undo` prima della validazione (`edit_event`, `edit_note_pair`) | ui-persistence | nuovo test |
@@ -1121,7 +1123,7 @@ Comando di test unico (brief): `python -m unittest discover -s tests -p "test_*.
 - Da verificare in browser/hardware: smartphone 360x800 e 390x844, target >= 44 px, nessun gesto nascosto.
 
 **ui-studio**
-- [ ] Taglia/incolla note a cavallo di un confine: coppie complete, beat/durata corretti, un solo undo; split/move/merge senza note-off orfani; sovrapposizioni rifiutate con 409.
+- [ ] Taglia/incolla note a cavallo di un confine: coppie complete, beat/durata corretti, un solo undo; split/move/merge senza note-off orfani; clip sovrapposti: ogni operazione tocca solo gli eventi del proprio ID (D3).
 - [ ] Nessun comando riferito all'"ultimo clip"; comandi disabilitati senza selezione (verifica statica: nessun uso di `getLastClip`).
 - [ ] Duplica traccia: `include_config` e `confirm_overwrite` rispettati; variante legacy conservata.
 - [ ] Stop di Play/Pausa senza rewind implicito; Stop di Record riporta la posizione al punto di inizio Record se `return_to_start` (default on), non se off (A24/D6, decisione utente); seek in Record non offerto.
@@ -1150,13 +1152,13 @@ Ogni voce: scelta adottata in questo contratto (le fasi la implementano) e racco
 
 | # | Punto | Scelta adottata / raccomandazione |
 | --- | --- | --- |
-| D1 | I preset legacy non contengono mai `pan` (`api_capture_current_config` non lo produce). Il piano chiede "default espliciti". | Nella migrazione v1 `pan` assente = **64 (centro)**: il richiamo di un vecchio preset con la nuova UI centra il pan (prima restava invariato). Warning `LEGACY_FIELD_DEFAULTED` visibile. Alternativa: "invariato" (richiede campi opzionali nelle parti: piu' complesso). Raccomandazione: 64. |
-| D2 | Canali non elencati in un preset legacy (es. `legacy_decay.json` ha solo 0, 3, 9). | Migrazione v1 = parte di default completa (piano: default espliciti); la route legacy `/api/presets/apply` continua a non toccarli. Il richiamo dalla nuova UI resetta quei canali al default. Raccomandazione: confermare. |
-| D3 | Clip sovrapposti: il piano non li vieta, ma con ownership per intervallo producono spostamenti sbagliati. | Invariante "nessuna sovrapposizione" + fusione dell'overdub nel take esistente (un take sovrapposto non resta un clip separato, diversamente dal mockup "[Take 1][Take 2]" quando i take si sovrappongono). Alternativa: ID clip per evento (piu' RAM e modifiche ovunque). Raccomandazione: invariante. |
-| D4 | Ridimensionamento in riduzione: oggi "non distruttivo" ma le note fuori continuano a suonare senza clip. | Riduzione consentita solo fino all'ultimo evento posseduto (`409 CLIP_RESIZE_WOULD_EXCLUDE`). Per accorciare davvero: Taglia/Cancella intervallo, poi ridimensiona. Alternativa: riduzione distruttiva. Raccomandazione: come adottato (nessuna perdita dati, playback invariato). |
+| D1 | I preset legacy non contengono mai `pan` (`api_capture_current_config` non lo produce). Il piano chiede "default espliciti". | Nella migrazione v1 `pan` assente = **64 (centro)**: il richiamo di un vecchio preset con la nuova UI centra il pan (prima restava invariato). Warning `LEGACY_FIELD_DEFAULTED` visibile. Alternativa: "invariato" (richiede campi opzionali nelle parti: piu' complesso). **Confermato dall'utente.** |
+| D2 | Canali non elencati in un preset legacy (es. `legacy_decay.json` ha solo 0, 3, 9). | Migrazione v1 = parte di default completa (piano: default espliciti); la route legacy `/api/presets/apply` continua a non toccarli. Il richiamo dalla nuova UI resetta quei canali al default. **Confermato dall'utente.** |
+| D3 | Clip sovrapposti: il piano non li vieta, ma con ownership per intervallo producono spostamenti sbagliati. | **DECISIONE UTENTE (sostituisce la raccomandazione iniziale "invariante + fusione"): ID clip per evento.** Ogni evento porta l'ID del clip che lo possiede (0 = libero); i clip possono sovrapporsi e un overdub resta un take separato ("[Take 1][Take 2]" come nel mockup). Vedi 5.2, 6.1, 6.3, 6.4. Costo: +1 intero per evento (fixture 16 x 500 coppie: ~16000 eventi, ordine di 100-200 KiB in piu'); ogni mutazione degli eventi DEVE preservare l'ID. |
+| D4 | Ridimensionamento in riduzione: oggi "non distruttivo" ma le note fuori continuano a suonare senza clip. | Riduzione consentita solo fino all'ultimo evento posseduto (`409 CLIP_RESIZE_WOULD_EXCLUDE`). Per accorciare davvero: Taglia/Cancella intervallo, poi ridimensiona. Alternativa: riduzione distruttiva. **Confermato dall'utente.** |
 | D5 | Bank interni in SMF: export di oggi `(bank>>7, bank&127)` (bank 128 -> MSB 1; bank 5 -> LSB 5), import solo MSB. | Convenzione GS di FluidSynth (`synth.midi-bank-select=gs`, default): MSB = bank, LSB 0; percussioni 128 su canale 10 -> MSB 0; bank >= 128 su altri canali non rappresentabile (warning). **Da verificare con FluidSynth reale** prima di chiudere `ui-persistence`. |
 | D6 | `index.html` dopo lo stop del Record riporta la posizione all'inizio del take (`recordStartPosition`); il piano vieta il rewind implicito allo Stop. | **DECISIONE UTENTE (sostituisce la raccomandazione iniziale): il ritorno al punto di partenza dopo Record si MANTIENE**, per registrare altri strumenti sullo stesso intervallo. Solo dopo Stop di Record (mai dopo Play), opzione `return_to_start` attiva di default e disattivabile, implementata nel backend (vedi sez. 6, "Ritorno al punto di partenza dopo Record"). Deroga esplicita al "senza rewind implicito" del piano, limitata a questo caso. |
-| D7 | Record con alcune tracce armate senza input: il piano chiede di fallire se *nessun* input e' utilizzabile. | Si rifiuta se **una qualsiasi** traccia armata non ha input utilizzabile (nessun take parziale silenzioso). Raccomandazione: confermare. |
+| D7 | Record con alcune tracce armate senza input: il piano chiede di fallire se *nessun* input e' utilizzabile. | Si rifiuta se **una qualsiasi** traccia armata non ha input utilizzabile (nessun take parziale silenzioso). **Confermato dall'utente** (implementato in `ui-routing`). |
 | D8 | Record premuto durante Play. | `409 TRANSPORT_ACTIVE` (nessun punch-in nella prima versione); oggi avvia un secondo playback (A23). |
 | D9 | Richiamo scena con SoundFont diverso. | Due passi lato client (carica SF con stato osservabile, poi richiama), non una transazione backend unica: piu' semplice, nessun lock lungo, esito di ciascun passo visibile. Tra i due passi i canali suonano col nuovo SF e i vecchi programmi. |
 | D10 | Flag `legacy/managed`. | Chiave `midi_mode` in `last_state.json` (gia' letto da `startfluid.sh` con `jq`); cambio solo con riavvio esplicito; default `legacy`. |

@@ -60,4 +60,4 @@ Backend MIDI (owner: `app.py`, `daw_recorder.py`, `startfluid.sh`, nuovo `midi_r
 - `ui-persistence`: usare `save_part()` / `router.apply_part(part, send='all')` per il richiamo scena; sostituire il segnaposto `soundfont` in `/api/system/status`.
 - `ui-studio`: D6 (ritorno all'inizio dopo Record) non e' implementato qui.
 - `ui-offline-settings`: UI per `/api/midi/devices*` e `PUT /api/system/mode`.
-- Decisioni utente ancora aperte: D1, D2, D3, D4, D7 (D7 e' gia' applicata nella forma severa del contratto).
+- Decisioni utente (2026-11-23): D1, D2, D4, D7 confermate come da raccomandazione; **D3 cambiata**: ID clip per evento, clip sovrapposti consentiti (contratto aggiornato in 5.2, 6.1, 6.3, 6.4, 13). Impatta `ui-persistence` (formato eventi `[beat, bytes, clip_id]`) e `ui-studio` (operazioni clip).
