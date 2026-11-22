@@ -43,7 +43,7 @@ Verificato leggendo il codice (non eseguendo): `mido.Message.bytes()` ritorna un
 
 ## Punti aperti per le fasi successive
 
-- L'utente dovrebbe confermare almeno D1, D2, D3, D4, D6, D7 prima di `ui-persistence`/`ui-studio`.
+- L'utente ha DECISO D6 (ritorno dopo Record: si mantiene, come opzione); dovrebbe ancora confermare D1, D2, D3, D4, D7 prima di `ui-persistence`/`ui-studio`.
 - `ui-routing`: registrare nell'handoff i nomi porta reali appena disponibili; estendere `tests/helpers.py` (porte finte multiple, router neutralizzabile in `import_app`).
 - `ui-persistence`: decidere se portare `tests/contract_reference.py` in `project_store.py` (poi il test importa il modulo reale); aggiungere `PROJECTS_DIR`, `DEVICES_FILE`, `LIBRARY_FILE` a `helpers.redirect_app_paths`.
 - Il metodo di misura del jitter MIDI reale resta indefinito (punto aperto della baseline).
