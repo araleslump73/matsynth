@@ -1,0 +1,11 @@
+{
+  "name": "Synthetic Minimal",
+  "created": "2025-01-01 12:00:00",
+  "font": "",
+  "channels": [],
+  "global_settings": {
+    "gain": 1.0,
+    "reverb_level": 0.4,
+    "chorus_level": 0.4
+  }
+}

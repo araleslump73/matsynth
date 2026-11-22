@@ -1,0 +1,38 @@
+{
+  "name": "Synthetic Pan",
+  "created": "2025-01-01 12:00:00",
+  "font": "Synthetic.sf2",
+  "channels": [
+    {
+      "channel": 0,
+      "bank": 0,
+      "program": 0,
+      "attack": 64,
+      "release": 64,
+      "decay": 64,
+      "cutoff": 64,
+      "resonance": 64,
+      "volume": 110,
+      "instrument_name": "Piano L",
+      "pan": 20
+    },
+    {
+      "channel": 1,
+      "bank": 0,
+      "program": 48,
+      "attack": 64,
+      "release": 64,
+      "decay": 64,
+      "cutoff": 64,
+      "resonance": 64,
+      "volume": 90,
+      "instrument_name": "Strings R",
+      "pan": 100
+    }
+  ],
+  "global_settings": {
+    "gain": 1.2,
+    "reverb_level": 0.35,
+    "chorus_level": 0.25
+  }
+}

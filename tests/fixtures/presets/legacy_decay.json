@@ -1,0 +1,48 @@
+{
+  "name": "Synthetic Decay",
+  "created": "2025-01-01 12:00:00",
+  "font": "Synthetic.sf2",
+  "channels": [
+    {
+      "channel": 0,
+      "bank": 0,
+      "program": 4,
+      "attack": 10,
+      "release": 70,
+      "decay": 90,
+      "cutoff": 50,
+      "resonance": 30,
+      "volume": 100,
+      "instrument_name": "EP"
+    },
+    {
+      "channel": 3,
+      "bank": 128,
+      "program": 0,
+      "attack": 64,
+      "release": 64,
+      "decay": 12,
+      "cutoff": 64,
+      "resonance": 64,
+      "volume": 80,
+      "instrument_name": "Drums"
+    },
+    {
+      "channel": 9,
+      "bank": 1,
+      "program": 7,
+      "attack": 64,
+      "release": 64,
+      "decay": 127,
+      "cutoff": 64,
+      "resonance": 64,
+      "volume": 100,
+      "instrument_name": "Bank1"
+    }
+  ],
+  "global_settings": {
+    "gain": 0.8,
+    "reverb_level": 0.5,
+    "chorus_level": 0.1
+  }
+}
