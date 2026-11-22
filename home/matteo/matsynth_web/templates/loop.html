@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatSynth - Loop Machine</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="container py-4">
+
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="logo-title logo-title-small">
+            <i class="fas fa-circle-notch fa-spin loop-icon"></i> LOOP MACHINE
+        </h1>
+        <a href="/" class="btn btn-back">
+            <i class="fas fa-arrow-left"></i> To Mixer
+        </a>
+    </div>
+
+    <!-- Status Card -->
+    <div class="card p-4 mb-3" style="border: 2px solid rgba(255, 193, 7, 0.4);">
+        <div class="d-flex justify-content-between align-items-center flex-wrap">
+            <div>
+                <span id="status-badge" class="badge bg-secondary">
+                    <i class="fas fa-circle"></i> IDLE
+                </span>
+                <span id="event-count-badge" class="badge bg-info text-dark ms-2">
+                    <i class="fas fa-music"></i> 0 events
+                </span>
+                <span id="overdub-badge" class="badge bg-warning text-dark ms-2" style="display: none;">
+                    <i class="fas fa-layers-alt"></i> OVERDUB MODE
+                </span>
+            </div>
+            <div id="waiting-indicator" class="text-warning" style="display: none; font-size: 0.9rem;">
+                <i class="fas fa-hourglass-half fa-spin"></i> Waiting for first note...
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Controls Card -->
+    <div class="card p-4 mb-3" style="border: 2px solid rgba(0, 255, 136, 0.4);">
+        <div class="section-title mb-3" style="color: #00ff88;">
+            <i class="fas fa-gamepad"></i> Main Controls
+        </div>
+        
+        <div class="row g-3">
+            <!-- Record Button -->
+            <div class="col-6">
+                <button id="btn-record" class="btn btn-loop-control w-100" onclick="toggleRecord()" style="background: linear-gradient(135deg, #ff0032, #ff4500);">
+                    <i class="fas fa-circle"></i> RECORD
+                </button>
+            </div>
+            
+            <!-- Play Button -->
+            <div class="col-6">
+                <button id="btn-play" class="btn btn-loop-control w-100" onclick="togglePlay()" style="background: linear-gradient(135deg, #00ff88, #00d4ff);">
+                    <i class="fas fa-play"></i> PLAY
+                </button>
+            </div>
+            
+            <!-- Clear Button -->
+            <div class="col-12">
+                <button id="btn-clear" class="btn btn-loop-control w-100" onclick="clearLoop()" style="background: linear-gradient(135deg, #555, #777);">
+                    <i class="fas fa-trash"></i> CLEAR LOOP
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- BPM Control Card -->
+    <div class="card p-4 mb-3" style="border: 2px solid rgba(0, 212, 255, 0.4);">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <label class="slider-label icon-label mb-0" style="color: #00d4ff;">
+                <i class="fas fa-tachometer-alt"></i> BPM (TEMPO)
+            </label>
+            <span id="bpm-value" class="badge-custom">120</span>
+        </div>
+        <input type="range" id="bpm-slider" class="form-range" min="60" max="200" value="120" 
+               oninput="updateBPM(this.value)">
+        <div class="d-flex justify-content-between text-muted" style="font-size: 0.7rem; margin-top: 8px;">
+            <span>60 BPM</span>
+            <span>120 BPM</span>
+            <span>200 BPM</span>
+        </div>
+    </div>
+
+    <!-- Quantization Toggle Card -->
+    <div class="card p-4 mb-3" style="border: 2px solid rgba(156, 39, 176, 0.4);">
+        <div class="d-flex justify-content-between align-items-center">
+            <label class="slider-label icon-label mb-0" style="color: #9c27b0;">
+                <i class="fas fa-grip-lines"></i> QUANTIZATION
+            </label>
+            <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="quantization-toggle" 
+                       onchange="updateQuantization(this.checked)" style="cursor: pointer; width: 3rem; height: 1.5rem;">
+            </div>
+        </div>
+        <small class="text-muted mt-2 d-block" style="font-size: 0.75rem;">
+            Snap notes to 16th note grid (ON) or record exact timing (OFF)
+        </small>
+    </div>
+
+    <!-- Channel Selection Card -->
+    <div class="card p-4 mb-3" style="border: 2px solid rgba(255, 193, 7, 0.4);">
+        <div class="section-title mb-3" style="color: #ffc107;">
+            <i class="fas fa-sliders-h"></i> Recording Channel
+        </div>
+        
+        <select id="channel-select" class="form-select" onchange="updateChannel()">
+            <option value="">All Channels</option>
+            <option value="0">Channel 1</option>
+            <option value="1">Channel 2</option>
+            <option value="2">Channel 3</option>
+            <option value="3">Channel 4</option>
+            <option value="4">Channel 5</option>
+            <option value="5">Channel 6</option>
+            <option value="6">Channel 7</option>
+            <option value="7">Channel 8</option>
+            <option value="8">Channel 9</option>
+            <option value="9">Channel 10 (Drums)</option>
+            <option value="10">Channel 11</option>
+            <option value="11">Channel 12</option>
+            <option value="12">Channel 13</option>
+            <option value="13">Channel 14</option>
+            <option value="14">Channel 15</option>
+            <option value="15">Channel 16</option>
+        </select>
+        
+        <p class="text-muted small mt-2 mb-0">
+            <i class="fas fa-info-circle"></i> Select which MIDI channel to record from your keyboard. 
+            "All Channels" records everything.
+        </p>
+    </div>
+
+    <!-- Info Card -->
+    <div class="card p-3" style="border: 2px solid rgba(100, 100, 120, 0.4);">
+        <div class="section-title mb-2" style="color: #a0a0a0; font-size: 0.85rem;">
+            <i class="fas fa-question-circle"></i> How to use
+        </div>
+        <ul class="text-muted small mb-0" style="font-size: 0.75rem; line-height: 1.6;">
+            <li><strong>RECORD (First Time)</strong>: Press to arm recording. Play your first note to start capturing the base loop.</li>
+            <li><strong>OVERDUB (Continuous Loop)</strong>: Once a loop exists, press OVERDUB to add layers. The previous loop plays automatically, and you can record multiple passes. The countdown resets on each loop!</li>
+            <li><strong>First Note Trigger</strong>: The first recording begins automatically when you play the first note.</li>
+            <li><strong>Stop Recording</strong>: Press STOP when you're done overdubbing. The loop continues playing for the next layer.</li>
+            <li><strong>PLAY</strong>: Manually plays back all recorded layers (not needed during overdub, it's automatic!).</li>
+            <li><strong>CLEAR</strong>: Deletes all layers to start fresh from scratch.</li>
+            <li><strong>Channel Selection</strong>: Choose which MIDI channel to record (e.g., Channel 10 for drums, Channel 1 for bass).</li>
+        </ul>
+    </div>
+
+    <script>
+        let loopState = {
+            is_recording: false,
+            is_playing: false,
+            waiting_for_first_note: false,
+            event_count: 0,
+            has_loop: false
+        };
+        
+        let currentChannel = null;
+        let pollInterval = null;
+
+        // ===== State Polling =====
+        async function pollLoopState() {
+            try {
+                const res = await fetch('/api/loop/state');
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    loopState = data.data;
+                    updateUI();
+                }
+            } catch (e) {
+                console.error("Error polling loop state:", e);
+            }
+        }
+
+        function updateUI() {
+            const statusBadge = document.getElementById('status-badge');
+            const eventCountBadge = document.getElementById('event-count-badge');
+            const overdubBadge = document.getElementById('overdub-badge');
+            const waitingIndicator = document.getElementById('waiting-indicator');
+            const btnRecord = document.getElementById('btn-record');
+            const btnPlay = document.getElementById('btn-play');
+            const btnClear = document.getElementById('btn-clear');
+            const loopIcon = document.querySelector('.loop-icon');
+            
+            // Update status badge
+            if (loopState.is_recording) {
+                statusBadge.className = 'badge bg-danger';
+                if (loopState.is_playing) {
+                    // Recording con playback attivo (overdub)
+                    statusBadge.innerHTML = '<i class="fas fa-circle fa-blink"></i> REC + <i class="fas fa-play"></i> PLAY';
+                } else {
+                    statusBadge.innerHTML = '<i class="fas fa-circle fa-blink"></i> RECORDING';
+                }
+                loopIcon.style.color = '#ff0032';
+            } else if (loopState.is_playing) {
+                statusBadge.className = 'badge bg-success';
+                statusBadge.innerHTML = '<i class="fas fa-play"></i> PLAYING';
+                loopIcon.style.color = '#00ff88';
+            } else {
+                statusBadge.className = 'badge bg-secondary';
+                statusBadge.innerHTML = '<i class="fas fa-circle"></i> IDLE';
+                loopIcon.style.color = '#a0a0a0';
+            }
+            
+            // Update event count
+            eventCountBadge.innerHTML = `<i class="fas fa-music"></i> ${loopState.event_count} events`;
+            
+            // Update overdub badge (show when recording and loop already exists)
+            if (loopState.is_recording && loopState.has_loop && !loopState.waiting_for_first_note) {
+                // Se c'è un tempo rimanente, mostralo con il numero del loop
+                if (loopState.overdub_remaining !== null && loopState.overdub_remaining !== undefined) {
+                    const seconds = Math.ceil(loopState.overdub_remaining);
+                    const loopNum = loopState.overdub_loop_number || 1;
+                    overdubBadge.innerHTML = `<i class="fas fa-layer-group"></i> OVERDUB Loop #${loopNum} (${seconds}s)`;
+                } else {
+                    overdubBadge.innerHTML = '<i class="fas fa-layer-group"></i> OVERDUB MODE';
+                }
+                overdubBadge.style.display = 'inline-block';
+            } else {
+                overdubBadge.style.display = 'none';
+            }
+            
+            // Update waiting indicator
+            if (loopState.waiting_for_first_note) {
+                waitingIndicator.style.display = 'block';
+            } else {
+                waitingIndicator.style.display = 'none';
+            }
+            
+            // Update button states
+            if (loopState.is_recording) {
+                btnRecord.innerHTML = '<i class="fas fa-stop"></i> STOP RECORDING';
+                btnRecord.style.background = 'linear-gradient(135deg, #ff6600, #ff0032)';
+                btnRecord.classList.add('btn-active');
+            } else {
+                // Change button text based on whether loop exists
+                if (loopState.has_loop) {
+                    btnRecord.innerHTML = '<i class="fas fa-layers-alt"></i> OVERDUB';
+                } else {
+                    btnRecord.innerHTML = '<i class="fas fa-circle"></i> RECORD';
+                }
+                btnRecord.style.background = 'linear-gradient(135deg, #ff0032, #ff4500)';
+                btnRecord.classList.remove('btn-active');
+            }
+            
+            if (loopState.is_playing) {
+                btnPlay.innerHTML = '<i class="fas fa-stop"></i> STOP PLAYING';
+                btnPlay.style.background = 'linear-gradient(135deg, #ffc107, #ff9800)';
+                btnPlay.classList.add('btn-active');
+            } else {
+                btnPlay.innerHTML = '<i class="fas fa-play"></i> PLAY';
+                btnPlay.style.background = 'linear-gradient(135deg, #00ff88, #00d4ff)';
+                btnPlay.classList.remove('btn-active');
+            }
+            
+            // Detect auto-playback during overdub
+            const isAutoPlayback = loopState.is_recording && loopState.is_playing && loopState.has_loop;
+            
+            // Disable/hide buttons based on state
+            btnClear.disabled = loopState.is_recording || loopState.is_playing;
+            
+            // Durante overdub con playback automatico:
+            // - RECORD deve rimanere abilitato (per poter fermare l'overdub)
+            // - PLAY deve essere nascosto (il playback è automatico)
+            if (isAutoPlayback) {
+                btnPlay.style.display = 'none';  // Nascondi STOP PLAYING durante overdub automatico
+                btnRecord.disabled = false;       // STOP RECORDING deve funzionare
+            } else {
+                btnPlay.style.display = 'block';
+                btnPlay.disabled = loopState.is_recording;  // PLAY disabilitato durante recording normale
+                btnRecord.disabled = loopState.is_playing && !loopState.is_recording;  // RECORD disabilitato solo se PLAY manuale
+            }
+            
+            // Update BPM slider if changed from server
+            const bpmSlider = document.getElementById('bpm-slider');
+            const bpmValue = document.getElementById('bpm-value');
+            if (loopState.bpm && parseInt(bpmSlider.value) !== loopState.bpm) {
+                bpmSlider.value = loopState.bpm;
+                bpmValue.innerText = loopState.bpm;
+            }
+            
+            // Update quantization toggle
+            const quantizationToggle = document.getElementById('quantization-toggle');
+            if (quantizationToggle.checked !== loopState.enable_quantization) {
+                quantizationToggle.checked = loopState.enable_quantization;
+            }
+        }
+
+        // ===== Control Functions =====
+        async function toggleRecord() {
+            try {
+                const btn = document.getElementById('btn-record');
+                btn.disabled = true;
+                
+                if (loopState.is_recording) {
+                    // Stop recording
+                    const res = await fetch('/api/loop/record/stop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    const data = await res.json();
+                    
+                    if (data.status === 'ok') {
+                        console.log(data.message);
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                } else {
+                    // Start recording
+                    const channel = currentChannel !== null ? parseInt(currentChannel) : null;
+                    
+                    const res = await fetch('/api/loop/record/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ channel: channel })
+                    });
+                    
+                    const data = await res.json();
+                    
+                    if (data.status === 'ok') {
+                        console.log(data.message);
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                }
+                
+                // Poll immediately to update UI
+                await pollLoopState();
+                btn.disabled = false;
+                
+            } catch (e) {
+                console.error("Error toggling record:", e);
+                alert('Network error!');
+                document.getElementById('btn-record').disabled = false;
+            }
+        }
+
+        async function togglePlay() {
+            try {
+                const btn = document.getElementById('btn-play');
+                btn.disabled = true;
+                
+                if (loopState.is_playing) {
+                    // Stop playback
+                    const res = await fetch('/api/loop/play/stop', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    const data = await res.json();
+                    
+                    if (data.status === 'ok') {
+                        console.log(data.message);
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                } else {
+                    // Start playback
+                    const res = await fetch('/api/loop/play/start', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' }
+                    });
+                    
+                    const data = await res.json();
+                    
+                    if (data.status === 'ok') {
+                        console.log(data.message);
+                    } else {
+                        alert('Error: ' + data.message);
+                    }
+                }
+                
+                // Poll immediately to update UI
+                await pollLoopState();
+                btn.disabled = false;
+                
+            } catch (e) {
+                console.error("Error toggling play:", e);
+                alert('Network error!');
+                document.getElementById('btn-play').disabled = false;
+            }
+        }
+
+        async function clearLoop() {
+            if (!confirm('Clear the current loop? This cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const btn = document.getElementById('btn-clear');
+                btn.disabled = true;
+                
+                const res = await fetch('/api/loop/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    console.log(data.message);
+                } else {
+                    alert('Error: ' + data.message);
+                }
+                
+                // Poll immediately to update UI
+                await pollLoopState();
+                btn.disabled = false;
+                
+            } catch (e) {
+                console.error("Error clearing loop:", e);
+                alert('Network error!');
+                document.getElementById('btn-clear').disabled = false;
+            }
+        }
+
+        async function updateBPM(bpm) {
+            document.getElementById('bpm-value').innerText = bpm;
+            
+            try {
+                const res = await fetch('/api/loop/bpm', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ bpm: parseInt(bpm) })
+                });
+                
+                const data = await res.json();
+                
+                if (data.status !== 'ok') {
+                    console.error('Error setting BPM:', data.message);
+                }
+            } catch (e) {
+                console.error("Error updating BPM:", e);
+            }
+        }
+
+        async function updateQuantization(enabled) {
+            try {
+                const res = await fetch('/api/loop/quantization', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enabled: enabled })
+                });
+                
+                const data = await res.json();
+                
+                if (data.status === 'ok') {
+                    console.log(`Quantization ${enabled ? 'enabled' : 'disabled'}`);
+                } else {
+                    console.error('Error setting quantization:', data.message);
+                }
+            } catch (e) {
+                console.error("Error updating quantization:", e);
+            }
+        }
+
+        function updateChannel() {
+            const select = document.getElementById('channel-select');
+            currentChannel = select.value === '' ? null : select.value;
+        }
+
+        // ===== Initialization =====
+        window.onload = function() {
+            // Initial state poll
+            pollLoopState();
+            
+            // Start polling every 500ms
+            pollInterval = setInterval(pollLoopState, 500);
+        };
+
+        // Cleanup on page unload
+        window.onbeforeunload = function() {
+            if (pollInterval) {
+                clearInterval(pollInterval);
+            }
+        };
+    </script>
+
+    <style>
+        .btn-loop-control {
+            font-family: 'Orbitron', sans-serif;
+            font-weight: 700;
+            font-size: 1.1rem;
+            padding: 20px;
+            border: none;
+            color: white;
+            border-radius: 12px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            letter-spacing: 1px;
+        }
+
+        .btn-loop-control:hover:not(:disabled) {
+            transform: translateY(-3px);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+        }
+
+        .btn-loop-control:active:not(:disabled) {
+            transform: translateY(-1px);
+        }
+
+        .btn-loop-control:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .btn-loop-control.btn-active {
+            animation: pulse 1.5s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.8; }
+        }
+
+        .fa-blink {
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 50%, 100% { opacity: 1; }
+            25%, 75% { opacity: 0.3; }
+        }
+
+        .loop-icon {
+            transition: color 0.3s ease;
+        }
+    </style>
+</body>
+</html>

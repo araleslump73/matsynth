@@ -44,11 +44,30 @@
 - Scansione e selezione device MIDI (`aconnect -i`)
 - “Save & Restart” → salva su stato e riavvia servizio systemd
 
+### DAW MIDI
+- Registrazione e riproduzione multitraccia, metronomo e loop
+- Editor di note e clip, quantizzazione, trasposizione e undo/redo
+- Importazione ed esportazione di file MIDI
+
+### Rete: Studio e Palco
+Gli script in `home/matteo/` usano NetworkManager e non contengono credenziali.
+Non cambiano automaticamente modalità quando la rete di casa non è disponibile.
+
+- `bash home/matteo/mode_palco.sh` attiva il profilo hotspot esistente oppure
+  chiede la password per crearne uno. In alternativa la password può essere
+  fornita nella variabile d'ambiente `MATSYNTH_HOTSPOT_PASSWORD`.
+- `bash home/matteo/mode_studio.sh "nome rete o profilo"` attiva un profilo
+  salvato oppure chiede le credenziali per una nuova rete.
+
+Il cambio di rete può interrompere la sessione SSH; per i prompt interattivi
+via SSH usare un terminale con `ssh -t`. Queste versioni senza credenziali non
+vengono installate automaticamente sul Pi.
+
 ## Requisiti
 
 ### Software
-- Python 3.7+
-- Flask (vedi `requirements.txt`)
+- Python 3
+- Flask, Flask-SocketIO, mido e python-rtmidi (vedi `requirements.txt`)
 - FluidSynth
 - ALSA utils + jq
 
@@ -183,9 +202,6 @@ Browser → HTTP (5000) → Flask → TCP (9800) → FluidSynth → ALSA out
 ## Note e limitazioni note
 
 - L’apply del preset **non carica automaticamente** il soundfont (scelta voluta per evitare timeout su hardware limitato): carica prima il font dalla home.
-- Attenzione: nel codice preset apply c’è un possibile refuso su decay:
-  - commento/UI usano **CC75**, ma nell’apply viene inviato **CC76**.
-  - Se noti che il decay non si ripristina correttamente, va corretto.
 
 ## Sicurezza
 

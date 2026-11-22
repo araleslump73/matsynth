@@ -1,7 +1,8 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, send_file
 from flask_socketio import SocketIO, emit
 import socket
 import os
+import io
 import json
 import time
 import subprocess
@@ -17,13 +18,71 @@ FLUID_HOST = "127.0.0.1"
 FLUID_PORT = 9800
 STATE_FILE = '/home/matteo/matsynth_web/last_state.json'
 PRESETS_DIR = '/home/matteo/matsynth_web/presets/'  # Directory per i preset salvati
-sf_id = 1 # Variabile globale per tenere traccia dell'ID del soundfont attivo
+MIDI_DIR = '/home/matteo/matsynth_web/midi/'  # Directory per i file MIDI salvati
+sf_id = 1 # Global variable to track the active soundfont ID
 STATE_LOCK = threading.Lock()
 _INITIALIZED = False
+
+# Debounced state writer — batches rapid CC writes to reduce SD card I/O on Pi Zero
+_state_dirty = False
+_state_pending = {}       # pending flat key→value updates
+_cc_pending = {}          # pending CC updates: (chan_str, cc_name) → value
+_state_flush_lock = threading.Lock()
+
+def _schedule_state_flush():
+    """Flush pending state writes after a short delay (debounce)."""
+    global _state_dirty, _state_pending, _cc_pending
+    time.sleep(0.5)  # 500ms debounce
+    with _state_flush_lock:
+        if not _state_pending and not _cc_pending:
+            return
+        pending = _state_pending.copy()
+        cc_pending = _cc_pending.copy()
+        _state_pending.clear()
+        _cc_pending.clear()
+        _state_dirty = False
+    try:
+        with STATE_LOCK:
+            state = get_last_state()
+            state.update(pending)
+            if cc_pending:
+                if 'channels' not in state:
+                    state['channels'] = {}
+                for (chan_str, cc_name), val in cc_pending.items():
+                    if chan_str not in state['channels']:
+                        state['channels'][chan_str] = {}
+                    state['channels'][chan_str][cc_name] = val
+            _write_state_atomic(state)
+    except Exception as e:
+        print(f"[State] Flush error: {e}")
+
+def save_state_debounced(key, value):
+    """Queue a flat state update; actual write is debounced to reduce I/O."""
+    global _state_dirty
+    with _state_flush_lock:
+        _state_pending[key] = value
+        should_start = not _state_dirty
+        _state_dirty = True
+    if should_start:
+        threading.Thread(target=_schedule_state_flush, daemon=True).start()
+
+def save_cc_debounced(chan, cc_name, val):
+    """Queue a CC state update (nested under channels); debounced."""
+    global _state_dirty
+    with _state_flush_lock:
+        _cc_pending[(str(chan), cc_name)] = val
+        should_start = not _state_dirty
+        _state_dirty = True
+    if should_start:
+        threading.Thread(target=_schedule_state_flush, daemon=True).start()
 
 # Crea la directory dei preset se non esiste
 if not os.path.exists(PRESETS_DIR):
     os.makedirs(PRESETS_DIR)
+
+# Crea la directory MIDI se non esiste
+if not os.path.exists(MIDI_DIR):
+    os.makedirs(MIDI_DIR)
 
 # Inizializza il sistema DAW Multi-Track
 daw = MultiTrackDAW(bpm=120, socketio=socketio)
@@ -44,7 +103,7 @@ def save_state(key, value):
             state[key] = value
             _write_state_atomic(state)
     except Exception as e:
-        print(f"Errore salvataggio stato: {e}")
+        print(f"[State] Save error: {e}")
 
 def get_last_state():
     if os.path.exists(STATE_FILE):
@@ -77,7 +136,7 @@ def send_fluid(command):
                     return sock.recv(4096).decode()
                 return "OK"
 
-            # Per comandi di lettura (inst, fonts, channels)
+            # Read commands (inst, fonts, channels)
             time.sleep(0.2)
             data = ""
             while True:
@@ -85,11 +144,13 @@ def send_fluid(command):
                     chunk = sock.recv(4096).decode()
                     if not chunk: break
                     data += chunk
-                except:
+                except socket.timeout:
+                    break
+                except OSError:
                     break
             return data
     except Exception as e:
-        print(f"Errore Socket: {e}")
+        print(f"[FluidSynth] Socket error: {e}")
         return ""
 
 def get_active_sf_id():
@@ -108,12 +169,11 @@ def get_active_sf_id():
 
 def restore_settings():
     state = get_last_state()
-    # Usiamo i valori salvati o default sicuri
     gain = state.get('gain', 0.7)
     rev = state.get('reverb.level', 0.4)
     cho = state.get('chorus.level', 0.4)
     
-    print(f"Ripristino: Gain {gain}, Rev {rev}, Chorus {cho}")
+    print(f"[Init] Restore: Gain {gain}, Rev {rev}, Chorus {cho}")
     send_fluid(f"set synth.gain {gain}")
     send_fluid(f"set synth.reverb.level {rev}")
     send_fluid(f"set synth.chorus.level {cho}")
@@ -130,12 +190,12 @@ def restore_settings():
                 if parts and parts[0].isdigit():
                     send_fluid(f"unload {parts[0]}")
             res = send_fluid(f"load {path}")
-            print(f"Ripristino font {font_name}: {res}")
+            print(f"[Init] Restored font {font_name}: {res}")
             # Aggiorna l'ID attivo del font
             global sf_id
             sf_id = get_active_sf_id()
         else:
-            print(f"Font salvato non trovato: {path}")
+            print(f"[Init] Saved font not found: {path}")
 
     # Applica banche, programmi e CC salvati per ogni canale
     saved_channels = state.get('channels', {})
@@ -151,6 +211,7 @@ def restore_settings():
         # Applica CC se presenti
         cc_map = {
             'volume': ('7', ch_data.get('volume')),
+            'pan': ('10', ch_data.get('pan')),
             'attack': ('73', ch_data.get('attack')),
             'release': ('72', ch_data.get('release')),
             'decay': ('75', ch_data.get('decay')),
@@ -168,12 +229,19 @@ def startup_init_once():
     if _INITIALIZED:
         return
     _INITIALIZED = True
-    # Piccola attesa per permettere a FluidSynth di essere pronto
-    time.sleep(2)
+    # Wait for FluidSynth with progressive retry
+    for attempt in range(5):
+        test = send_fluid("fonts")
+        if test.strip():
+            print(f"[Init] FluidSynth ready after {attempt + 1} attempt(s)")
+            break
+        wait = 1.0 + attempt * 0.5
+        print(f"[Init] FluidSynth not ready, retrying in {wait:.1f}s...")
+        time.sleep(wait)
     restore_settings()
     # Aggiorna l'ID attivo del font dopo il ripristino
     sf_id = get_active_sf_id()
-    print(f"Soundfont ID caricato all'avvio: {sf_id}")
+    print(f"[Init] Active soundfont ID: {sf_id}")
 
 @app.route('/')
 def index():
@@ -243,7 +311,7 @@ def select_prog(chan, bank, prog):
         state['channels'][str(chan)]['bank'] = bank
         state['channels'][str(chan)]['program'] = prog
         
-        print(f"✓ Salvato canale {chan}: bank={bank}, prog={prog}")
+        print(f"[Channel] Saved ch {chan}: bank={bank}, prog={prog}")
         _write_state_atomic(state)
     
     return "OK"
@@ -255,34 +323,19 @@ def set_effect(type, val):
         send_fluid(f"set synth.{type} {f_val}")
         save_state(type, f_val)
         return "OK"
-    except:
-        return "Errore", 400
+    except (ValueError, TypeError) as e:
+        print(f"[Effect] Invalid value type={type} val={val}: {e}")
+        return "Error", 400
 
 @app.route('/cc/<int:chan>/<int:cc>/<int:val>')
 def control(chan, cc, val):
     send_fluid(f"cc {chan} {cc} {val}")
     
-    # Salva i CC importanti per i preset
-    # attack=73, release=72, cutoff=74, resonance=71, volume=7, decay=75
-    if cc in [7, 71, 72, 73, 74, 75]:
-        with STATE_LOCK:
-            state = get_last_state()
-            if 'channels' not in state:
-                state['channels'] = {}
-            if str(chan) not in state['channels']:
-                state['channels'][str(chan)] = {}
-            
-            # Mappa i CC ai nomi
-            cc_names = {
-                7: 'volume',
-                71: 'resonance',
-                72: 'release',
-                73: 'attack',
-                74: 'cutoff',
-                75: 'decay'
-            }
-            state['channels'][str(chan)][cc_names[cc]] = val
-            _write_state_atomic(state)
+    # Save important CCs for presets (debounced to reduce SD card I/O)
+    cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
+                73: 'attack', 74: 'cutoff', 75: 'decay'}
+    if cc in cc_names:
+        save_cc_debounced(chan, cc_names[cc], val)
     
     return "OK"
 
@@ -306,7 +359,8 @@ def get_state():
 def api_capture_current_config():
     """Cattura la configurazione MIDI completa corrente"""
     try:
-        state = get_last_state()
+        with STATE_LOCK:
+            state = get_last_state()
         
         # Ottieni informazioni sui canali da FluidSynth
         channels_raw = send_fluid("channels")
@@ -354,7 +408,7 @@ def api_capture_current_config():
         
         return jsonify({'status': 'ok', 'config': config})
     except Exception as e:
-        print(f"Errore cattura configurazione: {e}")
+        print(f"[Config] Capture error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 # ==========================================
@@ -386,14 +440,14 @@ def api_presets_list():
                             'created': preset_data.get('created', 'Unknown'),
                             'font': preset_data.get('font', 'N/A')
                         })
-                except:
+                except (json.JSONDecodeError, IOError):
                     continue
         
         # Ordina per nome
         presets.sort(key=lambda x: x['name'].lower())
         return jsonify(presets)
     except Exception as e:
-        print(f"Errore lettura preset: {e}")
+        print(f"[Preset] List error: {e}")
         return jsonify([])
 
 @app.route('/api/presets/save', methods=['POST'])
@@ -445,7 +499,7 @@ def api_presets_save():
             'filename': f"{safe_filename}.json"
         })
     except Exception as e:
-        print(f"Errore salvataggio preset: {e}")
+        print(f"[Preset] Save error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/load/<filename>')
@@ -462,7 +516,7 @@ def api_presets_load(filename):
         
         return jsonify({'status': 'ok', 'data': preset_data})
     except Exception as e:
-        print(f"Errore caricamento preset: {e}")
+        print(f"[Preset] Load error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/delete/<filename>', methods=['DELETE'])
@@ -477,7 +531,7 @@ def api_presets_delete(filename):
         os.remove(preset_path)
         return jsonify({'status': 'ok', 'message': 'Preset eliminato con successo'})
     except Exception as e:
-        print(f"Errore eliminazione preset: {e}")
+        print(f"[Preset] Delete error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/rename', methods=['POST'])
@@ -523,7 +577,7 @@ def api_presets_rename():
             'new_filename': f"{safe_filename}.json"
         })
     except Exception as e:
-        print(f"Errore rinominazione preset: {e}")
+        print(f"[Preset] Rename error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 @app.route('/api/presets/apply', methods=['POST'])
@@ -585,18 +639,13 @@ def api_presets_apply():
         
         return jsonify({'status': 'ok', 'message': 'Preset applicato con successo'})
     except Exception as e:
-        print(f"Errore applicazione preset: {e}")
+        print(f"[Preset] Apply error: {e}")
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
-# rotte per settings
 # ==========================================
-# ROTTE PER LE IMPOSTAZIONI HARDWARE E RETE
+# HARDWARE AND NETWORK SETTINGS ROUTES
 # ==========================================
-
-@app.route('/settings')
-def settings_page():
-    return render_template('settings.html')
 
 @app.route('/api/network')
 def api_network():
@@ -631,9 +680,10 @@ def api_audio():
                 print(f"DEBUG: Device trovato: {dev_id} - {name}")
                 devices.append({"id": dev_id, "name": f"Scheda {card_num}: {name}"})
     except Exception as e:
-        print(f"Errore lettura audio: {e}")
+        print(f"[Audio] Device scan error: {e}")
 
-    state = get_last_state()
+    with STATE_LOCK:
+        state = get_last_state()
     # Se non c'è una scheda salvata, mettiamo un default vuoto
     current = state.get('audio_device', '')
     # Converti vecchi valori hw: in plughw: per compatibilità
@@ -659,9 +709,10 @@ def api_midi():
                 if "System" not in name and "Midi Through" not in name:
                     devices.append({"id": client_num, "name": name})
     except Exception as e:
-        print(f"Errore lettura midi: {e}")
+        print(f"[MIDI] Device scan error: {e}")
 
-    state = get_last_state()
+    with STATE_LOCK:
+        state = get_last_state()
     current = state.get('midi_device', '')
     return jsonify({"devices": devices, "current": current})
 
@@ -674,8 +725,7 @@ def save_hardware():
         # Forza sempre plughw: invece di hw:
         if audio_device.startswith('hw:'):
             audio_device = audio_device.replace('hw:', 'plughw:', 1)
-        # Debug: stampa cosa viene salvato
-        print(f"DEBUG: Salvando audio_device: {audio_device}")
+        print(f"[Settings] Saving audio_device: {audio_device}")
         save_state('audio_device', audio_device)
     if 'midi' in data and data['midi']: 
         save_state('midi_device', data['midi'])
@@ -684,7 +734,7 @@ def save_hardware():
     # per permettere alla risposta HTTP di arrivare al browser
     def delayed_restart():
         time.sleep(1)
-        os.system("sudo systemctl restart matsynth.service")
+        subprocess.run(["sudo", "systemctl", "restart", "matsynth.service"])
     
     restart_thread = threading.Thread(target=delayed_restart, daemon=True)
     restart_thread.start()
@@ -816,6 +866,16 @@ def daw_stop_all():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/panic', methods=['POST'])
+def daw_panic():
+    """Invia All Notes Off e All Sound Off su tutti i canali MIDI"""
+    try:
+        daw.panic()
+        return jsonify({"status": "ok", "message": "PANIC inviato"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/rewind', methods=['POST'])
 def daw_rewind():
     """Riporta la timeline a 00:00:00"""
@@ -829,14 +889,15 @@ def daw_rewind():
 @app.route('/api/daw/track/<int:channel>/arm', methods=['POST'])
 def daw_arm_track(channel):
     """Arma/disarma una traccia per la registrazione"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         data = request.json
         armed = data.get('armed', True)
         
         success = daw.arm_track(channel, armed)
         
-        print(f"[DAW API] Traccia {channel} {'armata' if armed else 'disarmata'} - success={success}")
-        print(f"[DAW API] Stato armed aggiornato: {daw.armed[channel]}")
+        print(f"[DAW API] Track {channel} {'armed' if armed else 'disarmed'} - success={success}")
         
         return jsonify({
             "status": "ok", 
@@ -850,6 +911,8 @@ def daw_arm_track(channel):
 @app.route('/api/daw/track/<int:channel>/mute', methods=['POST'])
 def daw_mute_track(channel):
     """Muta/smuta una traccia"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         data = request.json
         muted = data.get('muted', True)
@@ -865,9 +928,31 @@ def daw_mute_track(channel):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/solo', methods=['POST'])
+def daw_solo_track(channel):
+    """Attiva/disattiva il solo su una traccia"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
+    try:
+        data = request.json
+        solo = data.get('solo', True)
+        
+        daw.solo_track(channel, solo)
+        
+        return jsonify({
+            "status": "ok",
+            "message": f"Traccia {channel} solo {'attivato' if solo else 'disattivato'}",
+            "solo": daw.solo[channel]
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/track/<int:channel>/clear', methods=['POST'])
 def daw_clear_track(channel):
     """Cancella una traccia specifica"""
+    if not 0 <= channel <= 15:
+        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
     try:
         daw.clear_track(channel)
         return jsonify({"status": "ok", "message": f"Traccia {channel} cancellata"})
@@ -881,6 +966,21 @@ def daw_clear_all():
     try:
         daw.clear_all_tracks()
         return jsonify({"status": "ok", "message": "Tutte le tracce cancellate"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/clear_range', methods=['POST'])
+def daw_clear_range(channel):
+    """Cancella gli eventi di una traccia in un intervallo di beat"""
+    try:
+        data = request.get_json()
+        start_beat = float(data.get('start_beat', 0))
+        end_beat = float(data.get('end_beat', 0))
+        if end_beat <= start_beat:
+            return jsonify({"status": "error", "message": "end_beat deve essere > start_beat"}), 400
+        daw.clear_range(channel, start_beat, end_beat)
+        return jsonify({"status": "ok", "message": f"Range [{start_beat:.2f}, {end_beat:.2f}) cancellato su ch {channel}"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -935,12 +1035,480 @@ def daw_toggle_metronome():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/loop_points', methods=['POST'])
+def daw_set_loop_points():
+    """Imposta i punti di loop (in beat)"""
+    try:
+        data = request.json or {}
+        start_beat = float(data.get('start_beat', 0))
+        end_beat = float(data.get('end_beat', 0))
+        success = daw.set_loop_points(start_beat, end_beat)
+        if success:
+            return jsonify({"status": "ok", "loop_start": start_beat, "loop_end": end_beat})
+        else:
+            return jsonify({"status": "error", "message": "end_beat deve essere > start_beat"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/loop/toggle', methods=['POST'])
+def daw_toggle_loop():
+    """Attiva/disattiva il loop"""
+    try:
+        enabled = daw.toggle_loop()
+        return jsonify({
+            "status": "ok",
+            "message": f"Loop {'attivato' if enabled else 'disattivato'}",
+            "enabled": enabled
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/undo', methods=['POST'])
+def daw_undo():
+    """Annulla l'ultima operazione distruttiva"""
+    try:
+        success = daw.undo()
+        if success:
+            return jsonify({"status": "ok", "message": "Undo eseguito"})
+        else:
+            return jsonify({"status": "error", "message": "Niente da annullare"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/redo', methods=['POST'])
+def daw_redo():
+    """Ripristina l'ultima operazione annullata"""
+    try:
+        success = daw.redo()
+        if success:
+            return jsonify({"status": "ok", "message": "Redo eseguito"})
+        else:
+            return jsonify({"status": "error", "message": "Niente da ripristinare"}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/quantize', methods=['POST'])
+def daw_quantize():
+    """Applica quantizzazione post-registrazione alle tracce DAW."""
+    try:
+        data = request.json or {}
+
+        # Canali: lista di int 0-15, oppure vuota = tutti
+        channels_raw = data.get('channels', [])
+        if not channels_raw:
+            channels = []
+        else:
+            channels = [int(c) for c in channels_raw
+                        if 0 <= int(c) <= 15]
+
+        # Griglia in beat (validi: 1.0, 0.5, 0.25, 0.125, 0.0625)
+        grid = float(data.get('grid', 0.25))
+        valid_grids = {1.0, 0.5, 0.25, 0.125, 0.0625}
+        if grid not in valid_grids:
+            return jsonify({"status": "error",
+                            "message": "Valore griglia non valido"}), 400
+
+        # Strength 0-100 → 0.0-1.0
+        strength = max(0.0, min(1.0, float(data.get('strength', 100)) / 100.0))
+
+        # Swing 0-100 → 0.0-1.0  (50 = straight)
+        swing = max(0.0, min(1.0, float(data.get('swing', 50)) / 100.0))
+
+        result = daw.quantize_tracks(channels, grid, strength, swing)
+
+        if result is None:
+            return jsonify({
+                "status": "error",
+                "message": "Impossibile quantizzare durante la registrazione o il playback"
+            }), 409
+
+        if not result:
+            return jsonify({
+                "status": "ok",
+                "message": "Nessuna traccia con dati da quantizzare",
+                "events_modified": 0,
+                "channels_processed": []
+            })
+
+        total = sum(result.values())
+        return jsonify({
+            "status": "ok",
+            "channels_processed": list(result.keys()),
+            "events_modified": total,
+            "message": f"Quantizzazione: {total} note su {len(result)} tracce"
+        })
+    except Exception as e:
+        print(f"[DAW] quantize error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/transpose', methods=['POST'])
+def daw_transpose():
+    """Transpose notes on one channel (whole track or beat-range)."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        semitones = int(data.get('semitones', 0))
+
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "channel must be 0-15"}), 400
+        if semitones < -24 or semitones > 24:
+            return jsonify({"status": "error", "message": "semitones must be between -24 and 24"}), 400
+
+        start_beat = data.get('start_beat', None)
+        end_beat = data.get('end_beat', None)
+
+        modified = daw.transpose_notes(channel, semitones, start_beat, end_beat)
+        if modified is None:
+            return jsonify({"status": "error", "message": "Cannot transpose during recording/playback"}), 409
+
+        return jsonify({
+            "status": "ok",
+            "channel": channel,
+            "semitones": semitones,
+            "modified": modified
+        })
+    except Exception as e:
+        print(f"[DAW] transpose error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/preview_note', methods=['POST'])
+def daw_preview_note():
+    """Play a very short preview note on a channel for piano-roll interactions."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', 0))
+        note = int(data.get('note', 60))
+        velocity = int(data.get('velocity', 96))
+        length_ms = int(data.get('length_ms', 120))
+
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "channel must be 0-15"}), 400
+
+        note = max(0, min(127, note))
+        velocity = max(1, min(127, velocity))
+        length_ms = max(40, min(400, length_ms))
+
+        send_fluid(f"noteon {channel} {note} {velocity}")
+
+        def _noteoff():
+            try:
+                time.sleep(length_ms / 1000.0)
+                send_fluid(f"noteoff {channel} {note}")
+            except Exception as ex:
+                print(f"[DAW] preview noteoff error: {ex}")
+
+        threading.Thread(target=_noteoff, daemon=True).start()
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        print(f"[DAW] preview error: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/copy', methods=['POST'])
+def daw_copy():
+    """Copy events from a selection range on a channel to the clipboard."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', 0))
+        start_beat = float(data.get('start_beat', 0))
+        end_beat = float(data.get('end_beat', 0))
+        count = daw.copy_selection(channel, start_beat, end_beat)
+        return jsonify({"status": "ok", "copied": count})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/paste', methods=['POST'])
+def daw_paste():
+    """Paste clipboard events at a target beat on a channel."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', 0))
+        target_beat = float(data.get('beat', 0))
+        count = daw.paste_at(channel, target_beat)
+        return jsonify({"status": "ok", "pasted": count})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/clips', methods=['GET'])
+def daw_track_clips(channel):
+    """Return clip objects for one track/channel."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        return jsonify({"status": "ok", "clips": daw.get_clips(channel)})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/move', methods=['POST'])
+def daw_move_clip():
+    """Move one clip to a new start beat."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        clip_id = int(data.get('clip_id', -1))
+        target_start_beat = float(data.get('target_start_beat', 0.0))
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+
+        result = daw.move_clip(channel, clip_id, target_start_beat)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot move clip during recording/playback"}), 409
+        if not result:
+            return jsonify({"status": "error", "message": "Clip not found"}), 404
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/delete', methods=['POST'])
+def daw_delete_clip():
+    """Delete one clip and its events."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        clip_id = int(data.get('clip_id', -1))
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+
+        result = daw.delete_clip(channel, clip_id)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot delete clip during recording/playback"}), 409
+        if not result:
+            return jsonify({"status": "error", "message": "Clip not found"}), 404
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/transpose', methods=['POST'])
+def daw_transpose_clip():
+    """Transpose note events inside one clip range."""
+    try:
+        data = request.json or {}
+        channel = int(data.get('channel', -1))
+        clip_id = int(data.get('clip_id', -1))
+        semitones = int(data.get('semitones', 0))
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+        if semitones < -24 or semitones > 24:
+            return jsonify({"status": "error", "message": "semitones must be between -24 and 24"}), 400
+
+        modified = daw.transpose_clip(channel, clip_id, semitones)
+        if modified is None:
+            return jsonify({"status": "error", "message": "Cannot transpose during recording/playback"}), 409
+        return jsonify({"status": "ok", "modified": modified})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/resize', methods=['POST'])
+def daw_resize_clip():
+    """Non-destructive clip resize: change end_beat without deleting events."""
+    try:
+        data = request.json if isinstance(request.json, dict) else {}
+
+        raw_channel = data.get('channel', None)
+        raw_clip_id = data.get('clip_id', None)
+        raw_new_end_beat = data.get('new_end_beat', None)
+
+        try:
+            channel = int(raw_channel)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid channel: must be an integer between 0 and 15"}), 400
+
+        try:
+            clip_id = int(raw_clip_id)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid clip_id: must be a non-negative integer"}), 400
+
+        try:
+            new_end_beat = float(raw_new_end_beat)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid new_end_beat: must be a number"}), 400
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+        if new_end_beat < 0:
+            return jsonify({"status": "error", "message": "Invalid new_end_beat: must be >= 0"}), 400
+
+        result = daw.resize_clip(channel, clip_id, new_end_beat)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot resize clip during recording/playback"}), 409
+        if not result:
+            return jsonify({"status": "error", "message": "Clip not found"}), 404
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/split', methods=['POST'])
+def daw_split_clip():
+    """Split a clip at a given beat into two clips."""
+    try:
+        data = request.json if isinstance(request.json, dict) else {}
+
+        raw_channel = data.get('channel', None)
+        raw_clip_id = data.get('clip_id', None)
+        raw_split_beat = data.get('split_beat', None)
+
+        try:
+            channel = int(raw_channel)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid channel: must be an integer between 0 and 15"}), 400
+
+        try:
+            clip_id = int(raw_clip_id)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid clip_id: must be a non-negative integer"}), 400
+
+        try:
+            split_beat = float(raw_split_beat)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid split_beat: must be a number"}), 400
+
+        if channel < 0 or channel > 15 or clip_id < 0:
+            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
+        if split_beat < 0:
+            return jsonify({"status": "error", "message": "Invalid split_beat: must be >= 0"}), 400
+
+        result = daw.split_clip(channel, clip_id, split_beat)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot split clip during recording/playback"}), 409
+        if result is False:
+            return jsonify({"status": "error", "message": "Clip not found or split point outside clip"}), 404
+        return jsonify({"status": "ok", "new_clip_id": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/clip/merge', methods=['POST'])
+def daw_merge_clips():
+    """Merge multiple clips on the same channel into one."""
+    try:
+        data = request.json if isinstance(request.json, dict) else {}
+
+        raw_channel = data.get('channel', None)
+        try:
+            channel = int(raw_channel)
+        except (TypeError, ValueError):
+            return jsonify({"status": "error", "message": "Invalid channel: must be an integer between 0 and 15"}), 400
+
+        clip_ids = data.get('clip_ids', [])
+
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        if not isinstance(clip_ids, list) or len(clip_ids) < 2:
+            return jsonify({"status": "error", "message": "Need at least 2 clip_ids"}), 400
+
+        parsed_clip_ids = []
+        for idx, cid in enumerate(clip_ids):
+            try:
+                parsed_clip_ids.append(int(cid))
+            except (TypeError, ValueError):
+                return jsonify({"status": "error", "message": f"Invalid clip_ids[{idx}]: must be an integer"}), 400
+
+        result = daw.merge_clips(channel, parsed_clip_ids)
+        if result is None:
+            return jsonify({"status": "error", "message": "Cannot merge clips during recording/playback"}), 409
+        if result is False:
+            return jsonify({"status": "error", "message": "Not enough matching clips found"}), 404
+        return jsonify({"status": "ok", "new_clip_id": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/duplicate', methods=['POST'])
+def daw_duplicate_track(channel):
+    """Duplicate track events to a user-chosen channel. Instrument and CC stay unchanged on dest."""
+    try:
+        data = request.json or {}
+        dest_channel = data.get('dest_channel')
+        if dest_channel is None:
+            return jsonify({"status": "error", "message": "dest_channel required"}), 400
+        dest_channel = int(dest_channel)
+        if dest_channel < 0 or dest_channel > 15:
+            return jsonify({"status": "error", "message": "dest_channel out of range"}), 400
+        if dest_channel == channel:
+            return jsonify({"status": "error", "message": "Cannot duplicate onto same channel"}), 400
+
+        result = daw.duplicate_track(channel, dest_channel)
+        if result == -1:
+            return jsonify({"status": "error", "message": "Cannot duplicate (source empty or transport active)"}), 400
+        return jsonify({"status": "ok", "dest_channel": result})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/rename', methods=['POST'])
+def daw_rename_track(channel):
+    """Rename a track."""
+    try:
+        data = request.json or {}
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({"status": "error", "message": "Name required"}), 400
+        ok = daw.rename_track(channel, name)
+        return jsonify({"status": "ok" if ok else "error"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/color', methods=['POST'])
+def daw_set_track_color(channel):
+    """Set track color palette index."""
+    try:
+        data = request.json or {}
+        color_index = int(data.get('color_index', 0))
+        ok = daw.set_track_color(channel, color_index)
+        return jsonify({"status": "ok" if ok else "error"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/api/daw/full_density_map')
 def daw_full_density_map():
     """Ritorna la mappa di densità completa per tutte le tracce."""
     try:
         density = daw.get_full_density_map()
         return jsonify({"status": "ok", "map": density})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/full_note_map')
+def daw_full_note_map():
+    """Return note-level data for piano-roll rendering."""
+    try:
+        note_map = daw.get_full_note_map()
+        return jsonify({"status": "ok", "map": note_map})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/seek_beat', methods=['POST'])
+def daw_seek_beat():
+    """Seek to a beat position (works during playback too)."""
+    try:
+        data = request.json or {}
+        beat = data.get('beat')
+        if beat is None or not isinstance(beat, (int, float)):
+            return jsonify({"status": "error", "message": "Missing or invalid beat"}), 400
+        success = daw.seek_to_beat(float(beat))
+        if not success:
+            return jsonify({"status": "error", "message": "Cannot seek during recording"}), 409
+        return jsonify({"status": "ok"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -957,7 +1525,401 @@ def daw_track_activity(channel):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/api/daw/track/<int:channel>/events')
+def daw_track_events(channel):
+    """Returns decoded MIDI events list for a channel (-1 = all)."""
+    try:
+        events = daw.get_events_decoded(channel)
+        return jsonify({"status": "ok", "events": events})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/events/<int:index>', methods=['PUT'])
+def daw_edit_event(channel, index):
+    """Edit an event's properties (beat, velocity, note, cc_num, cc_value, pitch, program)."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.json or {}
+        allowed = ('beat', 'velocity', 'note', 'cc_value', 'cc_num', 'pitch', 'program')
+        updates = {k: data[k] for k in allowed if k in data}
+        if not updates:
+            return jsonify({"status": "error", "message": "No updates provided"}), 400
+        ok = daw.edit_event(channel, index, updates)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot edit (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/events/<int:index>', methods=['DELETE'])
+def daw_delete_event(channel, index):
+    """Delete an event by index."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        ok = daw.delete_event(channel, index)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot delete (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/add_note', methods=['POST'])
+def daw_add_note(channel):
+    """Add a note to a track (Piano Roll draw tool)."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.get_json(force=True)
+        note = int(data.get('note', 60))
+        velocity = int(data.get('velocity', 100))
+        start_beat = float(data.get('start_beat', 0))
+        length_beats = float(data.get('length_beats', 0.5))
+        if not (0 <= note <= 127 and 0 <= velocity <= 127):
+            return jsonify({"status": "error", "message": "Note/velocity out of range"}), 400
+        ok = daw.add_note(channel, note, velocity, start_beat, length_beats)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot add note (recording?)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/edit_note_pair', methods=['PUT'])
+def daw_edit_note_pair(channel):
+    """Atomically edit both note_on and note_off of a note (avoids index desync on sort)."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.get_json(force=True)
+        on_idx = int(data.get('on_idx', -1))
+        off_idx = int(data.get('off_idx', -1))
+        allowed = ('on_beat', 'off_beat', 'note', 'velocity')
+        updates = {k: data[k] for k in allowed if k in data}
+        if not updates:
+            return jsonify({"status": "error", "message": "No updates provided"}), 400
+        ok = daw.edit_note_pair(channel, on_idx, off_idx, updates)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot edit (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/track/<int:channel>/delete_note_pair', methods=['DELETE'])
+def daw_delete_note_pair(channel):
+    """Atomically delete both note_on and note_off events of a note."""
+    try:
+        if channel < 0 or channel > 15:
+            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = request.get_json(force=True)
+        on_idx = int(data.get('on_idx', -1))
+        off_idx = int(data.get('off_idx', -1))
+        ok = daw.delete_note_pair(channel, on_idx, off_idx)
+        if not ok:
+            return jsonify({"status": "error", "message": "Cannot delete (recording or invalid index)"}), 400
+        return jsonify({"status": "ok"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 startup_init_once()
+
+# ==========================================
+# SOCKETIO EVENT HANDLERS (Hybrid approach)
+# ==========================================
+
+ALLOWED_EFFECT_TYPES = {'reverb.level', 'chorus.level', 'gain'}
+
+@socketio.on('cc_update')
+def handle_cc_update(data):
+    """Handle CC messages via WebSocket for lower latency"""
+    try:
+        chan = int(data['chan'])
+        cc_num = int(data['cc'])
+        val = int(data['val'])
+        if not (0 <= chan <= 15 and 0 <= cc_num <= 127 and 0 <= val <= 127):
+            return {'status': 'error', 'message': 'Values out of range'}
+        send_fluid(f"cc {chan} {cc_num} {val}")
+        cc_names = {7: 'volume', 10: 'pan', 71: 'resonance', 72: 'release',
+                    73: 'attack', 74: 'cutoff', 75: 'decay'}
+        if cc_num in cc_names:
+            save_cc_debounced(chan, cc_names[cc_num], val)
+        return {'status': 'ok'}
+    except Exception as e:
+        print(f"[WS] cc_update error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
+@socketio.on('effect_update')
+def handle_effect_update(data):
+    """Handle effect changes via WebSocket for lower latency"""
+    try:
+        etype = str(data['type'])
+        if etype not in ALLOWED_EFFECT_TYPES:
+            return {'status': 'error', 'message': f'Invalid effect type: {etype}'}
+        val = float(data['val'])
+        send_fluid(f"set synth.{etype} {val}")
+        save_state(etype, val)
+        return {'status': 'ok'}
+    except Exception as e:
+        print(f"[WS] effect_update error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
+@socketio.on('transport_cmd')
+def handle_transport_cmd(data):
+    """Handle transport commands via WebSocket for lower latency"""
+    try:
+        cmd = data.get('cmd')
+        if cmd == 'play_start':
+            success = daw.start_playback()
+        elif cmd == 'play_stop':
+            success = daw.stop_playback()
+        elif cmd == 'record_start':
+            channel = data.get('channel')
+            armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
+            if not armed_channels:
+                return {'status': 'error', 'message': 'Nessun canale armato. Attiva ARM su almeno un canale.'}
+            success = daw.start_recording(channel) if channel is not None else daw.start_recording()
+        elif cmd == 'record_stop':
+            success = daw.stop_recording()
+        elif cmd == 'stop_all':
+            daw.stop_all()
+            success = True
+        elif cmd == 'panic':
+            daw.panic()
+            success = True
+        elif cmd == 'rewind':
+            daw.rewind()
+            success = True
+        elif cmd == 'seek':
+            position = data.get('position')
+            if position is None or not isinstance(position, (int, float)):
+                return {'status': 'error', 'message': 'Missing or invalid position'}
+            success = daw.set_position(position)
+            if not success:
+                return {'status': 'error', 'message': 'Cannot seek while playing or recording'}
+        elif cmd == 'seek_beat':
+            beat = data.get('beat')
+            if beat is None or not isinstance(beat, (int, float)):
+                return {'status': 'error', 'message': 'Missing or invalid beat'}
+            success = daw.seek_to_beat(float(beat))
+            if not success:
+                return {'status': 'error', 'message': 'Cannot seek during recording'}
+        elif cmd == 'undo':
+            success = daw.undo()
+        elif cmd == 'redo':
+            success = daw.redo()
+        elif cmd == 'toggle_loop':
+            daw.toggle_loop()
+            success = True
+        else:
+            return {'status': 'error', 'message': f'Unknown command: {cmd}'}
+        return {'status': 'ok'} if success else {'status': 'error', 'message': f'{cmd} failed'}
+    except Exception as e:
+        print(f"[WS] transport_cmd error: {e}")
+        return {'status': 'error', 'message': str(e)}
+
+
+@app.route('/api/daw/midi/save', methods=['POST'])
+def daw_midi_save():
+    """Salva le tracce registrate come file MIDI sul Raspberry Pi"""
+    try:
+        data = request.json or {}
+        name = data.get('name', '').strip()
+        if not name:
+            name = f"session_{int(time.time())}"
+
+        # Sanitizza il nome del file
+        safe_name = "".join(c for c in name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_')
+        if not safe_name:
+            safe_name = f"session_{int(time.time())}"
+
+        # Evita sovrascritture: aggiungi suffisso
+        base_name = safe_name
+        filepath = os.path.join(MIDI_DIR, f"{safe_name}.mid")
+        counter = 2
+        while os.path.exists(filepath):
+            safe_name = f"{base_name}_{counter}"
+            filepath = os.path.join(MIDI_DIR, f"{safe_name}.mid")
+            counter += 1
+
+        # Leggi i programmi correnti dei canali dal saved state
+        state = get_last_state()
+        saved_channels = state.get('channels', {})
+        channel_programs = {}
+        for ch_str, ch_data in saved_channels.items():
+            try:
+                ch = int(ch_str)
+            except ValueError:
+                continue
+            bank = ch_data.get('bank')
+            prog = ch_data.get('program')
+            if bank is not None and prog is not None:
+                channel_programs[ch] = {'bank': bank, 'program': prog}
+
+        midi_bytes = daw.export_midi(channel_programs=channel_programs)
+        if not midi_bytes:
+            return jsonify({"status": "error", "message": "Nessuna traccia da esportare"}), 400
+
+        with open(filepath, 'wb') as f:
+            f.write(midi_bytes)
+
+        return jsonify({
+            "status": "ok",
+            "filename": f"{safe_name}.mid",
+            "message": f"Salvato come {safe_name}.mid"
+        })
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/list')
+def daw_midi_list():
+    """Restituisce la lista dei file MIDI salvati"""
+    try:
+        if not os.path.exists(MIDI_DIR):
+            return jsonify([])
+        files = []
+        for fn in sorted(os.listdir(MIDI_DIR)):
+            if fn.lower().endswith(('.mid', '.midi')):
+                fp = os.path.join(MIDI_DIR, fn)
+                stat = os.stat(fp)
+                files.append({
+                    'filename': fn,
+                    'name': fn.rsplit('.', 1)[0],
+                    'size': stat.st_size,
+                    'modified': time.strftime('%Y-%m-%d %H:%M', time.localtime(stat.st_mtime))
+                })
+        return jsonify(files)
+    except Exception as e:
+        return jsonify([])  
+
+
+@app.route('/api/daw/midi/load/<filename>')
+def daw_midi_load(filename):
+    """Carica un file MIDI salvato nelle tracce del DAW"""
+    try:
+        # Previeni path traversal
+        safe = os.path.basename(filename)
+        filepath = os.path.join(MIDI_DIR, safe)
+        if not os.path.exists(filepath):
+            return jsonify({"status": "error", "message": "File non trovato"}), 404
+        with open(filepath, 'rb') as f:
+            midi_bytes = f.read()
+        merge = request.args.get('merge', 'false').lower() == 'true'
+        info = daw.import_midi(midi_bytes, merge=merge)
+
+        # Applica gli strumenti importati a FluidSynth e salva nello stato
+        ch_progs = info.get('channel_programs', {})
+        if ch_progs:
+            with STATE_LOCK:
+                st = get_last_state()
+                if 'channels' not in st:
+                    st['channels'] = {}
+                for ch_str, prog_data in ch_progs.items():
+                    ch = int(ch_str)
+                    bank = prog_data.get('bank', 0)
+                    prog = prog_data.get('program', 0)
+                    send_fluid(f"select {ch} {sf_id} {bank} {prog}")
+                    if str(ch) not in st['channels']:
+                        st['channels'][str(ch)] = {}
+                    st['channels'][str(ch)]['bank'] = bank
+                    st['channels'][str(ch)]['program'] = prog
+                _write_state_atomic(st)
+
+        return jsonify({"status": "ok", "data": info})
+    except RuntimeError as e:
+        return jsonify({"status": "error", "message": str(e)}), 409
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/delete/<filename>', methods=['DELETE'])
+def daw_midi_delete(filename):
+    """Elimina un file MIDI salvato"""
+    try:
+        safe = os.path.basename(filename)
+        filepath = os.path.join(MIDI_DIR, safe)
+        if not os.path.exists(filepath):
+            return jsonify({"status": "error", "message": "File non trovato"}), 404
+        os.remove(filepath)
+        return jsonify({"status": "ok", "message": f"{safe} eliminato"})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/download/<filename>')
+def daw_midi_download(filename):
+    """Scarica un file MIDI salvato"""
+    try:
+        safe = os.path.basename(filename)
+        filepath = os.path.join(MIDI_DIR, safe)
+        if not os.path.exists(filepath):
+            return jsonify({"status": "error", "message": "File non trovato"}), 404
+        return send_file(filepath, mimetype='audio/midi',
+                         as_attachment=True, download_name=safe)
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/api/daw/midi/upload', methods=['POST'])
+def daw_midi_upload():
+    """Carica un file MIDI dal PC nelle tracce del DAW"""
+    try:
+        if 'file' not in request.files:
+            return jsonify({"status": "error", "message": "Nessun file inviato"}), 400
+        f = request.files['file']
+        if not f.filename:
+            return jsonify({"status": "error", "message": "File vuoto"}), 400
+        midi_bytes = f.read(5 * 1024 * 1024)
+        if len(midi_bytes) < 14:
+            return jsonify({"status": "error", "message": "File troppo piccolo o non valido"}), 400
+        merge = request.form.get('merge', 'false').lower() == 'true'
+        info = daw.import_midi(midi_bytes, merge=merge)
+
+        # Salva anche una copia nella cartella MIDI
+        original_name = os.path.splitext(os.path.basename(f.filename))[0]
+        safe_name = "".join(c for c in original_name if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_name = safe_name.replace(' ', '_') or f"upload_{int(time.time())}"
+        filepath = os.path.join(MIDI_DIR, f"{safe_name}.mid")
+        counter = 2
+        while os.path.exists(filepath):
+            filepath = os.path.join(MIDI_DIR, f"{safe_name}_{counter}.mid")
+            counter += 1
+        with open(filepath, 'wb') as out:
+            out.write(midi_bytes)
+
+        # Applica gli strumenti importati a FluidSynth e salva nello stato
+        ch_progs = info.get('channel_programs', {})
+        if ch_progs:
+            with STATE_LOCK:
+                st = get_last_state()
+                if 'channels' not in st:
+                    st['channels'] = {}
+                for ch_str, prog_data in ch_progs.items():
+                    ch = int(ch_str)
+                    bank = prog_data.get('bank', 0)
+                    prog = prog_data.get('program', 0)
+                    send_fluid(f"select {ch} {sf_id} {bank} {prog}")
+                    if str(ch) not in st['channels']:
+                        st['channels'][str(ch)] = {}
+                    st['channels'][str(ch)]['bank'] = bank
+                    st['channels'][str(ch)]['program'] = prog
+                _write_state_atomic(st)
+
+        return jsonify({"status": "ok", "data": info})
+    except RuntimeError as e:
+        return jsonify({"status": "error", "message": str(e)}), 409
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 if __name__ == '__main__':
     print("Starting server with WebSocket support...")

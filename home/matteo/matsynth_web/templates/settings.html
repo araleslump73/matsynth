@@ -46,6 +46,16 @@
         </select>
     </div>
 
+    <div class="card p-4" style="border: 2px solid rgba(0, 212, 255, 0.4);">
+        <div class="section-title" style="color: #00d4ff;">
+            <i class="fas fa-folder-open"></i> Select SoundFont
+        </div>
+        <p class="text-muted small mb-3">Choose the SoundFont (.sf2) file for the synthesizer.</p>
+        <select id="sf2-select" class="form-select mb-2" onchange="changeSF2(this.value)">
+            <option value=""><i class="fas fa-spinner fa-spin"></i> Loading soundfonts...</option>
+        </select>
+    </div>
+
     <div class="d-grid gap-2 mt-4">
         <button id="btn-save" class="btn btn-custom" onclick="saveAndRestart()">
             <i class="fas fa-save"></i> SAVE & RESTART MATSYNTH
@@ -145,8 +155,39 @@
             }
         }
 
+        // --- SoundFont selection ---
+        async function fetchSF2List() {
+            try {
+                const resList = await fetch('/list_sf2');
+                const files = await resList.json();
+                const select = document.getElementById('sf2-select');
+                select.innerHTML = '';
+                files.forEach(file => {
+                    let opt = document.createElement('option');
+                    opt.value = file;
+                    opt.innerHTML = file;
+                    select.appendChild(opt);
+                });
+                const resState = await fetch('/get_state');
+                const state = await resState.json();
+                if (state.font) select.value = state.font;
+            } catch (e) {
+                console.error('SF2 list error:', e);
+            }
+        }
+
+        async function changeSF2(filename) {
+            if (!filename) return;
+            const select = document.getElementById('sf2-select');
+            select.disabled = true;
+            document.body.style.opacity = '0.3';
+            document.body.style.cursor = 'wait';
+            await fetch('/load_sf2/' + encodeURIComponent(filename));
+            setTimeout(() => { window.location.href = '/'; }, 5000);
+        }
+
         // Load data as soon as the page is ready
-        window.onload = loadSettings;
+        window.onload = function() { loadSettings(); fetchSF2List(); };
     </script>
 </body>
 </html>
