@@ -1,0 +1,12 @@
+[Unit]
+Description=MatSynth: hotspot automatico all'avvio se la rete di casa non c'e'
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /home/matteo/auto_network.sh
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

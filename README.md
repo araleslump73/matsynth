@@ -51,7 +51,23 @@
 
 ### Rete: Studio e Palco
 Gli script in `home/matteo/` usano NetworkManager e non contengono credenziali.
-Non cambiano automaticamente modalità quando la rete di casa non è disponibile.
+
+**Automatico (consigliato):** `matsynth-network.service` esegue
+`auto_network.sh` una sola volta all'avvio: se entro 45 s NetworkManager si
+collega a una rete Wi-Fi salvata resta in Studio, altrimenti attiva l'hotspot
+(Palco). Non controlla più la rete dopo l'avvio: per cambiare modalità si
+riavvia il Pi (o si usano gli script manuali). Richiede che il profilo hotspot
+esista: crealo una volta con `bash home/matteo/mode_palco.sh`.
+
+```bash
+sudo cp home/matteo/matsynth-network.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now matsynth-network.service
+```
+
+Variabili: `MATSYNTH_WIFI_WAIT` (secondi di attesa), `MATSYNTH_HOTSPOT_PROFILE`.
+
+Manuale:
 
 - `bash home/matteo/mode_palco.sh` attiva il profilo hotspot esistente oppure
   chiede la password per crearne uno. In alternativa la password può essere

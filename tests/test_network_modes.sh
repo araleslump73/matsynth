@@ -72,4 +72,39 @@ if bash "$ROOT/home/matteo/mode_studio.sh" >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- auto_network.sh (solo all'avvio) ---
+cat > "$TMP_DIR/nmcli" <<'MOCK'
+#!/bin/bash
+printf '%s
+' "$*" >> "$CALLS_FILE"
+case "$*" in
+    "-t -f NAME,TYPE connection show --active") printf '%s
+' $MOCK_ACTIVE_NT ;;
+    "connection show Profilo_Palco") [[ "${MOCK_PROFILE_EXISTS:-1}" == 1 ]] || exit 1 ;;
+esac
+exit 0
+MOCK
+export MATSYNTH_WIFI_WAIT=0 MOCK_PROFILE_EXISTS=1
+AUTO="$ROOT/home/matteo/auto_network.sh"
+
+# Fuori casa: nessuna rete attiva -> hotspot
+: > "$CALLS_FILE"
+MOCK_ACTIVE_NT= bash "$AUTO" >/dev/null
+grep -Fx 'connection up Profilo_Palco' "$CALLS_FILE" >/dev/null
+
+# A casa: connesso alla rete -> nessuna azione
+: > "$CALLS_FILE"
+MATSYNTH_WIFI_WAIT=3 MATSYNTH_WIFI_POLL=1 MOCK_ACTIVE_NT=Casa:802-11-wireless bash "$AUTO" >/dev/null
+if grep -F 'connection up' "$CALLS_FILE" >/dev/null; then
+    echo "Hotspot attivato con rete di casa attiva" >&2
+    exit 1
+fi
+
+# Profilo hotspot assente -> errore, nessuna attivazione
+: > "$CALLS_FILE"
+if MOCK_PROFILE_EXISTS=0 MOCK_ACTIVE_NT= bash "$AUTO" >/dev/null 2>&1; then
+    echo "Profilo hotspot assente non segnalato" >&2
+    exit 1
+fi
+
 echo "Network mode tests passed"
