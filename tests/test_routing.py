@@ -9,12 +9,14 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import time
 import unittest
 
 import mido
 
 import helpers
+import routing_fakes
 from helpers import FANTOM_NAME, FLUID_NAME, make_router, wait_until
 
 import midi_router
@@ -188,10 +190,13 @@ class RoutingDawTests(unittest.TestCase):
         out = be.outputs[FLUID_NAME]
         self.assertTrue(daw.start_playback())
         try:
-            self.assertTrue(wait_until(lambda: (0, 123, 0) in _ccs(out), timeout=2))
+            # Entrambe le condizioni PRIMA dello stop: il note-off della nota a
+            # cavallo del loop deve venire dalla ripartenza, non da stop_all().
+            self.assertTrue(wait_until(lambda: (0, 123, 0) in _ccs(out) and ('note_off', 0, 60) in
+                                       [(m.type, m.channel, m.note) for m in out.notes()], timeout=2))
+            self.assertTrue(daw.is_playing)
         finally:
             daw.stop_all()
-        self.assertIn(('note_off', 0, 60), [(m.type, m.channel, m.note) for m in out.notes()])
 
     def test_routing_change_releases_on_old_destination(self):
         router, be = _ext_router()
@@ -352,6 +357,308 @@ class RoutingAppTests(unittest.TestCase):
         r = self.client.post('/api/daw/panic').get_json()
         self.assertTrue(r['ok'])
         self.assertEqual(sorted(p['port'] for p in r['ports']), sorted([FLUID_NAME, FANTOM_NAME]))
+
+
+ON60 = mido.Message('note_on', channel=0, note=60, velocity=90)
+OFF60 = mido.Message('note_off', channel=0, note=60, velocity=0)
+
+
+class RouterConcurrencyTests(unittest.TestCase):
+    """Fake con callback su thread proprio e close() con join (routing_fakes)."""
+
+    def _router(self, **kw):
+        router, be = routing_fakes.make_routing_router(**kw)
+        self.addCleanup(routing_fakes.close_router, router, be)
+        return router, be
+
+    def test_m5_poll_closing_input_while_callback_send_fails_no_deadlock(self):
+        # Interleaving di M5: la callback e' dentro un invio che fallira'; il
+        # polling chiude l'input (close() = join del thread della callback).
+        router, be = self._router(mode='managed')
+        inp, out = be.inputs[FANTOM_NAME], be.outputs[FLUID_NAME]
+        out.fail = True
+        out.block_next()
+        inp.feed(ON60)
+        self.assertTrue(out.entered.wait(2), 'callback non arrivata in send()')
+        del be.inputs[FANTOM_NAME]
+        poll = threading.Thread(target=router.refresh_ports, daemon=True)
+        poll.start()
+        self.assertTrue(inp.close_started.wait(2), 'il polling non ha chiuso l input')
+        out.release()                      # send fallisce -> gestione del fallimento
+        poll.join(2.0)
+        self.assertFalse(poll.is_alive(), 'deadlock polling/callback (M5)')
+        self.assertFalse(inp.join_timed_out)
+        self.assertTrue(wait_until(lambda: router.internal_status() == 'offline'))
+
+    def test_m5_router_close_while_callback_send_fails_no_deadlock(self):
+        router, be = self._router(mode='managed')
+        inp, out = be.inputs[FANTOM_NAME], be.outputs[FLUID_NAME]
+        out.fail = True
+        out.block_next()
+        inp.feed(ON60)
+        self.assertTrue(out.entered.wait(2))
+        closer = threading.Thread(target=router.close, daemon=True)
+        closer.start()
+        self.assertTrue(inp.close_started.wait(2))
+        out.release()
+        closer.join(2.0)
+        self.assertFalse(closer.is_alive(), 'deadlock close()/callback (M5)')
+        self.assertFalse(inp.join_timed_out)
+
+    def test_m5_no_cfg_lock_held_during_port_io(self):
+        # Ogni apertura/chiusura porta prova a prendere _cfg_lock da un altro
+        # thread: se il router lo tenesse durante l'I/O, il tentativo scadrebbe.
+        router, be = self._router(outputs=(FLUID_NAME, FANTOM_NAME), registry=_registry_with_fantom_out(),
+                                  mode='managed')
+        probes = []
+
+        def probe(kind, name):
+            got = []
+
+            def try_lock():
+                ok_ = router._cfg_lock.acquire(timeout=0.5)
+                if ok_:
+                    router._cfg_lock.release()
+                got.append(ok_)
+            th = threading.Thread(target=try_lock, daemon=True)
+            th.start()
+            th.join(2.0)
+            probes.append((kind, bool(got and got[0])))
+        be.io_probe = probe
+        del be.inputs[FANTOM_NAME]
+        del be.outputs[FANTOM_NAME]
+        router.refresh_ports()
+        be.add_input(FANTOM_NAME)
+        be.add_output(FANTOM_NAME)
+        router.refresh_ports()
+        router.close()
+        kinds = {k for k, _ in probes}
+        self.assertTrue({'open_input', 'open_output', 'close_input', 'close_output'} <= kinds, probes)
+        self.assertTrue(all(ok_ for _, ok_ in probes), probes)
+
+    def test_m4_lost_input_releases_held_monitor_note_and_reports(self):
+        events = []
+        router, be = self._router(mode='managed', emit=lambda ev, p: events.append((ev, p)))
+        inp, fluid = be.inputs[FANTOM_NAME], be.outputs[FLUID_NAME]
+        inp.feed(mido.Message('control_change', channel=0, control=64, value=127), ON60)
+        self.assertTrue(inp.wait_idle())
+        self.assertIn(('note_on', 0, 60), [(m.type, m.channel, m.note) for m in fluid.notes()])
+        del fluid.sent[:]
+        del be.inputs[FANTOM_NAME]                 # cavo staccato con tasto e pedale tenuti
+        router.refresh_ports()
+        self.assertEqual([(m.type, m.channel, m.note) for m in fluid.notes()], [('note_off', 0, 60)])
+        self.assertIn((0, 64, 0), _ccs(fluid))
+        self.assertIn((0, 123, 0), _ccs(fluid))
+        self.assertEqual(router._outs[FLUID_NAME].live_notes[60], 0)
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'missing')
+        errors = [p for ev, p in events if ev == 'midi_error']
+        self.assertEqual([(e['alias'], e['direction'], e['status']) for e in errors],
+                         [('keyboard-main', 'input', 'missing')])
+        # Record rifiutato da qui in poi (nessun falso "disponibile").
+        self.assertEqual(router.record_preflight([0]),
+                         [{'track': 0, 'alias': 'keyboard-main', 'status': 'missing'}])
+
+    def test_l2_port_return_sends_cleanup_without_tracked_notes(self):
+        events = []
+        parts = [_external_part(t, 5) if t == 2 else midi_router.default_part(t) for t in range(16)]
+        router, be = self._router(outputs=(FLUID_NAME, FANTOM_NAME), registry=_registry_with_fantom_out(),
+                                  parts=parts, emit=lambda ev, p: events.append((ev, p)))
+        del be.outputs[FANTOM_NAME]
+        router.refresh_ports()
+        self.assertEqual(router.port_status('fantom', 'output'), 'missing')
+        back = be.add_output(FANTOM_NAME)
+        router.refresh_ports()
+        self.assertEqual(router.port_status('fantom', 'output'), 'available')
+        # Cleanup (contratto 3.5) prima di qualunque altro invio, anche senza note tracciate.
+        self.assertEqual([(m.channel, m.control, m.value) for m in back.sent], [(5, 64, 0), (5, 123, 0)])
+        rec = router.describe_ports()['last_recovery']
+        self.assertEqual([(r['port'], r['cleanup'], r['channels']) for r in rec], [(FANTOM_NAME, 'sent', [5])])
+        payloads = [p for ev, p in events if ev == 'ports_status']
+        self.assertEqual(payloads[-1]['last_recovery'][-1]['port'], FANTOM_NAME)
+
+    def test_send_failure_offline_then_return_releases_tracked_note(self):
+        events = []
+        router, be = self._router(emit=lambda ev, p: events.append((ev, p)))
+        fluid = be.outputs[FLUID_NAME]
+        self.assertIsNotNone(router.send_track(0, ON60))
+        fluid.fail = True
+        self.assertIsNone(router.send_track(0, mido.Message('note_on', channel=0, note=62, velocity=90)))
+        self.assertTrue(wait_until(lambda: router.internal_status() == 'offline'))
+        self.assertIsNone(router.send_track(0, ON60))          # nessun fallback, nessun invio
+        self.assertTrue(any(ev == 'midi_error' and p['direction'] == 'output' for ev, p in events))
+        daw = MultiTrackDAW(router=router)
+        daw.add_note(0, 60, 100, 0.0, 1.0)
+        self.assertFalse(daw.start_playback())
+        self.assertEqual(daw.last_error['code'], 'PORT_UNAVAILABLE')
+        fluid.fail = False
+        del fluid.sent[:]
+        router.refresh_ports()                                  # porta di nuovo apribile
+        self.assertEqual(router.internal_status(), 'available')
+        self.assertEqual([(m.type, m.channel, m.note) for m in fluid.sent[:1]], [('note_off', 0, 60)])
+        self.assertIn((0, 123, 0), _ccs(fluid))
+        self.assertEqual(router.describe_ports()['last_recovery'][-1]['cleanup'], 'sent')
+
+    def test_partial_panic_reports_failed_port_and_marks_it_offline(self):
+        router, be = self._router(outputs=(FLUID_NAME, FANTOM_NAME), registry=_registry_with_fantom_out())
+        be.outputs[FANTOM_NAME].fail = True
+        report = {r['port']: r['delivery'] for r in router.panic()}
+        self.assertEqual(report, {FLUID_NAME: 'sent', FANTOM_NAME: 'failed'})
+        self.assertEqual(sorted(c for c, k, _ in _ccs(be.outputs[FLUID_NAME]) if k == 120), list(range(16)))
+        self.assertTrue(wait_until(lambda: router.port_status('fantom', 'output') == 'offline'))
+        self.assertEqual(router.internal_status(), 'available')
+
+    def test_l1_route_and_channel_published_together(self):
+        # Deterministico: dopo OGNI assegnamento di attributo del router durante
+        # apply_part si fa un invio. Se porta e canale fossero pubblicati con due
+        # assegnamenti, uno degli invii vedrebbe il canale nuovo con la porta
+        # vecchia (FluidSynth ch5 / FANTOM ch0): nota sospesa (L1).
+        class ProbingRouter(midi_router.MidiRouter):
+            probe = None
+
+            def __setattr__(self, name, value):
+                object.__setattr__(self, name, value)
+                if self.probe is not None and name != 'probe':
+                    self.probe()
+
+        be = helpers.FakeBackend(inputs=(FANTOM_NAME,), outputs=(FLUID_NAME, FANTOM_NAME))
+        router = ProbingRouter(backend=be, registry=_registry_with_fantom_out(), sf_id=lambda: 1)
+        router.start(poll=False, check_alsa=False)
+        busy = []
+
+        def probe():
+            if busy:
+                return
+            busy.append(1)
+            try:
+                router.send_track(0, mido.Message('note_on', channel=0, note=64, velocity=90))
+            finally:
+                busy.pop()
+        router.probe = probe
+        router.apply_part(_external_part(0, 5), send='none')
+        router.apply_part(midi_router.default_part(0), send='none')
+        router.probe = None
+        fluid, fantom = be.outputs[FLUID_NAME], be.outputs[FANTOM_NAME]
+        self.assertTrue(fantom.notes(), 'la sonda non ha mai suonato sulla destinazione esterna')
+        self.assertEqual({m.channel for m in fluid.sent}, {0})
+        self.assertEqual({m.channel for m in fantom.sent}, {5})
+
+    def _live_and_loop(self):
+        """managed: l'utente tiene nota 60 e pedale su parte 0 (monitor ch0);
+        il playback (traccia 0, stesso canale) ha una nota 62 a cavallo del loop."""
+        router, be = self._router(mode='managed')
+        inp, fluid = be.inputs[FANTOM_NAME], be.outputs[FLUID_NAME]
+        inp.feed(mido.Message('control_change', channel=0, control=64, value=127), ON60)
+        self.assertTrue(inp.wait_idle())
+        daw = MultiTrackDAW(bpm=600, router=router)              # beat = 0.1 s
+        daw.tracks[0] = [(0.0, [0x90, 62, 100]), (3.0, [0x80, 62, 0])]
+        daw.has_data[0] = True
+        daw.set_loop_points(0.0, 1.0)
+        daw.toggle_loop()
+        self.addCleanup(daw.stop_all)
+        return router, be, inp, fluid, daw
+
+    def test_m3_loop_and_stop_keep_live_note_and_pedal(self):
+        router, be, inp, fluid, daw = self._live_and_loop()
+        self.assertTrue(daw.start_playback())
+        loop_off = lambda: [m for m in fluid.notes() if m.type == 'note_off' and m.note == 62]
+        self.assertTrue(wait_until(lambda: len(loop_off()) >= 2, timeout=3), 'loop non ripartito')
+        daw.stop_all()
+        notes = [(m.type, m.channel, m.note) for m in fluid.notes()]
+        self.assertNotIn(('note_off', 0, 60), notes)          # nota live non tagliata
+        self.assertNotIn((0, 64, 0), _ccs(fluid))             # pedale live non azzerato
+        self.assertNotIn((0, 123, 0), _ccs(fluid))            # nessun all-notes-off sul canale live
+        # Il rilascio dell'utente arriva normalmente; poi il trasporto torna a ripulire tutto.
+        inp.feed(OFF60, mido.Message('control_change', channel=0, control=64, value=0))
+        self.assertTrue(inp.wait_idle())
+        self.assertIn(('note_off', 0, 60), [(m.type, m.channel, m.note) for m in fluid.notes()])
+        self.assertIn((0, 64, 0), _ccs(fluid))
+        router.send_track(0, mido.Message('note_on', channel=0, note=70, velocity=90))
+        router.release_all()
+        self.assertIn((0, 123, 0), _ccs(fluid))
+
+    def test_m3_panic_and_routing_change_still_release_live_notes(self):
+        router, be, inp, fluid, daw = self._live_and_loop()
+        router.panic()
+        self.assertIn(('note_off', 0, 60), [(m.type, m.channel, m.note) for m in fluid.notes()])
+        self.assertEqual(router._outs[FLUID_NAME].live_notes[60], 0)
+        inp.feed(ON60)
+        self.assertTrue(inp.wait_idle())
+        del fluid.sent[:]
+        part = router.get_part(0)
+        part['monitor'] = False                                 # il note-off live non arrivera' piu'
+        router.apply_part(part, send='none')
+        self.assertEqual([(m.type, m.channel, m.note) for m in fluid.notes()], [('note_off', 0, 60)])
+
+
+class BootstrapRegistryTests(unittest.TestCase):
+    """H1: registro di bootstrap senza ingresso mai salvato; completato dal polling."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='matsynth_boot_')
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.file = os.path.join(self.tmp, 'midi_devices.json')
+
+    def _saved_input(self):
+        with open(self.file, encoding='utf-8') as f:
+            return json.load(f)['devices'][0]['input']
+
+    def test_no_keyboard_not_persisted_then_bound_when_it_appears(self):
+        router, be = make_router(inputs=(), devices_file=self.file)
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'unbound')
+        self.assertFalse(os.path.exists(self.file))
+        router.refresh_ports()
+        self.assertFalse(os.path.exists(self.file))
+        be.add_input(FANTOM_NAME)
+        router.refresh_ports()
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'available')
+        self.assertEqual(self._saved_input(), FANTOM_DESC)
+        daw = MultiTrackDAW(router=router)
+        daw.arm_track(0, True)
+        try:
+            self.assertTrue(daw.start_recording())
+        finally:
+            daw.stop_all()
+
+    def test_restart_without_file_bootstraps_again(self):
+        make_router(inputs=(), devices_file=self.file)
+        self.assertIsNone(midi_router.load_registry_file(self.file))
+        router, _ = make_router(inputs=(FANTOM_NAME,), devices_file=self.file,
+                                registry=midi_router.load_registry_file(self.file))
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'available')
+        self.assertEqual(self._saved_input(), FANTOM_DESC)
+
+    def test_input_enumeration_failure_at_start_not_persisted(self):
+        be = routing_fakes.RoutingBackend((FANTOM_NAME,), (FLUID_NAME,))
+        be.fail_enum = {'input'}
+        router, _ = routing_fakes.make_routing_router(backend=be, devices_file=self.file)
+        self.addCleanup(routing_fakes.close_router, router, be)
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'unbound')
+        self.assertFalse(os.path.exists(self.file))
+        router.refresh_ports()                     # ancora fallita: nulla cambia
+        self.assertFalse(os.path.exists(self.file))
+        be.fail_enum = set()
+        router.refresh_ports()
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'available')
+        self.assertEqual(self._saved_input(), FANTOM_DESC)
+
+    def test_ambiguous_candidates_are_never_chosen(self):
+        router, be = make_router(inputs=(), devices_file=self.file)
+        be.add_input('USB A:USB A MIDI 1 20:0')
+        be.add_input('USB B:USB B MIDI 1 24:0')
+        router.refresh_ports()
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'unbound')
+        self.assertFalse(os.path.exists(self.file))
+        del be.inputs['USB B:USB B MIDI 1 24:0']        # ora il candidato e' unico
+        router.refresh_ports()
+        self.assertEqual(self._saved_input(), {'client': 'USB A', 'port': 'USB A MIDI 1'})
+
+    def test_user_choice_is_not_overridden(self):
+        router, be = make_router(inputs=(), devices_file=self.file)
+        router.set_device('keyboard-main', {'input': None, 'label': 'Mia tastiera'})
+        be.add_input(FANTOM_NAME)
+        router.refresh_ports()
+        self.assertEqual(router.port_status('keyboard-main', 'input'), 'unbound')
+        self.assertIsNone(self._saved_input())
 
 
 if __name__ == '__main__':

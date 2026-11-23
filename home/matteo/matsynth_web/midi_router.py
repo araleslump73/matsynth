@@ -24,6 +24,28 @@ Scelte per il Raspberry Pi Zero 2 W (416 MiB, 4 core lenti):
   destinazione, poi si invia sotto il solo lock della porta. La console
   FluidSynth (TCP 9800) e' chiamata sempre fuori da qualunque lock.
 
+Lock e ordine (mai al contrario: e' cio' che evita i deadlock, M5):
+    _enum_lock  ->  _cfg_lock  ->  op.lock
+- `_enum_lock` serializza le transizioni delle porte (enumerazione, close(),
+  gestione di un invio fallito) e protegge `_dead_outs`, `_failed`,
+  `last_recovery`. Puo' essere tenuto durante apertura/chiusura porte e
+  invii di cleanup: nessuna callback di input lo prende mai.
+- `_cfg_lock` protegge configurazione e tabelle: tenuto solo per copie e
+  pubblicazioni brevi, MAI durante I/O MIDI (open/close/send). Motivo: su
+  ALSA `closePort` fa join del thread della callback rtmidi; se chi chiude
+  tenesse un lock che la callback puo' attendere, l'app si bloccherebbe.
+- `op.lock` (uno per porta di uscita) e' una foglia: sotto di esso solo
+  `port.send()`, mai altri lock. `close()` di un input si chiama senza
+  nessun lock (la callback puo' essere in attesa di `op.lock`).
+- La callback di input (thread rtmidi) prende solo `op.lock`: un invio
+  fallito viene segnato sulla porta e gestito dal thread differito.
+Regole per i chiamanti (app.py, daw_recorder.py, test):
+- MAI chiamare refresh_ports/set_device/delete_device/select_port/close
+  tenendo `_cfg_lock` o un lock che la callback di input puo' prendere
+  (es. il lock di Record della DAW): invertirebbe l'ordine sopra.
+- Il recorder agganciato con set_recorder (gira nel thread rtmidi) non deve
+  chiamare metodi del router che prendono `_cfg_lock` o `_enum_lock`.
+
 Nessun inoltro di SysEx, clock o realtime; nessun invio di Local Control.
 """
 
@@ -581,8 +603,13 @@ class MidoBackend:
 
 class _OutPort:
     """Porta di uscita aperta, condivisa da tutte le parti che la usano.
-    Contatori note/sustain preallocati: tracciamento senza allocazioni."""
-    __slots__ = ('name', 'desc', 'port', 'lock', 'notes', 'touched', 'sustain')
+    Contatori note/sustain preallocati: tracciamento senza allocazioni.
+
+    Due serie di contatori (M3): "trasporto" (playback, preview, click) e
+    "live" (monitor dall'ingresso). Stop/loop/Play rilasciano solo i primi,
+    cosi' non tagliano le note che l'utente sta tenendo ne' il suo pedale."""
+    __slots__ = ('name', 'desc', 'port', 'lock', 'notes', 'touched', 'sustain',
+                 'live_notes', 'live_touched', 'live_sustain', 'failed')
 
     def __init__(self, name, desc, port):
         self.name = name
@@ -592,6 +619,10 @@ class _OutPort:
         self.notes = bytearray(16 * 128)      # note-on attivi per (canale, nota)
         self.touched = bytearray(16)          # canali su cui MatSynth ha suonato
         self.sustain = bytearray(16)          # CC64 >= 64 inviato e non rilasciato
+        self.live_notes = bytearray(16 * 128)  # idem, solo eventi del monitor live
+        self.live_touched = bytearray(16)
+        self.live_sustain = bytearray(16)
+        self.failed = False                   # invio fallito: niente altri invii finche' non riaperta
 
 
 class _InPort:
@@ -670,6 +701,7 @@ class MidiRouter:
         self._emit_fn = emit
         self._console = console            # callable(cmd) -> str ("" = errore socket)
         self._sf_id = sf_id                # callable() -> id SoundFont attivo
+        self._enum_lock = threading.Lock()   # ordine: _enum_lock -> _cfg_lock -> op.lock
         self._cfg_lock = threading.RLock()
         self._parts = copy.deepcopy(parts) if parts is not None else default_parts()
         for i, p in enumerate(self._parts):
@@ -691,8 +723,11 @@ class MidiRouter:
         self._internal_status = 'missing'
         self._internal_name = None
         self._internal_candidates = []
-        self._track_out = [None] * 16      # parte -> _OutPort (percorso caldo)
-        self._track_ch = list(range(16))   # parte -> canale di destinazione
+        # parte -> (_OutPort o None, canale di destinazione): porta e canale
+        # pubblicati insieme con UN solo assegnamento (L1), cosi' nessun
+        # invio puo' vedere il canale nuovo con la porta vecchia.
+        self._routes = tuple((None, ch) for ch in range(16))
+        self._bootstrap_unsaved = False    # keyboard-main di bootstrap senza ingresso, non su disco (H1)
         self._recorder = None              # callable(parti, msg, t) della DAW
         self._activity = bytearray(16)
         self._deferred = _Deferred()
@@ -715,12 +750,23 @@ class MidiRouter:
                 doc = bootstrap_registry(names_in or [])
                 with self._cfg_lock:
                     self._devices = {d['alias']: d for d in doc['devices']}
-                try:
-                    self._save_registry()
-                except Exception as e:
-                    # Registro valido in RAM anche se il disco fallisce: si riprova al prossimo PUT.
-                    print(f'[Router] Salvataggio registro bootstrap fallito: {e}')
-            self._apply_enumeration(names_in or [], names_out or [])
+                    if doc['devices'][0]['input'] is None:
+                        # H1: senza tastiera (o con enumerazione fallita/ambigua) il
+                        # registro NON va su disco, altrimenti il bootstrap non si
+                        # ripeterebbe piu' e Record resterebbe rifiutato per sempre.
+                        # Resta in RAM; il polling lo completa quando compare un
+                        # candidato unico, e senza file il prossimo avvio lo rifa'.
+                        self._bootstrap_unsaved = True
+                if self._bootstrap_unsaved:
+                    print('[Router] keyboard-main senza ingresso: registro di bootstrap solo in RAM')
+                else:
+                    try:
+                        self._save_registry()
+                    except Exception as e:
+                        # Registro valido in RAM anche se il disco fallisce: senza file il
+                        # prossimo avvio rifa' il bootstrap; un PUT riprova la scrittura.
+                        print(f'[Router] Salvataggio registro bootstrap fallito: {e}')
+            self._apply_enumeration(names_in or [], names_out or [], fresh_in=names_in is not None)
             self.started = True
         except Exception as e:
             print(f'[Router] Errore avvio: {e}')
@@ -731,19 +777,23 @@ class MidiRouter:
             self._poll_thread.start()
 
     def close(self):
+        """Chiude tutte le porte. Riutilizzabile: un refresh_ports() successivo
+        le riapre (lo fanno i test). Chiusure fuori da _cfg_lock (M5)."""
         self._poll_stop.set()
-        with self._cfg_lock:
-            for ip in list(self._ins.values()):
-                self._close_input(ip)
-            self._ins.clear()
-            for op in list(self._outs.values()):
-                try:
-                    op.port.close()
-                except Exception:
-                    pass
-                op.port = None
-            self._outs.clear()
-            self._rebuild_tables()
+        with self._enum_lock:
+            with self._cfg_lock:
+                ins = list(self._ins.values())
+                outs = list(self._outs.values())
+                for ip in ins:
+                    ip.closed = True               # la callback ignora da subito ogni evento
+                self._ins.clear()
+                self._outs.clear()
+                self._dead_outs.clear()            # chiusura voluta: nessun ripristino da fare
+                self._rebuild_tables()
+            for ip in ins:
+                self._close_input_port(ip)
+            for op in outs:
+                self._close_out_port(op)
 
     def _poll_loop(self):
         # Solo enumerazione ogni 2 s: nessun I/O MIDI, nessuna emissione se nulla cambia.
@@ -770,11 +820,12 @@ class MidiRouter:
         """Rilegge l'elenco porte e riallinea aperture/stati. Ritorna True se
         lo stato visibile e' cambiato (ed emette `ports_status`)."""
         names_in, names_out = self._enumerate()
+        fresh_in = names_in is not None
         if names_in is None:
             names_in = self._in_names       # enumerazione fallita: nessun cambio di stato
         if names_out is None:
             names_out = self._out_names
-        return self._apply_enumeration(names_in, names_out)
+        return self._apply_enumeration(names_in, names_out, fresh_in=fresh_in)
 
     def _check_direct_alsa(self):
         """managed: segnala (senza rimuovere) un collegamento ALSA diretto
@@ -799,8 +850,56 @@ class MidiRouter:
 
     # ── risoluzione porte ──────────────────────────────────────────────
 
-    def _apply_enumeration(self, names_in, names_out):
+    def _apply_enumeration(self, names_in, names_out, fresh_in=True):
+        """Riallinea porte e stati a un'enumerazione. Tre passi (M5):
+        1) sotto _cfg_lock: calcolo e distacco delle porte da chiudere, tabelle
+           pubblicate senza di esse (nessun nuovo invio verso porte in chiusura);
+        2) senza _cfg_lock: chiusure, rilasci, aperture e cleanup di ritorno;
+        3) sotto _cfg_lock: pubblicazione delle porte aperte e degli stati.
+        Il tutto sotto _enum_lock, cosi' due transizioni non si intrecciano."""
         events = []
+        with self._enum_lock:
+            if fresh_in:
+                self._rebind_bootstrap(names_in)
+            plan = self._plan_enumeration(names_in, names_out, events)
+            self._port_io(plan, events)
+            changed, payload = self._publish_enumeration(plan, names_in, names_out)
+        self._emit_events(events)
+        if changed and payload is not None:
+            self._emit('ports_status', payload)
+        return changed
+
+    def _rebind_bootstrap(self, names_in):
+        """H1: finche' keyboard-main viene dal bootstrap, e' senza ingresso e
+        l'utente non l'ha toccato, ripete la stessa regola del bootstrap
+        (candidato UNICO per la parola chiave vincente, mai una scelta fra
+        candidati ambigui) e, se trova la porta, la associa e salva."""
+        with self._cfg_lock:
+            if not self._bootstrap_unsaved:
+                return
+            dev = (self._devices or {}).get(DEFAULT_INPUT_ALIAS)
+            if dev is None or dev['input'] is not None:
+                self._bootstrap_unsaved = False     # gia' associato (o rimosso) da altri
+                return
+            chosen = bootstrap_registry(names_in)['devices'][0]['input']
+            if chosen is None:
+                return
+            new = dict(dev)
+            new['input'] = chosen
+            devices = dict(self._devices)
+            devices[DEFAULT_INPUT_ALIAS] = new
+            self._devices = devices
+            self._bootstrap_unsaved = False
+            print(f"[Router] keyboard-main associato a {chosen['client']}:{chosen['port']} (bootstrap)")
+            try:
+                # Scrittura file (non I/O MIDI) sotto _cfg_lock come set_device:
+                # un solo scrittore alla volta del registro.
+                self._save_registry()
+            except Exception as e:
+                # Resta in RAM; senza file il prossimo avvio rifa' il bootstrap.
+                print(f'[Router] Salvataggio registro bootstrap fallito: {e}')
+
+    def _plan_enumeration(self, names_in, names_out, events):
         with self._cfg_lock:
             self._in_names = list(names_in)
             self._out_names = list(names_out)
@@ -835,74 +934,134 @@ class MidiRouter:
             internal = [n for n, k in dkey_out.items() if k[0].startswith(INTERNAL_CLIENT_PREFIX)]
             self._internal_candidates = internal if len(internal) > 1 else []
             if len(internal) == 1:
-                self._internal_name, int_status = internal[0], 'available'
+                internal_name, int_status = internal[0], 'available'
             else:
-                self._internal_name, int_status = None, ('missing' if not internal else 'ambiguous')
+                internal_name, int_status = None, ('missing' if not internal else 'ambiguous')
 
             # Uscite volute: interna + uscite degli alias disponibili (una apertura per porta).
             want_out = {}
-            if self._internal_name:
-                want_out[self._internal_name] = dkey_out[self._internal_name]
+            if internal_name:
+                want_out[internal_name] = dkey_out[internal_name]
             for (alias, direction), name in bound.items():
                 if direction == 'output':
                     want_out[name] = dkey_out[name]
+            close_out = []                  # (op, porta ancora presente -> rilascio prima)
             for name in list(self._outs):
                 if name not in want_out:
-                    op = self._outs.pop(name)
-                    if name in dkey_out:
-                        # Porta presente ma non piu' usata: rilascio, poi chiusura.
-                        self._release_out(op, None, events)
-                    self._close_out(op, keep_state=name not in dkey_out)
-            for name, dk in want_out.items():
-                if name in self._outs:
-                    continue
-                op = self._open_out(name, dk, events)
-                if op is None:
-                    continue
-                self._outs[name] = op
+                    close_out.append((self._outs.pop(name), name in dkey_out))
             # Ingressi voluti: un lettore per porta, condiviso dagli alias.
             want_in = {}
             for (alias, direction), name in bound.items():
                 if direction == 'input':
                     want_in.setdefault(name, set()).add(alias)
+            close_in = []
+            lost_live = {}                  # id(op) -> (op, canali) da rilasciare (M4)
             for name in list(self._ins):
-                if name not in want_in:
-                    self._close_input(self._ins.pop(name))
+                if name in want_in:
+                    continue
+                ip = self._ins.pop(name)
+                ip.closed = True            # la callback ignora da subito ogni evento
+                close_in.append(ip)
+                # M4: i tasti tenuti su questo ingresso non manderanno piu' il note-off.
+                for chans in ip.mon:
+                    for t in chans:
+                        op, ch = self._routes[t]
+                        if op is not None:
+                            lost_live.setdefault(id(op), (op, set()))[1].add(ch)
+                if name not in dkey_in:
+                    # Ingresso scollegato mentre era in uso: errore visibile (anche
+                    # per un Record in corso). Stato reale = `missing` (tab. 3.5).
+                    for alias in sorted(ip.aliases):
+                        events.append(('midi_error', {
+                            'alias': alias, 'port': name, 'direction': 'input',
+                            'status': status.get((alias, 'input'), 'missing'),
+                            'message': 'Ingresso MIDI scollegato',
+                            'at': time.strftime('%Y-%m-%d %H:%M:%S')}))
             for name, aliases in want_in.items():
                 ip = self._ins.get(name)
-                if ip is None:
-                    ip = self._open_input(name, dkey_in[name], events)
-                    if ip is None:
-                        continue
-                    self._ins[name] = ip
-                ip.aliases = aliases
+                if ip is not None:
+                    ip.aliases = aliases
+            plan = {
+                'status': status, 'bound': bound, 'cands': cands,
+                'internal_name': internal_name, 'int_status': int_status,
+                'close_out': close_out, 'close_in': close_in, 'lost_live': list(lost_live.values()),
+                'open_out': [(n, dk) for n, dk in want_out.items() if n not in self._outs],
+                'open_in': [(n, dkey_in[n], a) for n, a in want_in.items() if n not in self._ins],
+                # Copie per il cleanup di ritorno, calcolato fuori dal lock.
+                'dests': [dict(p['destination']) for p in self._parts],
+                'devices': {a: d['output'] for a, d in (self._devices or {}).items()},
+                'opened_out': {}, 'opened_in': {},
+            }
+            # Pubblicazione provvisoria: le porte appena distaccate spariscono
+            # dalle tabelle; quelle ancora da aprire risultano non disponibili
+            # per i pochi ms dell'apertura (nessun evento emesso per questo).
+            self._internal_name = internal_name
+            self._bound = {k: n for k, n in bound.items()
+                           if n in (self._ins if k[1] == 'input' else self._outs)}
+            self._status = {k: ('missing' if k in bound and k not in self._bound else v)
+                            for k, v in status.items()}
+            self._candidates = cands
+            self._internal_status = int_status if internal_name is None or internal_name in self._outs \
+                else 'missing'
+            self._rebuild_tables()
+        return plan
+
+    def _port_io(self, plan, events):
+        """Tutto l'I/O porte, senza _cfg_lock (solo _enum_lock)."""
+        for op, still_present in plan['close_out']:
+            if still_present:
+                # Porta presente ma non piu' usata: rilascio, poi chiusura.
+                self._release_out(op, None, scope='all')
+                self._close_out_port(op)
+            else:
+                # Porta sparita: si tiene SEMPRE il descrittore (L2), cosi' al
+                # ritorno parte il cleanup anche senza note tracciate.
+                self._close_out_port(op)
+                self._dead_outs[_desc_key(op.desc)] = op
+        for ip in plan['close_in']:
+            self._close_input_port(ip)       # join della callback: nessun lock tenuto
+        # Dopo la chiusura (nessuna callback in volo): note e pedale live rilasciati.
+        for op, chans in plan['lost_live']:
+            self._release_out(op, sorted(chans), scope='live')
+        for name, dk in plan['open_out']:
+            op = self._open_out(name, dk, plan, events)
+            if op is not None:
+                plan['opened_out'][name] = op
+        for name, dk, aliases in plan['open_in']:
+            ip = self._open_input(name, dk, aliases, events, plan['bound'])
+            if ip is not None:
+                plan['opened_in'][name] = ip
+
+    def _publish_enumeration(self, plan, names_in, names_out):
+        with self._cfg_lock:
+            self._outs.update(plan['opened_out'])
+            self._ins.update(plan['opened_in'])
+            status, bound = dict(plan['status']), dict(plan['bound'])
             # Apertura fallita -> offline (mai un'altra porta al suo posto).
             for (alias, direction), name in list(bound.items()):
-                is_open = name in (self._ins if direction == 'input' else self._outs)
-                if not is_open:
+                if name not in (self._ins if direction == 'input' else self._outs):
                     status[(alias, direction)] = 'offline'
                     del bound[(alias, direction)]
-            if self._internal_name and self._internal_name not in self._outs:
+            int_status = plan['int_status']
+            if plan['internal_name'] and plan['internal_name'] not in self._outs:
                 int_status = 'offline'
-            self._status, self._bound, self._candidates = status, bound, cands
+            self._status, self._bound, self._candidates = status, bound, plan['cands']
+            self._internal_name = plan['internal_name']
             self._internal_status = int_status
             self._rebuild_tables()
             signature = (tuple(names_in), tuple(names_out), tuple(sorted(status.items())), int_status)
             changed = signature != self._last_signature
             self._last_signature = signature
             payload = self._ports_status_payload_locked() if changed else None
-        self._emit_events(events)
-        if changed and payload is not None:
-            self._emit('ports_status', payload)
-        return changed
+        return changed, payload
 
-    def _open_out(self, name, dk, events):
+    def _open_out(self, name, dk, plan, events):
         try:
             port = self.backend.open_output(name)
         except Exception as e:
             if (name, 'output') not in self._failed:
                 self._failed.add((name, 'output'))
-                events.append(('midi_error', self._error_payload(name, 'output', f'Apertura fallita: {e}')))
+                events.append(('midi_error', self._error_payload(name, 'output', f'Apertura fallita: {e}', plan['bound'])))
             print(f'[Router] Apertura output {name} fallita: {e}')
             return None
         self._failed.discard((name, 'output'))
@@ -911,55 +1070,68 @@ class MidiRouter:
             op = _OutPort(name, {'client': dk[0], 'port': dk[1]}, port)
             print(f'[Router] Output aperto: {name}')
             return op
-        # Ritorno di una porta persa: cleanup delle rotte MatSynth PRIMA di nuovi invii.
-        op.name, op.port = name, port
-        routed = {p['destination']['channel'] for p in self._parts
-                  if self._out_matches_dest(dk, p['destination'])}
-        chans = sorted(set(ch for ch in range(16) if op.touched[ch] or op.sustain[ch]) | routed)
-        ok = self._release_out(op, chans, events, force=True)
-        self.last_recovery.append({'port': name, 'at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                   'cleanup': 'sent' if ok else 'failed', 'channels': chans})
-        del self.last_recovery[:-8]
+        # Ritorno di una porta persa: cleanup delle rotte MatSynth PRIMA di nuovi
+        # invii (la porta entra nelle tabelle solo dopo, in _publish_enumeration).
+        with op.lock:
+            op.name, op.port, op.failed = name, port, False
+        routed = {d['channel'] for d in plan['dests'] if self._out_matches_dest(dk, d, plan['devices'])}
+        chans = sorted(set(ch for ch in range(16)
+                           if op.touched[ch] or op.sustain[ch] or op.live_touched[ch] or op.live_sustain[ch])
+                       | routed)
+        ok = self._release_out(op, chans, scope='all', force=True)
+        entry = {'port': name, 'at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                 'cleanup': ('sent' if chans else 'none') if ok else 'failed', 'channels': chans}
+        # Lista nuova a ogni ritorno: i lettori (describe_ports) la copiano senza lock.
+        self.last_recovery = (self.last_recovery + [entry])[-8:]
         if not ok:
             # Cleanup non riuscito: nessun nuovo invio su questa porta, resta offline.
-            self._close_out(op, keep_state=True)
+            self._close_out_port(op)
+            self._dead_outs[dk] = op
             self._failed.add((name, 'output'))
+            events.append(('midi_error', self._error_payload(name, 'output', 'Cleanup al ritorno fallito', plan['bound'])))
             return None
         print(f'[Router] Output ripristinato: {name} (cleanup canali {chans})')
         return op
 
-    def _out_matches_dest(self, dk, dest):
+    @staticmethod
+    def _out_matches_dest(dk, dest, outputs):
         if dest['kind'] == 'internal':
             return dk[0].startswith(INTERNAL_CLIENT_PREFIX)
-        dev = (self._devices or {}).get(dest['device_alias'])
-        return bool(dev and dev['output'] and _desc_key(dev['output']) == dk)
+        out = outputs.get(dest['device_alias'])
+        return bool(out and _desc_key(out) == dk)
 
-    def _close_out(self, op, keep_state):
-        try:
-            if op.port is not None:
-                op.port.close()
-        except Exception:
-            pass
+    @staticmethod
+    def _close_out_port(op):
+        """Stacca la porta sotto op.lock (gli invii vedono subito None), poi la
+        chiude fuori da ogni lock."""
         with op.lock:
-            op.port = None
-        if keep_state and (any(op.touched) or any(op.sustain)):
-            self._dead_outs[_desc_key(op.desc)] = op
+            port, op.port = op.port, None
+        if port is not None:
+            try:
+                port.close()
+            except Exception:
+                pass
 
-    def _open_input(self, name, dk, events):
+    def _open_input(self, name, dk, aliases, events, bound):
         ip = _InPort(name, {'client': dk[0], 'port': dk[1]})
+        ip.aliases = aliases
         try:
+            # Le tabelle match/mon sono vuote finche' la porta non e' pubblicata:
+            # gli eventi dei primi ms dopo l'apertura vengono ignorati.
             ip.port = self.backend.open_input(name, callback=self._make_input_callback(ip))
         except Exception as e:
             if (name, 'input') not in self._failed:
                 self._failed.add((name, 'input'))
-                events.append(('midi_error', self._error_payload(name, 'input', f'Apertura fallita: {e}')))
+                events.append(('midi_error', self._error_payload(name, 'input', f'Apertura fallita: {e}', bound)))
             print(f'[Router] Apertura input {name} fallita: {e}')
             return None
         self._failed.discard((name, 'input'))
         print(f'[Router] Input aperto: {name}')
         return ip
 
-    def _close_input(self, ip):
+    @staticmethod
+    def _close_input_port(ip):
+        """Chiamare SENZA lock: su ALSA close() fa join della callback (M5)."""
         ip.closed = True
         try:
             if ip.port is not None:
@@ -969,19 +1141,16 @@ class MidiRouter:
 
     def _rebuild_tables(self):
         """Ricalcola le tabelle del percorso caldo (chiamare sotto _cfg_lock).
-        Le liste nuove sostituiscono le vecchie con un solo assegnamento."""
-        track_out = [None] * 16
-        track_ch = [0] * 16
+        Le strutture nuove sostituiscono le vecchie con un solo assegnamento."""
+        routes = []
         for t, p in enumerate(self._parts):
             d = p['destination']
-            track_ch[t] = d['channel']
             if d['kind'] == 'internal':
                 name = self._internal_name if self._internal_status != 'offline' else None
             else:
                 name = self._bound.get((d['device_alias'], 'output'))
-            track_out[t] = self._outs.get(name) if name else None
-        self._track_ch = track_ch
-        self._track_out = track_out
+            routes.append((self._outs.get(name) if name else None, d['channel']))
+        self._routes = tuple(routes)
         managed = self.mode == 'managed'
         for ip in self._ins.values():
             match = [[] for _ in range(16)]
@@ -1082,7 +1251,7 @@ class MidiRouter:
             for t in tracks:
                 p = self._parts[t]
                 st = self.destination_status(p)
-                if st != 'available' or self._track_out[t] is None:
+                if st != 'available' or self._routes[t][0] is None:
                     problems.append({'track': t, 'alias': p['destination']['device_alias'],
                                      'status': st if st != 'available' else 'offline'})
         return problems
@@ -1092,76 +1261,85 @@ class MidiRouter:
     def set_recorder(self, fn):
         self._recorder = fn
 
-    def _send_locked(self, op, msg):
-        """Invio + tracciamento sotto op.lock. Ritorna True/False/None (None =
-        note-off non tracciato scartato: nulla da spegnere)."""
+    @staticmethod
+    def _send_locked(op, msg, live=False):
+        """Invio + tracciamento sotto op.lock. Ritorna True/None (None =
+        note-off non tracciato scartato: nulla da spegnere). `live` sceglie i
+        contatori del monitor invece di quelli del trasporto (M3)."""
         typ = msg.type
         if typ == 'note_on' or typ == 'note_off':
             idx = (msg.channel << 7) | msg.note
+            notes = op.live_notes if live else op.notes
             if typ == 'note_on' and msg.velocity:
                 op.port.send(msg)
-                if op.notes[idx] < 255:
-                    op.notes[idx] += 1
-                op.touched[msg.channel] = 1
+                if notes[idx] < 255:
+                    notes[idx] += 1
+                (op.live_touched if live else op.touched)[msg.channel] = 1
                 return True
-            if not op.notes[idx]:
+            if not notes[idx]:
                 return None         # nessuna nota da chiudere su questa porta
             op.port.send(msg)
-            op.notes[idx] -= 1
+            notes[idx] -= 1
             return True
         op.port.send(msg)
         if typ == 'control_change' and msg.control == 64:
             if msg.value >= 64:
-                op.sustain[msg.channel] = 1
-                op.touched[msg.channel] = 1
+                (op.live_sustain if live else op.sustain)[msg.channel] = 1
+                (op.live_touched if live else op.touched)[msg.channel] = 1
             else:
-                op.sustain[msg.channel] = 0
+                (op.live_sustain if live else op.sustain)[msg.channel] = 0
         return True
 
     def _send_out(self, op, msg):
         failed = None
         with op.lock:
-            if op.port is None:
+            if op.port is None or op.failed:
                 return False
             try:
                 res = self._send_locked(op, msg)
             except Exception as e:
+                op.failed = True
                 failed, res = e, False
         if failed is not None:
-            self._mark_out_failed(op, failed)
+            self._schedule_out_failed(op, failed)
         return res is not False
 
-    def send_track(self, t, msg, mutable=False, gate=None):
+    def send_track(self, t, msg, mutable=False, gate=None, live=False):
         """Invia `msg` alla destinazione della parte `t`, rimappato sul suo canale.
 
         `mutable=True`: il messaggio e' usa-e-getta (playback) e il canale viene
         cambiato in place, senza copia. `gate`: sequenza indicizzata per parte
         (es. udibilita' mute/solo) controllata SOTTO il lock della porta, cosi'
         un mute + rilascio concorrente non lascia passare un note-on dopo il
-        rilascio. Ritorna l'_OutPort usata o None.
+        rilascio. `live=True`: evento del monitor (contatori live, M3).
+        Ritorna l'_OutPort usata o None.
         """
         for _ in range(3):
-            op = self._track_out[t]
+            route = self._routes[t]
+            op, ch = route
             if op is None:
                 return None
             failed = None
             with op.lock:
-                if self._track_out[t] is not op or op.port is None:
+                cur = self._routes[t]
+                if cur[0] is not op or cur[1] != ch or op.port is None:
                     continue                    # routing cambiato nel frattempo: risolvi di nuovo
+                if op.failed:
+                    return None                 # gia' fallita: la gestione e' in coda
                 if gate is not None and not gate[t]:
                     return None
-                ch = self._track_ch[t]
                 if msg.channel != ch:
                     if mutable:
                         msg.channel = ch
                     else:
                         msg = msg.copy(channel=ch)
                 try:
-                    res = self._send_locked(op, msg)
+                    res = self._send_locked(op, msg, live)
                 except Exception as e:
+                    op.failed = True
                     failed, res = e, False
             if failed is not None:
-                self._mark_out_failed(op, failed)
+                self._schedule_out_failed(op, failed)
                 return None
             return op if res is not False else None
         return None
@@ -1174,14 +1352,25 @@ class MidiRouter:
             return False
         return self._send_out(op, msg)
 
-    def _mark_out_failed(self, op, err):
+    def _schedule_out_failed(self, op, err):
+        """Invio fallito: la porta e' gia' segnata `failed` (nessun altro invio).
+        Il resto (stato offline, chiusura, midi_error) richiede _enum_lock e
+        _cfg_lock, che il thread della callback rtmidi non deve mai attendere
+        (M5): lo esegue il thread differito. Coalescato per porta."""
+        self._deferred.call_later(0, lambda: self._handle_out_failed(op, err), key=('outfail', id(op)))
+
+    def _handle_out_failed(self, op, err):
         print(f'[Router] Invio su {op.name} fallito: {err}')
         events = []
-        with self._cfg_lock:
-            if self._outs.get(op.name) is op:
+        with self._enum_lock:
+            with self._cfg_lock:
+                # Gia' chiusa/sostituita da una transizione, oppure riaperta e
+                # ripulita nel frattempo (op riusato da _dead_outs, failed azzerato).
+                if self._outs.get(op.name) is not op or not op.failed:
+                    return
                 del self._outs[op.name]
-                self._close_out(op, keep_state=True)
                 self._failed.add((op.name, 'output'))
+                events.append(('midi_error', self._error_payload(op.name, 'output', f'Invio fallito: {err}')))
                 for key, name in list(self._bound.items()):
                     if name == op.name and key[1] == 'output':
                         self._status[key] = 'offline'
@@ -1189,96 +1378,133 @@ class MidiRouter:
                 if op.name == self._internal_name:
                     self._internal_status = 'offline'
                 self._rebuild_tables()
-                events.append(('midi_error', self._error_payload(op.name, 'output', f'Invio fallito: {err}')))
                 self._last_signature = None
+            self._close_out_port(op)
+            self._dead_outs[_desc_key(op.desc)] = op    # cleanup al ritorno (sez. 3.5)
         self._emit_events(events)
 
     # ── rilascio note / PANIC ──────────────────────────────────────────
 
-    def _release_out(self, op, channels, events, force=False):
-        """Note-off tracciati + CC64=0 + CC123 sui canali coinvolti.
-        Con `force` (ritorno porta) invia CC64/CC123 anche se nulla e' tracciato."""
+    @staticmethod
+    def _send_note_offs(op, notes, ch):
+        base = ch << 7
+        seg = notes[base:base + 128]
+        if seg.count(0) != 128:          # scansione in C, non in Python
+            for n in range(128):
+                for _ in range(seg[n]):
+                    op.port.send(mido.Message('note_off', channel=ch, note=n, velocity=0))
+            notes[base:base + 128] = bytes(128)
+
+    def _release_out(self, op, channels, scope='transport', force=False):
+        """Note-off tracciati + CC64=0 + CC123 sui canali coinvolti. Ritorna True/False.
+
+        scope (M3):
+        - 'transport': stop/loop/Play/mute della DAW. Solo le note del
+          trasporto. CC64=0 e CC123 agiscono su TUTTO il canale del synth:
+          CC64=0 si salta se l'utente tiene il pedale (monitor live), CC123 si
+          salta se l'utente tiene note o pedale su quel canale. Cosi' il
+          trasporto non taglia mai cio' che l'utente sta suonando dal vivo.
+        - 'live': ingresso perso (M4). Simmetrico: solo le note live.
+        - 'all': cambio routing, ritorno porta, porta non piu' usata: tutto.
+        Con `force` (ritorno porta) invia CC64/CC123 anche se nulla e' tracciato.
+        """
+        failed = None
         with op.lock:
-            if op.port is None:
+            if op.port is None or op.failed:
                 return False
             try:
                 for ch in (range(16) if channels is None else channels):
-                    if not force and not op.touched[ch] and not op.sustain[ch]:
-                        continue
                     base = ch << 7
-                    seg = op.notes[base:base + 128]
-                    if seg.count(0) != 128:          # scansione in C, non in Python
-                        for n in range(128):
-                            for _ in range(seg[n]):
-                                op.port.send(mido.Message('note_off', channel=ch, note=n, velocity=0))
-                        op.notes[base:base + 128] = bytes(128)
-                    op.port.send(mido.Message('control_change', channel=ch, control=64, value=0))
-                    op.port.send(mido.Message('control_change', channel=ch, control=123, value=0))
-                    op.touched[ch] = 0
-                    op.sustain[ch] = 0
+                    tr_on = op.touched[ch] or op.sustain[ch]
+                    lv_on = op.live_touched[ch] or op.live_sustain[ch]
+                    if scope == 'transport':
+                        active = tr_on
+                        other_sus = op.live_sustain[ch]
+                        other_notes = op.live_notes[base:base + 128].count(0) != 128
+                    elif scope == 'live':
+                        active = lv_on
+                        other_sus = op.sustain[ch]
+                        other_notes = op.notes[base:base + 128].count(0) != 128
+                    else:
+                        active = tr_on or lv_on
+                        other_sus = other_notes = False
+                    if not active and not force:
+                        continue
+                    if scope != 'live':
+                        self._send_note_offs(op, op.notes, ch)
+                    if scope != 'transport':
+                        self._send_note_offs(op, op.live_notes, ch)
+                    if not other_sus:
+                        op.port.send(mido.Message('control_change', channel=ch, control=64, value=0))
+                        if not other_notes:
+                            op.port.send(mido.Message('control_change', channel=ch, control=123, value=0))
+                    if scope != 'live':
+                        op.touched[ch] = 0
+                        op.sustain[ch] = 0
+                    if scope != 'transport':
+                        op.live_touched[ch] = 0
+                        op.live_sustain[ch] = 0
                 return True
             except Exception as e:
-                err = e
-        events.append(('midi_error', self._error_payload(op.name, 'output', f'Invio fallito: {err}')))
+                op.failed = True
+                failed = e
+        self._schedule_out_failed(op, failed)
         return False
 
     def release_tracks(self, tracks):
-        """Rilascia note/sustain sulle destinazioni (porta, canale) delle parti."""
-        with self._cfg_lock:
-            by_op = {}
-            for t in tracks:
-                op = self._track_out[t]
-                if op is not None:
-                    by_op.setdefault(id(op), (op, set()))[1].add(self._track_ch[t])
-        events = []
+        """Rilascia note/sustain del TRASPORTO sulle destinazioni (porta, canale)
+        delle parti (stop, loop, mute). Le note live del monitor restano (M3)."""
+        routes = self._routes                      # un'unica lettura atomica (L1)
+        by_op = {}
+        for t in tracks:
+            op, ch = routes[t]
+            if op is not None:
+                by_op.setdefault(id(op), (op, set()))[1].add(ch)
         for op, chans in by_op.values():
-            self._release_out(op, sorted(chans), events)
-        self._emit_events(events)
+            self._release_out(op, sorted(chans), scope='transport')
 
     def release_part_notes(self, part_id):
         self.release_tracks((part_id,))
 
     def release_all(self):
-        """Rilascio su tutte le porte aperte, solo sui canali toccati da MatSynth."""
+        """Rilascio del trasporto su tutte le porte aperte, solo sui canali
+        toccati da MatSynth (avvio/stop di Play e Record)."""
         with self._cfg_lock:
             ops = list(self._outs.values())
-        events = []
         for op in ops:
-            self._release_out(op, None, events)
-        self._emit_events(events)
+            self._release_out(op, None, scope='transport')
 
     def panic(self):
         """PANIC (sez. 3.7): su ogni destinazione aperta, tutti i 16 canali:
-        note-off tracciati, CC64=0, CC123, CC120. Ritorna l'esito per porta."""
+        note-off tracciati (trasporto e live), CC64=0, CC123, CC120. Ritorna
+        l'esito per porta."""
         with self._cfg_lock:
             ops = list(self._outs.values())
         report = []
-        events = []
         for op in ops:
-            ok = True
+            failed = None
             with op.lock:
                 if op.port is None:
                     continue
+                if op.failed:
+                    report.append({'port': op.name, 'delivery': 'failed'})
+                    continue
                 try:
                     for ch in range(16):
-                        base = ch << 7
-                        seg = op.notes[base:base + 128]
-                        if seg.count(0) != 128:
-                            for n in range(128):
-                                for _ in range(seg[n]):
-                                    op.port.send(mido.Message('note_off', channel=ch, note=n, velocity=0))
-                    op.notes[:] = bytes(len(op.notes))
+                        self._send_note_offs(op, op.notes, ch)
+                        self._send_note_offs(op, op.live_notes, ch)
                     for ch in range(16):
                         op.port.send(mido.Message('control_change', channel=ch, control=64, value=0))
                         op.port.send(mido.Message('control_change', channel=ch, control=123, value=0))
                         op.port.send(mido.Message('control_change', channel=ch, control=120, value=0))
-                    op.touched[:] = bytes(16)
-                    op.sustain[:] = bytes(16)
+                    for arr in (op.touched, op.sustain, op.live_touched, op.live_sustain):
+                        arr[:] = bytes(16)
                 except Exception as e:
-                    ok = False
-                    events.append(('midi_error', self._error_payload(op.name, 'output', f'PANIC fallito: {e}')))
-            report.append({'port': op.name, 'delivery': 'sent' if ok else 'failed'})
-        self._emit_events(events)
+                    op.failed = True
+                    failed = e
+            if failed is not None:
+                self._schedule_out_failed(op, failed)
+            report.append({'port': op.name, 'delivery': 'sent' if failed is None else 'failed'})
         return report
 
     # ── ingresso / monitor ─────────────────────────────────────────────
@@ -1296,7 +1522,7 @@ class MidiRouter:
                 now = time.time()
                 ch = msg.channel
                 for t in ip.mon[ch]:            # vuota in legacy: zero reinvii
-                    send_track(t, msg)          # copia solo se il canale va rimappato
+                    send_track(t, msg, live=True)   # copia solo se il canale va rimappato
                 match = ip.match[ch]
                 if match:
                     rec = self._recorder
@@ -1322,7 +1548,7 @@ class MidiRouter:
         """Nota breve alla destinazione della traccia; il note-off va alla
         stessa porta/canale del note-on (anche se il routing cambia) ed e'
         programmato sul thread differito unico, non su un thread per nota."""
-        on = mido.Message('note_on', channel=self._track_ch[t], note=note, velocity=velocity)
+        on = mido.Message('note_on', channel=self._routes[t][1], note=note, velocity=velocity)
         op = self.send_track(t, on, mutable=True)
         if op is None:
             return False
@@ -1343,7 +1569,8 @@ class MidiRouter:
         send: 'diff' (cio' che e' cambiato), 'all' (suono + tutti i CC, uso
         richiamo scena), 'none'. Se la destinazione cambia, note e sustain
         vengono rilasciati sulla VECCHIA destinazione dopo il cambio di
-        tabella (nessun note-on puo' finire sulla vecchia dopo il rilascio).
+        tabella (nessun note-on puo' finire sulla vecchia dopo il rilascio:
+        send_track ricontrolla la coppia porta/canale sotto il lock della porta).
         Ritorna il report `applied` di sez. 8.2.
         """
         t = part['part_id'] if isinstance(part, dict) and _is_int(part.get('part_id')) else -1
@@ -1353,7 +1580,7 @@ class MidiRouter:
         new = copy.deepcopy(part)
         with self._cfg_lock:
             old = self._parts[t]
-            old_op, old_ch = self._track_out[t], self._track_ch[t]
+            old_op, old_ch = self._routes[t]       # porta e canale letti insieme (L1)
             dest_changed = old['destination'] != new['destination']
             # Anche input/monitor: un tasto tenuto il cui note-off non arrivera'
             # piu' (input cambiato, monitor spento) resterebbe sospeso.
@@ -1362,9 +1589,10 @@ class MidiRouter:
             self._parts[t] = new
             self._rebuild_tables()
         if route_changed and old_op is not None:
-            events = []
-            self._release_out(old_op, [old_ch], events)
-            self._emit_events(events)
+            # Destinazione cambiata: tutto (trasporto e live) sulla vecchia.
+            # Solo input/monitor cambiati: solo le note live, il cui note-off
+            # non arrivera' piu' a questa destinazione; il playback continua.
+            self._release_out(old_op, [old_ch], scope='all' if dest_changed else 'live')
         if send == 'none':
             include_sound, keys = False, []
         elif send == 'all' or dest_changed:
@@ -1495,6 +1723,8 @@ class MidiRouter:
             except Exception:
                 self._devices = prev
                 raise
+            if alias == DEFAULT_INPUT_ALIAS:
+                self._bootstrap_unsaved = False   # scelta dell'utente: mai sovrascritta dal bootstrap
         self.refresh_ports()
         return old is None, copy.deepcopy(dev)
 
@@ -1513,6 +1743,8 @@ class MidiRouter:
             except Exception:
                 self._devices = prev
                 raise
+            if alias == DEFAULT_INPUT_ALIAS:
+                self._bootstrap_unsaved = False
         self.refresh_ports()
 
     def select_port(self, alias, direction, port):
@@ -1563,7 +1795,10 @@ class MidiRouter:
                     continue
                 outputs.append({'name': n, 'descriptor': desc, 'aliases': aliases_for(desc, 'output'),
                                 'internal': is_internal_descriptor(desc), 'excluded': ex})
-            return {'inputs': inputs, 'outputs': outputs}
+            # Stato di ripristino (sez. 3.5, L2): ultimi ritorni di porta con
+            # esito del cleanup. Esposto in GET /api/midi/ports e in `ports_status`.
+            return {'inputs': inputs, 'outputs': outputs,
+                    'last_recovery': [dict(r) for r in self.last_recovery]}
 
     def _ports_status_payload_locked(self):
         p = self.describe_ports(False)
@@ -1579,9 +1814,11 @@ class MidiRouter:
 
     # ── emissione eventi (sempre fuori dai lock) ───────────────────────
 
-    def _error_payload(self, name, direction, message):
+    def _error_payload(self, name, direction, message, bound=None):
+        # `bound`: associazioni del piano in corso (durante l'I/O di una
+        # transizione `_bound` pubblicato esclude le porte non ancora aperte).
         alias = None
-        for (a, d), n in self._bound.items():
+        for (a, d), n in (self._bound if bound is None else bound).items():
             if n == name and d == direction:
                 alias = a
                 break
