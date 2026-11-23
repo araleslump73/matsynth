@@ -2083,6 +2083,11 @@ class MultiTrackDAW:
                     entry['program'] = msg.program
                 elif msg.type == 'pitchwheel':
                     entry['pitch'] = msg.pitch
+                elif msg.type == 'aftertouch':
+                    entry['value'] = msg.value
+                elif msg.type == 'polytouch':
+                    entry['note_num'] = msg.note
+                    entry['value'] = msg.value
                 result.append(entry)
         return result, rev
 
