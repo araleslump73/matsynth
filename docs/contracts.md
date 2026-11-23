@@ -863,6 +863,15 @@ Il fast path degli slider resta `cc_update` (Socket.IO, `chan` = ID parte). Per 
 | PUT `/api/daw/track/<t>/notes/batch` | `{expected_revision, edits: [{on_idx, off_idx, on_beat?, off_beat?, note?, velocity?}]}` (`expected_revision` obbligatoria) | `{modified, revision}`; tutte le modifiche applicate in un solo passaggio sugli indici della revisione attesa, un sort, un undo (`daw_recorder.py:edit_notes_batch`, oggi senza route). Indice fuori intervallo o `on_idx` che non punta a un note-on -> `422 VALIDATION_FAILED` e nessuna modifica (oggi `edit_notes_batch` salta in silenzio le voci invalide). |
 | DELETE `/api/daw/track/<t>/notes/batch` | `{expected_revision, pairs: [{on_idx, off_idx}]}` | `{removed, revision}` (`delete_notes_batch`). |
 
+**Editor note/eventi** (owner `ui-editor`, D28-D31)
+
+| Metodo, path | Richiesta | Risposta |
+| --- | --- | --- |
+| GET `/api/daw/track/<t>/notes` | — | `{channel, revision, notes: [[note, vel, start, end, on_idx, off_idx, clip_id]], clips, max_beat, beats_per_measure}`: note di UNA traccia accoppiate FIFO (6.2), una copia sotto lock (`get_track_notes`). |
+| POST `/api/daw/copy`, `/api/daw/cut` con `pairs` | `{channel, pairs: [{on_idx, off_idx}], expected_revision}` (`expected_revision` obbligatoria con `pairs`) | `{copied, removed, clipboard, revision}`: appunti `range` con origine = primo note-on; incolla con `paste_at` (regola ID di `add_note`). Taglia = un undo, i clip restano. `409 RECORDING_ACTIVE` in Record. |
+| PUT `/api/daw/track/<t>/events/batch` | `{expected_revision, edits: [{index, beat?, cc_num?, cc_value?, program?, pitch?, value?}]}` | `{modified, revision}`; indice di nota, ripetuto, fuori intervallo o campo non applicabile al tipo -> `422 VALIDATION_FAILED`, nessuna modifica. |
+| DELETE `/api/daw/track/<t>/events/batch` | `{expected_revision, indices: [..]}` | `{removed, revision}`; un evento di nota porta con se' il partner FIFO dello stesso clip. |
+
 Selezione esplicita: non serve una route; ogni operazione riceve l'oggetto nel body (6.8). Stato "dirty": `GET /api/projects/current`, `GET /api/scenes/current` + eventi 9.2. Modalita' managed/legacy: `GET /api/system/status`, `PUT /api/system/mode`.
 
 Esempi di richieste/risposte: `docs/schemas/api_examples.json` (verificati dal test per forma della busta e codici).
@@ -1009,7 +1018,7 @@ ui-contracts
 - Corregge: A8, A11 (punti A/B diretti, Taglia), A15, A16, A17, A18, A19, A24, A27, A28.
 
 **`ui-editor`** (frontend; backend solo correzioni coordinate)
-- Possiede: `templates/partials/editor.html`, `static/js/midi_editor.js`, `static/css/editor.css`; rimuove da `legacy_daw.js` piano roll ed event viewer.
+- Possiede: `templates/partials/editor.html`, `static/js/midi_editor.js`, `static/css/editor.css`; rimuove da `legacy_daw.js` piano roll ed event viewer (rinviato a `ui-acceptance`, D34).
 - Consuma: 1.2-1.3, 2, 6 (coppie, revisione, selezione note, batch, cut/paste), 8.1-8.2, 9.
 - NON tocca: `studio.js` salvo il punto di apertura/ritorno concordato, router, `project_store.py`.
 
@@ -1183,6 +1192,14 @@ Ogni voce: scelta adottata in questo contratto (le fasi la implementano) e racco
 | D25 | Categorie del browser suoni (piano: "ricerca/categorie"). | Il SoundFont non espone categorie: si usano le famiglie General MIDI (`program / 8`) e "Batterie" per bank >= 120. Sui SoundFont non GM sono solo indicative; la ricerca per nome/bank-program resta sempre disponibile. |
 | D26 | Import SMF da client legacy senza `convert` (review `ui-persistence` M3): con `convert` assente = `false`, la vecchia UI non importava piu' file con piu' tempi o metro 6/8 e non aveva modo di convertire. | Come D13: `convert` assente = conversione automatica (primo tempo, 4/4, BPM in 30..300) con warning `IMPORT_CONVERTED` e `details.issues`; solo `convert: false` esplicito da' `422 IMPORT_NEEDS_CONVERSION`. I client nuovi DEVONO inviare `convert`. **Da confermare con l'utente.** |
 | D27 | Documenti D3 senza eventi posseduti (review `ui-persistence` L4): un progetto con clip ma nessun evento con terzo elemento era indistinguibile da un pre-D3, e alla riapertura la migrazione assegnava ai clip gli eventi liberi nella loro cornice. | Chiave di radice facoltativa `event_clip_ids: true` (5.1), sempre scritta dal writer: disattiva la migrazione di 6.4. Eccezione esplicita a 5.1/D18 (chiavi extra rifiutate) senza incrementare `schema_version`: i file nuovi aperti da una versione precedente del codice danno `VALIDATION_FAILED` (nessuna versione rilasciata la precede). **Da confermare con l'utente.** |
+
+| D28 | Editor note su tutta la traccia e note spostate fuori dalla cornice del clip (`ui-editor`). | Nuova route `GET track/<t>/notes` (lettura di una sola traccia, non l'intero stato DAW). Spostare/ridimensionare note possedute oltre i bordi del clip **allarga la cornice** nello stesso undo (6.4 vietava di uscire); oltre `MAX_BEAT` -> `422` `reason: max_beat`. Alternativa: rifiutare lo spostamento. **Da confermare con l'utente.** |
+| D29 | `notes/batch` che cambia l'accoppiamento FIFO (es. nota spostata dopo un'altra uguale sovrapposta). | Rifiutata con `422 VALIDATION_FAILED` `reason: pairing` e nessuna modifica: l'editor rilegge e avvisa. Evita che dopo il sort note-on/note-off si riaccoppino diversamente (note "fuse" o più lunghe). |
+| D30 | Limite eventi in `add_note` e `paste`. | `MAX_EVENTS_TOTAL` verificato anche qui (prima solo all'import/apertura): `422` `reason: max_events`. |
+| D31 | Copia/Taglia di note scelte e modifica/eliminazione batch degli eventi. | Estese `copy`/`cut` con `pairs` (nessuna route nuova) e aggiunte `PUT/DELETE events/batch` (8.2). |
+| D32 | Selezione note dell'editor (6.8). | Locale all'editor (non condivisa con Studio), riselezionata per contenuto (nota/inizio/clip) dopo ogni modifica propria; dopo modifiche altrui o `409` viene azzerata e la mappa riletta. Quantizza/Trasponi/Velocity agiscono sulla selezione con una sola `notes/batch`; Quantizza senza selezione = tutte le note visibili della traccia. |
+| D33 | Editor durante il Record; incolla fuori da un clip. | Editor in sola lettura durante il Record (comandi disabilitati, il backend risponde comunque `409`). Le note incollate fuori da qualsiasi clip sono eventi liberi (`clip_id` 0, regola di `add_note`): note-on e note-off restano sempre nello stesso clip. |
+| D34 | 11.2 prevede che `ui-editor` rimuova piano roll ed editor eventi da `legacy_daw.js`. | **Non rimossi**: la Vista classica resta disponibile (con il vecchio editor) finché `ui-acceptance` non decide; il nuovo editor ne copre le funzioni di editing. Toccati `studio.html`/`studio.js` solo per il punto di apertura (pulsanti "Editor note" e "Modifica note") e `index.html` per i due tag script. |
 
 Nessuna contraddizione bloccante trovata nel piano. Le tensioni principali (D1/D2 default espliciti vs compatibilita' legacy, D6 rewind dopo Record: deciso dall'utente di mantenerlo come opzione, D16 suffissi legacy) sono risolte dando priorita' al piano per la UI nuova e conservando il comportamento legacy solo sulle route legacy.
 
