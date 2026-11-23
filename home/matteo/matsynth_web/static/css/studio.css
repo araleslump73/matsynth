@@ -82,6 +82,16 @@
 .st-ruler-playhead, .st-playhead, .st-cursor { position: absolute; top: 0; left: 0; width: 2px; pointer-events: none; will-change: transform; }
 .st-ruler-playhead { height: 32px; background: var(--ms-danger); }
 
+.st-hidden-bar {
+    display: flex; flex: 0 0 auto; align-items: center; gap: 8px; min-height: 48px;
+    padding: 2px 8px; border-bottom: 1px solid var(--ms-border); background: var(--ms-surface);
+    color: var(--ms-text-dim); font-size: 0.78rem;
+}
+.st-hidden-bar[hidden] { display: none !important; }
+.st-hidden-tracks { display: flex; align-items: center; gap: 4px; overflow-x: auto; min-width: 0; }
+.st-hidden-track { min-width: var(--ms-touch); min-height: var(--ms-touch); }
+.st-hidden-bar > .st-btn { flex: 0 0 auto; }
+
 .st-scroll { position: relative; flex: 1 1 auto; overflow: auto; min-height: 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 .st-content { position: relative; min-height: 100%; }
 .st-density { position: absolute; top: 0; pointer-events: none; z-index: 0; }
@@ -90,6 +100,7 @@
 .st-cursor[hidden] { display: none; }
 
 .st-row { display: flex; height: var(--st-row); border-bottom: 1px solid #1d1d2c; }
+.st-row[hidden] { display: none !important; }
 .st-head {
     position: sticky; left: 0; z-index: 5;
     flex: 0 0 var(--st-head); display: flex; align-items: center; gap: 4px; padding: 0 4px 0 0;

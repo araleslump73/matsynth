@@ -16,6 +16,8 @@
     var TRANSPOSE_MAX = 24;         // limite della route clip/transpose
     var ZOOM_LEVELS = [6, 10, 16, 24, 32, 48, 64, 96, 128];   // px per beat
     var DEFAULT_ZOOM = 32;
+    var TRACK_SIZES = { compact: 40, medium: 64, large: 110 };
+    var TRACK_SIZE_ORDER = ['medium', 'large', 'compact'];
     // Stessa tavolozza della vista classica (legacy_daw.js TRACK_PALETTE): track_colors e' un indice 0-15.
     var TRACK_PALETTE = ['#00d4ff', '#ff4444', '#44ff44', '#ffcc00', '#ff66ff', '#ff8844', '#44ffff', '#88ff44',
         '#ff4488', '#4488ff', '#ffff44', '#aa44ff', '#44ffaa', '#ff8888', '#88ccff', '#cccccc'];
@@ -41,6 +43,23 @@
         }
         i = Math.max(0, Math.min(ZOOM_LEVELS.length - 1, i + (dir > 0 ? 1 : -1)));
         return ZOOM_LEVELS[i];
+    }
+
+    function nextTrackSize(size) {
+        var i = TRACK_SIZE_ORDER.indexOf(size);
+        return TRACK_SIZE_ORDER[(i < 0 ? 0 : i + 1) % TRACK_SIZE_ORDER.length];
+    }
+
+    function trackGeometry(sizes, hidden) {
+        var tops = [], heights = [], totalHeight = 0;
+        for (var t = 0; t < 16; t++) {
+            var size = sizes && Object.prototype.hasOwnProperty.call(TRACK_SIZES, sizes[t]) ? sizes[t] : 'medium';
+            var height = TRACK_SIZES[size];
+            tops[t] = totalHeight;
+            heights[t] = height;
+            if (!(hidden && hidden[t])) totalHeight += height;
+        }
+        return { tops: tops, heights: heights, totalHeight: totalHeight };
     }
 
     function clipsOf(daw, track) {
@@ -308,12 +327,16 @@
         TRANSPOSE_MAX: TRANSPOSE_MAX,
         ZOOM_LEVELS: ZOOM_LEVELS,
         DEFAULT_ZOOM: DEFAULT_ZOOM,
+        TRACK_SIZES: TRACK_SIZES,
+        TRACK_SIZE_ORDER: TRACK_SIZE_ORDER,
         TRACK_PALETTE: TRACK_PALETTE,
         COMMANDS: COMMANDS,
         snapBeat: snapBeat,
         beatToX: beatToX,
         xToBeat: xToBeat,
         zoomStep: zoomStep,
+        nextTrackSize: nextTrackSize,
+        trackGeometry: trackGeometry,
         clipsOf: clipsOf,
         findClip: findClip,
         positionBeats: positionBeats,

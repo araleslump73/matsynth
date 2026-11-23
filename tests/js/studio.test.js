@@ -27,6 +27,23 @@ test('zoomStep resta nei livelli e aggancia valori fuori tabella', () => {
     assert.ok(L.includes(m.zoomStep(33, 1)));
 });
 
+test('altezza e visibilita\' tracce producono geometria compatta senza spazi vuoti', () => {
+    const sizes = Array(16).fill('medium');
+    const hidden = Array(16).fill(false);
+    sizes[1] = 'large';
+    sizes[3] = 'compact';
+    hidden[1] = true;
+    const layout = m.trackGeometry(sizes, hidden);
+    assert.equal(layout.heights[1], 110);
+    assert.equal(layout.tops[2], 64);
+    assert.equal(layout.tops[3], 128);
+    assert.equal(layout.totalHeight, 14 * 64 + 40);
+    assert.equal(m.trackGeometry(null, null).totalHeight, 16 * 64);
+    assert.deepEqual(['large', 'compact', 'medium'], [
+        m.nextTrackSize('medium'), m.nextTrackSize('large'), m.nextTrackSize('compact')
+    ]);
+});
+
 test('timelineBeats: minimo 16 battute, margine di 8 oltre l\'ultimo clip', () => {
     assert.equal(m.timelineBeats(daw({ clips: {} })), 64);
     const d = daw({ clips: { 3: [{ id: 9, start_beat: 0, end_beat: 100 }] } });

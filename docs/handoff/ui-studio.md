@@ -37,6 +37,7 @@ Commit: `10c4c24` (backend, dettagli in `ui-studio-backend.md`) ed `e799293` (fr
   - Ogni comando disabilitato mostra la motivazione (`aria-disabled` + `title`/`data-reason`). L'`aria-label` mantiene il nome del comando.
   - Traccia:
     - rinomina (anche con Invio) e colore;
+    - altezza compatta/media/grande e nascondi/ripristina dalla scheda Traccia e dalla barra sopra la timeline;
     - duplica traccia, con `include_config` facoltativo e conferma di sovrascrittura;
     - svuota la traccia o tutte le tracce, con conferma.
   - Suono: monta il `partPanel` esistente. Mixer: 16 volumi con invio coalescato.
@@ -71,12 +72,13 @@ Prove fatte con Playwright su un server locale con FakeBackend del router (porte
 
 Test: `node --test tests/js` → 105/105; `python -m unittest discover -s tests -p "test_*.py"` → 232 OK.
 
+Raspberry Pi, browser diretto (2026-11-23): Studio si apre senza errori visibili; altezza Media/Grande/Compatta, nascondi, ripristino singolo, Mostra tutte, zoom timeline +/- e zoom X/Y dell'Editor note +/- provati. A 390×844 la pagina non ha overflow orizzontale. Queste prove sono browser, non test touch fisici.
+
 ## Deviazioni e decisioni aperte
 
 - **Multi-selezione solo per Unisci**: le altre operazioni agiscono su un clip alla volta (un gesto = un undo, come da contratto). Per estenderle servirebbero API batch.
 - **Libreria Progetti/MIDI**: il pulsante "Progetti/MIDI" apre il pannello Libreria esistente. La sezione progetti e l'import MIDI dedicati (`library_projects.js`) non sono stati realizzati in questa fase.
-- **Tracce nascoste/compattate**: non implementate, si vedono sempre 16 righe.
-- **Vista classica mantenuta** finché `ui-editor` non sostituisce piano roll ed editor eventi.
+- **Vista classica mantenuta** come compatibilita' finche' la parita' delle funzioni non e' verificata su Pi/tablet; le funzioni di altezza traccia e nascondi/ripristina sono ora disponibili anche nella vista nuova.
 - Deviazioni del backend: D22 e D23 in `contracts.md` (vedi `ui-studio-backend.md`); `include_config` su duplica traccia.
 - **Difetto in `shell.js` (WIP ui-live, non toccato)**: `guardLegacyShortcuts` fa `stopPropagation` in capture su `document` per i tasti dentro `.ms-panel`, `.ms-globalbar` e `#view-live`. Così blocca i listener `keydown` dei target in quei contenitori. Studio non ne dipende (ascolta su `body`), ma va corretto da chi chiude ui-live.
 
@@ -87,8 +89,8 @@ Test: `node --test tests/js` → 105/105; `python -m unittest discover -s tests 
 
 ## Resta da fare
 
-- `ui-editor`: editor note dettagliato, poi rimozione della vista classica (`studio_legacy.html` e le parti relative di `legacy_daw.js`).
-- Sezione Progetti/MIDI della Libreria; tracce nascoste.
+- Provare le nuove funzioni con touch reale su tablet; verificare il layout su dispositivo fisico.
+- Sezione Progetti/MIDI della Libreria.
 
 ## Da verificare sul Pi e sul tablet
 

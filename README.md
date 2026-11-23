@@ -49,6 +49,19 @@
 - Editor di note e clip, quantizzazione, trasposizione e undo/redo
 - Importazione ed esportazione di file MIDI
 
+## Uso di Suona, Studio ed Editor
+
+- **Suona** gestisce le 16 parti, i suoni, il mixer e le scene preferite.
+- **Studio** mostra la timeline. Usa `+`/`−` per lo zoom orizzontale; seleziona una traccia e, nell'inspector **Traccia**, cambia l'altezza o nascondila. Le tracce nascoste si ripristinano dai pulsanti sopra la timeline.
+- **Editor note** apre il piano roll della traccia o del clip selezionato. I controlli `↔` e `↕` regolano lo zoom orizzontale e verticale; **Adatta** inquadra il clip o le note.
+- La **scena** salva suoni, parti e controlli del synth; il **progetto MatSynth** salva la sessione DAW (note, clip, tracce, tempo e routing); un file **MIDI** contiene eventi musicali portabili ma non conserva tutti i dati MatSynth, per esempio i confini dei clip e gli alias delle porte. Importa/esporta MIDI e salva/apri progetto sono operazioni diverse.
+
+I preset legacy vengono letti tramite migrazione in memoria: la lettura non riscrive i file originali. Non eliminare i vecchi preset durante la migrazione.
+
+### Routing MIDI e FANTOM
+
+La modalità MIDI predefinita è `legacy`: la tastiera può essere collegata direttamente a FluidSynth via ALSA; il controllo software **Monitor** delle parti non inoltra note live in questa modalità. `managed` è sperimentale e non va attivata come modalità predefinita prima delle prove hardware. Prima di abilitare il monitor software sulla FANTOM, verifica il suo **Local Control** per evitare note doppie. Non usare contemporaneamente Local Control e monitor senza aver verificato il routing.
+
 ### Rete: Studio e Palco
 Gli script in `home/matteo/` usano NetworkManager e non contengono credenziali.
 
@@ -235,6 +248,25 @@ Esempio:
 ```bash
 ./deploy.sh matteo@matsynth
 ```
+
+Prima del deploy salva progetto/scena e ferma il trasporto: il riavvio del servizio interrompe Play/Record. Il deploy non sostituisce la cartella di stato e i preset, ma conviene conservare un backup privato sul Pi:
+
+```bash
+cd /home/matteo
+tar -czf "$HOME/backup_pre_deploy_$(date +%Y%m%d_%H%M%S).tgz" matsynth_web
+```
+
+Per un rollback, imposta `BACKUP` sul nome dell'archivio scelto e controllane il contenuto. Solo dopo la verifica ripristinalo e riavvia il servizio. Il ripristino sovrascrive i file contenuti nel backup; salva prima ogni dato creato dopo il backup.
+
+```bash
+BACKUP="$HOME/backup_pre_deploy_20261123_114659.tgz" # sostituisci con l'archivio scelto
+tar -tzf "$BACKUP"
+# Dopo aver verificato l'elenco:
+tar -xzf "$BACKUP" -C /home/matteo
+sudo systemctl restart matsynth.service
+```
+
+Per tornare alla modalità MIDI sicura `legacy`, da **Impostazioni → MIDI → Modalità** scegli `legacy` e riavvia il servizio. La modalità effettiva si verifica in `/api/system/status`.
 
 ## Licenza
 

@@ -37,6 +37,8 @@
         cursorBeat: null,
         busy: false,
         totalBeats: 64,
+        rowSizes: Array(16).fill('medium'),
+        hiddenTracks: Array(16).fill(false),
         rowSig: [],
         drag: null,
         rafPending: false,
@@ -63,10 +65,54 @@
         var v = $('view-studio');
         return !!(v && !v.hidden && !ui.legacy);
     }
+
+    function renderHiddenTracks() {
+        var hidden = [];
+        for (var t = 0; t < 16; t++) if (ui.hiddenTracks[t]) hidden.push(t);
+        el.hiddenBar.hidden = hidden.length === 0;
+        el.hiddenTracks.innerHTML = '';
+        hidden.forEach(function (t) {
+            var button = doc.createElement('button');
+            button.type = 'button';
+            button.className = 'st-btn st-hidden-track';
+            button.setAttribute('data-st-show-track', String(t));
+            button.setAttribute('aria-label', 'Mostra traccia ' + (t + 1) + ', ' + model.trackLabel(daw(), t));
+            button.textContent = String(t + 1);
+            el.hiddenTracks.appendChild(button);
+        });
+    }
+
+    function cycleTrackSize(t) {
+        ui.rowSizes[t] = model.nextTrackSize(ui.rowSizes[t]);
+        renderAll();
+    }
+
+    function hideTrack(t) {
+        var layout = trackLayout();
+        if (layout.totalHeight <= layout.heights[t]) {
+            showReason('Deve restare visibile almeno una traccia');
+            return;
+        }
+        ui.hiddenTracks[t] = true;
+        var s = sel();
+        if (s.kind !== 'none' && s.track === t) state.clearSelection();
+        renderAll();
+    }
+
+    function showTrack(t) {
+        ui.hiddenTracks[t] = false;
+        renderAll();
+    }
+
+    function showAllTracks() {
+        ui.hiddenTracks.fill(false);
+        renderAll();
+    }
     function toast(msg, kind) { if (shell && shell.toast) shell.toast(msg, kind); }
     function posBeat() { return model.positionBeats(daw(), transport().position); }
     function cursorOrPlayhead() { return ui.cursorBeat !== null ? ui.cursorBeat : posBeat(); }
     function fmtBeat(b) { return units.beatsToBBT(b, daw().beats_per_measure || 4).text; }
+    function trackLayout() { return model.trackGeometry(ui.rowSizes, ui.hiddenTracks); }
 
     function showReason(text) {
         setText(el.reason, text || '');
@@ -198,9 +244,13 @@
     function renderTracks() {
         var d = daw(), s = sel();
         var width = Math.ceil(ui.totalBeats * ui.ppb);
+        var geometry = trackLayout();
         el.content.style.width = (HEAD_W + width) + 'px';
         for (var t = 0; t < 16; t++) {
             var row = el.rowEls[t];
+            var rowHeight = geometry.heights[t];
+            row.hidden = ui.hiddenTracks[t];
+            row.style.height = rowHeight + 'px';
             var color = trackColor(d, t);
             var head = row.firstChild;
             head.firstChild.style.background = color;
@@ -214,11 +264,12 @@
             row.classList.toggle('is-selected', s.kind !== 'none' && s.track === t);
             var lane = row.lastChild;
             lane.style.width = width + 'px';
+            lane.style.height = rowHeight + 'px';
             var clips = model.clipsOf(d, t);
-            var sig = ui.ppb + '|' + color + '|' + JSON.stringify(clips);
+            var sig = ui.ppb + '|' + rowHeight + '|' + color + '|' + JSON.stringify(clips);
             if (ui.rowSig[t] !== sig) {
                 ui.rowSig[t] = sig;
-                renderClips(lane, t, clips, color);
+                renderClips(lane, t, clips, color, rowHeight);
             }
             var selIds = s.kind === 'clip' && s.track === t ? s.clip_ids : [];
             var nodes = lane.querySelectorAll('.st-clip');
@@ -235,9 +286,10 @@
                 rg.style.width = Math.max(2, model.beatToX(s.end_beat - s.start_beat, ui.ppb)) + 'px';
             }
         }
+        renderHiddenTracks();
     }
 
-    function renderClips(lane, t, clips, color) {
+    function renderClips(lane, t, clips, color, rowHeight) {
         var old = lane.querySelectorAll('.st-clip');
         for (var i = 0; i < old.length; i++) lane.removeChild(old[i]);
         var frag = doc.createDocumentFragment();
@@ -251,7 +303,7 @@
             div.setAttribute('tabindex', '0');
             div.setAttribute('aria-pressed', 'false');
             div.setAttribute('aria-label', (c.name || 'Clip ' + c.id) + ', da ' + fmtBeat(c.start_beat) + ' a ' + fmtBeat(c.end_beat));
-            var h = (ROW_H - 6) / it.lanes;
+            var h = (rowHeight - 6) / it.lanes;
             div.style.left = model.beatToX(c.start_beat, ui.ppb) + 'px';
             div.style.width = Math.max(6, model.beatToX(c.end_beat - c.start_beat, ui.ppb)) + 'px';
             div.style.top = (3 + it.lane * h) + 'px';
@@ -350,6 +402,10 @@
         el.trackForm.hidden = !hasTrack;
         el.soundEmpty.hidden = hasTrack;
         if (hasTrack) {
+            var size = ui.rowSizes[s.track];
+            var sizeName = { compact: 'Compatta', medium: 'Media', large: 'Grande' }[size] || 'Media';
+            setText(el.trackSize, 'Altezza: ' + sizeName);
+            el.trackSize.setAttribute('aria-label', 'Cambia altezza traccia: ' + sizeName);
             if (doc.activeElement !== el.trackName) el.trackName.value = (d.track_names && d.track_names[s.track]) || '';
             var ci = d.track_colors && d.track_colors[s.track] !== undefined ? d.track_colors[s.track] : s.track;
             var sw = el.swatches.children;
@@ -456,7 +512,8 @@
         });
         // Densita' (eventi, inclusi quelli liberi fuori dai clip)
         var dc = el.density;
-        var h = ROW_H * 16;
+        var geometry = trackLayout();
+        var h = Math.max(1, geometry.totalHeight);
         dc.style.left = (HEAD_W + sl) + 'px';
         if (dc.width !== Math.round(w * dpr) || dc.height !== Math.round(h * dpr)) {
             dc.width = Math.round(w * dpr); dc.height = Math.round(h * dpr);
@@ -470,16 +527,18 @@
             var slot = dm.slot_beats || 0.125;
             var first = Math.max(0, Math.floor(from / slot)), last = Math.ceil(to / slot);
             for (var t = 0; t < 16; t++) {
+                if (ui.hiddenTracks[t]) continue;
                 var arr = dm.tracks[t] || dm.tracks[String(t)];
                 if (!arr) continue;
                 c.fillStyle = trackColor(d, t);
-                var y0 = t * ROW_H;
+                var rowHeight = geometry.heights[t];
+                var y0 = geometry.tops[t];
                 for (var i = first; i < Math.min(last, arr.length); i++) {
                     var n = arr[i];
                     if (!n) continue;
-                    var bh = Math.min(ROW_H - 12, 4 + n * 4);
+                    var bh = Math.min(rowHeight - 12, 4 + n * 4);
                     c.globalAlpha = 0.55;
-                    c.fillRect(model.beatToX(i * slot, ui.ppb) - sl, y0 + ROW_H - 4 - bh, Math.max(1, slot * ui.ppb - 0.5), bh);
+                    c.fillRect(model.beatToX(i * slot, ui.ppb) - sl, y0 + rowHeight - 4 - bh, Math.max(1, slot * ui.ppb - 0.5), bh);
                 }
             }
             c.globalAlpha = 1;
@@ -769,6 +828,17 @@
                 return;
             case 'zoom-in':
             case 'zoom-out': return setZoom(model.zoomStep(ui.ppb, cmd === 'zoom-in' ? 1 : -1));
+            case 'track-size': {
+                var sizeSel = sel();
+                if (sizeSel.kind !== 'none') cycleTrackSize(sizeSel.track);
+                return;
+            }
+            case 'hide-track': {
+                var hideSel = sel();
+                if (hideSel.kind !== 'none') hideTrack(hideSel.track);
+                return;
+            }
+            case 'show-all-tracks': return showAllTracks();
             case 'legacy': return setLegacy(true);
             case 'editor': return openEditor();
         }
@@ -865,6 +935,7 @@
             if (b.hasAttribute('data-st-flag')) return onFlag(b);
             if (b.hasAttribute('data-st-tool')) return setTool(b.getAttribute('data-st-tool'));
             if (b.hasAttribute('data-st-tab')) return setTab(b.getAttribute('data-st-tab'));
+            if (b.hasAttribute('data-st-show-track')) return showTrack(Number(b.getAttribute('data-st-show-track')));
             if (b.hasAttribute('data-st-select-track')) {
                 var t = Number(b.getAttribute('data-st-select-track'));
                 state.setSelection({ kind: 'track', track: t });
@@ -958,6 +1029,7 @@
         el.clipName = $('st-clip-name'); el.clipId = $('st-clip-id'); el.clipSpan = $('st-clip-span');
         el.clipStart = $('st-clip-start'); el.clipEnd = $('st-clip-end');
         el.trackEmpty = $('st-track-empty'); el.trackForm = $('st-track-form'); el.trackName = $('st-track-name');
+        el.trackSize = $('st-track-size'); el.hiddenBar = $('st-hidden-bar'); el.hiddenTracks = $('st-hidden-tracks');
         el.dupDest = $('st-dup-dest'); el.dupConfig = $('st-dup-config');
         el.soundEmpty = $('st-sound-empty'); el.soundHost = $('st-sound-host');
         // Barra "Torna a Studio" sopra la vista classica (creata qui: il markup legacy non va modificato).

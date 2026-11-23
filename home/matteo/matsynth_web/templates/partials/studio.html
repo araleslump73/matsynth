@@ -1,7 +1,7 @@
 {# Studio (fase ui-studio): trasporto unico, tracce con arm/mute/solo, timeline con clip, barra contestuale,
    inspector Clip | Traccia | Suono | Mixer. Pilotato da static/js/studio.js (logica pura in studio_model.js).
-   La vista classica (studio_legacy.html, con il piano roll) resta disponibile dal pulsante "Vista classica"
-   finche' ui-editor non la sostituisce. Nessun handler inline: un solo listener delegato per area. #}
+   La vista classica resta disponibile come compatibilita'; Studio e l'Editor note sono le viste correnti.
+   Nessun handler inline: un solo listener delegato per area. #}
 <div id="st-root" class="st-root" hidden>
     <div class="st-bar st-transport" role="toolbar" aria-label="Trasporto">
         <div class="st-group">
@@ -58,6 +58,11 @@
                     <canvas id="st-ruler-canvas" height="32"></canvas>
                     <div class="st-ruler-playhead" id="st-ruler-playhead"></div>
                 </div>
+            </div>
+            <div class="st-hidden-bar" id="st-hidden-bar" role="group" aria-label="Tracce nascoste" hidden>
+                <span>Tracce nascoste</span>
+                <div class="st-hidden-tracks" id="st-hidden-tracks"></div>
+                <button type="button" class="st-btn" data-st-cmd="show-all-tracks">Mostra tutte</button>
             </div>
             <div class="st-scroll" id="st-scroll">
                 <div class="st-content" id="st-content">
@@ -120,6 +125,11 @@
                     <label class="ms-field"><span>Nome traccia</span><input type="text" class="ms-select" id="st-track-name" maxlength="32"></label>
                     <div class="ms-field"><span>Colore</span><div class="st-swatches" id="st-swatches"></div></div>
                     <div class="ms-actions"><button type="button" class="ms-btn ms-btn-secondary" data-st-op="rename">Rinomina</button></div>
+                    <h3 class="ms-card-title">Vista traccia</h3>
+                    <div class="ms-actions">
+                        <button type="button" class="ms-btn ms-btn-secondary" id="st-track-size" data-st-cmd="track-size">Altezza: Media</button>
+                        <button type="button" class="ms-btn ms-btn-secondary" data-st-cmd="hide-track">Nascondi traccia</button>
+                    </div>
                     <h3 class="ms-card-title">Duplica traccia</h3>
                     <label class="ms-field"><span>Destinazione</span><select class="ms-select" id="st-dup-dest"></select></label>
                     <label class="st-check"><input type="checkbox" id="st-dup-config"> Copia anche la configurazione della parte (suono, CC, destinazione)</label>

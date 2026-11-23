@@ -94,7 +94,7 @@ File: `templates/partials/editor.html`, `static/css/editor.css`, `static/js/midi
 
 ## Resta
 
-- La Vista classica (`legacy_daw.js`, piano roll ed editor eventi vecchi) non è stata rimossa. La decisione spetta a `ui-acceptance` (D34).
+- La Vista classica (`legacy_daw.js`, piano roll ed editor eventi vecchi) resta come compatibilita' finche' la parita' delle funzioni non e' verificata su Pi/tablet (D34). Sul Pi via browser sono stati provati altezza traccia, nascondi/ripristina e zoom timeline/X/Y; restano i test touch fisici e le prestazioni su tablet. La vista nuova dispone di queste funzioni.
 - Le note appena incollate non vengono selezionate in automatico, perché `paste_at` non restituisce gli indici.
 - Durante il Play l'editor non segue la playhead in modo continuo: la playhead si vede, ma non c'è auto-scroll.
 - Non c'è l'inserimento di nuovi eventi CC/PC dalla lista: si modificano e si eliminano solo quelli esistenti.
