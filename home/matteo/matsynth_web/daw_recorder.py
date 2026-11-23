@@ -1301,6 +1301,8 @@ class MultiTrackDAW:
             if target + span > project_store.MAX_BEAT:
                 return self._nope('BAD_REQUEST', f'Incolla oltre il beat {project_store.MAX_BEAT}',
                                   {'field': 'beat'})
+            if self._max_events_error(len(payload), 422):
+                return None
             new_id = self._alloc_clip_id() if is_clip else None      # PRIMA dell'undo
             self._push_undo()
             if is_clip:
@@ -2198,6 +2200,8 @@ class MultiTrackDAW:
                 return self._refuse_recording()
             if not self.check_revision(expected_revision):
                 return False
+            if self._max_events_error(2, 422):
+                return False
             self._push_undo()
             cid = self._clip_at(channel, start_beat)
             events = list(self.tracks[channel])
@@ -2410,6 +2414,8 @@ class MultiTrackDAW:
                 return None
             new_events = None
             need_sort = False
+            repair = False
+            moved = []
             modified = 0
             for k, ((_entry, on, off), v) in enumerate(zip(parsed, values)):
                 on_beat, on_d = events[on]
@@ -2442,8 +2448,22 @@ class MultiTrackDAW:
                 if touched:
                     modified += 1
                     need_sort = need_sort or 'on_beat' in v or 'off_beat' in v
+                    repair = repair or need_sort or 'note' in v
+                    if 'on_beat' in v:
+                        moved.append(on)
             if new_events is not None:
+                # ui-editor: nessuna nota deve cambiare partner FIFO (6.2) dopo il
+                # riordino o il cambio di altezza, e le cornici dei clip devono
+                # contenere i note-on spostati (D28). Tutto prima dell'undo (A21).
+                if repair and not self._pairs_preserved(events, new_events):
+                    return self._nope('VALIDATION_FAILED',
+                                      'La modifica sovrapporrebbe note della stessa altezza',
+                                      {'path': 'edits', 'reason': 'pairing'})
+                plan = self._fit_clips_plan(channel, new_events, self._ids(channel), moved)
+                if plan is None:
+                    return None
                 self._push_undo()
+                self._apply_clip_plan(channel, plan)
                 if need_sort:
                     self._set_sorted(channel, new_events, self._ids(channel))
                 else:
@@ -2478,6 +2498,281 @@ class MultiTrackDAW:
                 drop.add(on)
                 if off >= 0:
                     drop.add(off)
+            self._push_undo()
+            self._drop_indices(channel, drop)
+            self._density_dirty = True
+            self._emit_state_change()
+        return {'removed': len(drop)}
+
+    # ── ui-editor: note di una traccia, appunti di note, eventi batch ──
+    # Stesse regole del batch di note: tutto-o-niente, validazione prima
+    # dell'undo, un sort, un livello, una revisione; 409 RECORDING_ACTIVE in
+    # Record (route nuove: nessun override), consentiti in Play (6.4).
+
+    _EVENT_EDIT_KEYS = frozenset(('index', 'beat', 'cc_num', 'cc_value', 'program', 'pitch', 'value'))
+    _EVENT_INT_FIELDS = (('cc_num', 0, 127), ('cc_value', 0, 127), ('program', 0, 127),
+                         ('pitch', -8192, 8191), ('value', 0, 127))
+    # Campi modificabili per tipo di evento (status senza canale).
+    _EVENT_FIELDS = {0xB0: ('cc_num', 'cc_value'), 0xC0: ('program',), 0xE0: ('pitch',),
+                     0xD0: ('value',), 0xA0: ('value',)}
+
+    def get_track_notes(self, channel):
+        """Note di UNA traccia per l'editor: ({notes, clips, max_beat, beats_per_measure}, revision).
+        notes = [note, vel, start, end, on_idx, off_idx, clip_id] (FIFO 6.2, note
+        aperte fino all'ultimo beat). Copia sotto lock, calcolo fuori."""
+        with self._edit_lock:
+            events = list(self.tracks.get(channel) or [])
+            ids = array('H', self._ids(channel))
+            if self.is_recording and channel in self._rec_tracks:
+                # Coda del take non ordinata: vista ordinata (editor in sola lettura).
+                events, ids = self._sorted_pair(events, ids)
+            clips = sorted([dict(c) for c in self.clips[channel]], key=lambda c: c['start_beat'])
+            rev, bpm = self.revision, self.beats_per_measure
+        notes, max_beat, _lo, _hi = self._build_notes_full(events)
+        out = [[n, v, round(s, 4), round(e, 4), on, off, ids[on]] for n, v, s, e, on, off in notes]
+        return {'notes': out, 'clips': clips, 'max_beat': max_beat, 'beats_per_measure': bpm}, rev
+
+    @staticmethod
+    def _pairs_preserved(old_events, new_events):
+        """True se, dopo il sort, ogni nota di `old_events` ha ancora lo stesso
+        partner FIFO (6.2) in `new_events` (stessi indici prima del sort)."""
+        order = sorted(range(len(new_events)), key=lambda i: new_events[i][0])
+        pos = [0] * len(order)
+        for p, i in enumerate(order):
+            pos[i] = p
+        after = {on: off for _n, _v, _a, _b, on, off in
+                 project_store.pair_notes([new_events[i] for i in order])}
+        for _n, _v, _a, _b, on, off in project_store.pair_notes(old_events):
+            if after.get(pos[on], -2) != (pos[off] if off >= 0 else -1):
+                return False
+        return True
+
+    def _fit_clips_plan(self, channel, events, ids, touched):
+        """D28: cornici da allargare perche' contengano gli eventi posseduti
+        spostati (note-on e non-note; i note-off possono uscire, 6.4). Senza
+        effetti: [(posizione in clips, clip nuovo)] o None (errore impostato)."""
+        bounds = {}
+        for i in touched:
+            cid = ids[i]
+            if not cid or project_store._is_note_off(events[i][1]):
+                continue
+            b = events[i][0]
+            lo, hi = bounds.get(cid, (b, b))
+            bounds[cid] = (min(lo, b), max(hi, b))
+        plan = []
+        for k, c in enumerate(self.clips[channel]):
+            got = bounds.get(int(c['id']))
+            if got is None:
+                continue
+            start, end = float(c['start_beat']), float(c['end_beat'])
+            ns = min(start, got[0])
+            ne = end if got[1] < end else got[1] + project_store.CLIP_TAIL_BEATS
+            if ne > project_store.MAX_BEAT:
+                return self._nope('VALIDATION_FAILED', f'Clip oltre il beat {project_store.MAX_BEAT}',
+                                  {'path': 'clips', 'reason': 'max_beat'})
+            if (ns, ne) != (start, end):
+                plan.append((k, dict(c, start_beat=ns, end_beat=ne)))
+        return plan
+
+    def _apply_clip_plan(self, channel, plan):
+        for k, c in plan:
+            self.clips[channel][k] = c
+
+    def _events_total(self):
+        return sum(len(self.tracks[ch]) for ch in range(16))
+
+    def _max_events_error(self, adding, http=None):
+        total = self._events_total() + adding
+        if total <= project_store.MAX_EVENTS_TOTAL:
+            return False
+        self._fail('VALIDATION_FAILED', f'Oltre {project_store.MAX_EVENTS_TOTAL} eventi totali',
+                   {'path': 'tracks', 'reason': 'max_events',
+                    'max_events': project_store.MAX_EVENTS_TOTAL, 'events': total}, http)
+        return True
+
+    def copy_notes(self, channel, pairs, expected_revision=None, remove=False):
+        """Copia/Taglia di note scelte (ui-editor, estensione di copy/cut 6.4):
+        coppie FIFO esatte come notes/batch, appunti 'range' (origine = primo
+        note-on, incolla con paste_at e la regola ID di add_note). Con
+        `remove` le stesse coppie vengono eliminate in un solo undo; i clip
+        restano. Vietata in Record (indici della coda non ordinata).
+        Ritorna {copied, removed, clipboard} o None."""
+        self.last_error = None
+        if self.is_recording:
+            return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                              {'is_recording': True})
+        if not self._channel_ok(channel):
+            return None
+        parsed = self._batch_pairs(channel, pairs, 'pairs', frozenset(('on_idx', 'off_idx')))
+        if parsed is None:
+            return None
+        with self._edit():
+            if self.is_recording:
+                return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                                  {'is_recording': True})
+            if not self.check_revision(expected_revision):
+                return None
+            events = self.tracks[channel]
+            if self._batch_check_pairs(events, self._ids(channel), parsed, 'pairs') is None:
+                return None
+            indices = sorted({i for _e, on, off in parsed for i in (on, off) if i >= 0})
+            origin = min(events[on][0] for _e, on, _off in parsed)
+            length = max(events[i][0] for i in indices) - origin
+            payload, _released = self._payload(events, indices, origin, length)
+            self._set_clipboard(payload, {'kind': 'range', 'length_beats': length, 'source_track': channel,
+                                          'source_clip_id': None, 'name': None, 'sustain_release': False})
+            res = {'copied': len(indices), 'removed': 0}
+            if remove:
+                self._push_undo()
+                self._drop_indices(channel, set(indices))
+                self._density_dirty = True
+                res['removed'] = len(indices)
+            res['clipboard'] = self.clipboard_info()
+            self._emit_state_change()
+        return res
+
+    def _event_index_list(self, indices):
+        if not isinstance(indices, list) or not indices:
+            return self._nope('BAD_REQUEST', 'indices: lista non vuota attesa', {'field': 'indices'})
+        for k, idx in enumerate(indices):
+            if isinstance(idx, bool) or not isinstance(idx, int) or not 0 <= idx <= 10 ** 9:
+                return self._nope('BAD_REQUEST', f'indices[{k}]: intero >= 0 atteso', {'field': f'indices[{k}]'})
+        return indices
+
+    def edit_events_batch(self, channel, edits, expected_revision=None):
+        """Modifica atomica di eventi NON nota per indice (ui-editor, editor
+        eventi): edits [{index, beat?, cc_num?, cc_value?, program?, pitch?,
+        value?}] (`value` = pressione). Note -> 422 (si modificano a coppie con
+        notes/batch). Campo non applicabile al tipo -> 422. Ritorna {modified} o None."""
+        self.last_error = None
+        if self.is_recording:
+            return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                              {'is_recording': True})
+        if not self._channel_ok(channel):
+            return None
+        if not isinstance(edits, list) or not edits:
+            return self._nope('BAD_REQUEST', 'edits: lista non vuota attesa', {'field': 'edits'})
+        parsed = []
+        for k, entry in enumerate(edits):
+            path = f'edits[{k}]'
+            if not isinstance(entry, dict):
+                return self._nope('BAD_REQUEST', f'{path}: oggetto atteso', {'field': path})
+            extra = sorted(set(entry) - self._EVENT_EDIT_KEYS)
+            if extra:
+                return self._nope('BAD_REQUEST', f'{path}: campo sconosciuto {extra[0]}',
+                                  {'field': f'{path}.{extra[0]}'})
+            idx = self._batch_int(entry, 'index', path, 0, 10 ** 9)
+            if idx is None:
+                return None
+            v = {}
+            if 'beat' in entry:
+                v['beat'] = self._num_ok(entry['beat'], f'{path}.beat', 0.0, project_store.MAX_BEAT)
+                if v['beat'] is None:
+                    return None
+            for key, lo, hi in self._EVENT_INT_FIELDS:
+                if key in entry:
+                    v[key] = self._batch_int(entry, key, path, lo, hi)
+                    if v[key] is None:
+                        return None
+            if not v:
+                return self._nope('BAD_REQUEST', f'{path}: nessuna modifica', {'field': path})
+            parsed.append((idx, v))
+        with self._edit():
+            if self.is_recording:
+                return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                                  {'is_recording': True})
+            if not self.check_revision(expected_revision):
+                return None
+            events = self.tracks[channel]
+            ids = self._ids(channel)
+            new_events = list(events)
+            seen, moved = set(), []
+            modified = 0
+            for k, (idx, v) in enumerate(parsed):
+                path = f'edits[{k}]'
+                if idx >= len(events):
+                    return self._nope('VALIDATION_FAILED', 'Indice evento fuori intervallo',
+                                      {'path': f'{path}.index', 'reason': 'fuori intervallo'})
+                if idx in seen:
+                    return self._nope('VALIDATION_FAILED', 'Indice ripetuto nel batch',
+                                      {'path': f'{path}.index', 'reason': f'indice {idx} ripetuto'})
+                seen.add(idx)
+                beat, d = events[idx]
+                kind = d[0] & 0xF0
+                if kind in (0x80, 0x90):
+                    return self._nope('VALIDATION_FAILED', 'Le note si modificano a coppie (notes/batch)',
+                                      {'path': f'{path}.index', 'reason': 'nota'})
+                allowed = self._EVENT_FIELDS.get(kind, ())
+                wrong = [key for key in v if key != 'beat' and key not in allowed]
+                short = len(v) > ('beat' in v) and len(d) < (2 if kind in (0xC0, 0xD0) else 3)
+                if wrong or short:
+                    return self._nope('VALIDATION_FAILED', 'Campo non applicabile a questo evento',
+                                      {'path': f'{path}.{wrong[0] if wrong else "index"}',
+                                       'reason': 'tipo di evento'})
+                nd = list(d)
+                if kind == 0xB0:
+                    nd[1] = v.get('cc_num', nd[1])
+                    nd[2] = v.get('cc_value', nd[2])
+                elif kind == 0xC0:
+                    nd[1] = v.get('program', nd[1])
+                elif kind == 0xE0 and 'pitch' in v:
+                    p = v['pitch'] + 8192
+                    nd[1], nd[2] = p & 0x7F, p >> 7
+                elif kind == 0xD0:
+                    nd[1] = v.get('value', nd[1])
+                elif kind == 0xA0:
+                    nd[2] = v.get('value', nd[2])
+                nb = v.get('beat', beat)
+                new = (nb, d if nd == list(d) else nd)
+                if new != events[idx]:
+                    new_events[idx] = new
+                    modified += 1
+                    if nb != beat:
+                        moved.append(idx)
+            if modified:
+                plan = self._fit_clips_plan(channel, new_events, ids, moved)
+                if plan is None:
+                    return None
+                self._push_undo()
+                self._apply_clip_plan(channel, plan)
+                if moved:
+                    self._set_sorted(channel, new_events, ids)
+                else:
+                    self._set_track(channel, new_events, ids)
+                self._density_dirty = True
+                self._emit_state_change()
+        return {'modified': modified}
+
+    def delete_events_batch(self, channel, indices, expected_revision=None):
+        """Eliminazione atomica di eventi per indice (ui-editor). Un evento di
+        nota porta con se' il suo partner FIFO dentro lo stesso ID clip (come
+        _owned_by_id): nessun note-off orfano creato. Ritorna {removed} o None."""
+        self.last_error = None
+        if self.is_recording:
+            return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                              {'is_recording': True})
+        if not self._channel_ok(channel) or self._event_index_list(indices) is None:
+            return None
+        with self._edit():
+            if self.is_recording:
+                return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                                  {'is_recording': True})
+            if not self.check_revision(expected_revision):
+                return None
+            events = self.tracks[channel]
+            for k, idx in enumerate(indices):
+                if idx >= len(events):
+                    return self._nope('VALIDATION_FAILED', 'Indice evento fuori intervallo',
+                                      {'path': f'indices[{k}]', 'reason': 'fuori intervallo'})
+            partner = self._group_partners(events, self._ids(channel))
+            back = {off: on for on, off in partner.items() if off >= 0}
+            drop = set()
+            for idx in indices:
+                drop.add(idx)
+                if partner.get(idx, -1) >= 0:
+                    drop.add(partner[idx])
+                elif idx in back:
+                    drop.add(back[idx])
             self._push_undo()
             self._drop_indices(channel, drop)
             self._density_dirty = True

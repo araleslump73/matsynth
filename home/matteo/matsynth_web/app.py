@@ -1470,6 +1470,12 @@ def daw_copy():
         channel, bad = _studio_int(data, 'channel', 0, 15)
         if bad:
             return _respond(bad)
+        if 'pairs' in data:
+            # ui-editor: note scelte per indice -> serve la revisione degli indici.
+            pairs, rev, bad = _batch_request(channel, 'pairs')
+            if bad:
+                return _respond(bad)
+            return _studio_result(daw.copy_notes(channel, pairs, expected_revision=rev), 'Copia fallita')
         if data.get('clip_id') is not None:
             count = daw.copy_selection(channel, clip_id=data.get('clip_id'))
         else:
@@ -1490,6 +1496,12 @@ def daw_cut():
         channel, _c, rev, bad = _studio_common(data, need_clip=False)
         if bad:
             return _respond(bad)
+        if 'pairs' in data:
+            pairs, rev, bad = _batch_request(channel, 'pairs')
+            if bad:
+                return _respond(bad)
+            return _studio_result(daw.copy_notes(channel, pairs, expected_revision=rev, remove=True),
+                                  'Taglia fallito')
         if data.get('clip_id') is not None:
             res = daw.cut(channel, clip_id=data.get('clip_id'), expected_revision=rev)
         else:
@@ -1745,6 +1757,42 @@ def daw_delete_notes_batch(channel):
             return _respond(bad)
         return _studio_result(daw.delete_notes_batch(channel, pairs, expected_revision=rev),
                               'Eliminazione note fallita')
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/track/<int:channel>/notes', methods=['GET'])
+def daw_track_notes(channel):
+    """Note di una traccia per l'editor (ui-editor, D28): una sola copia sotto lock."""
+    try:
+        if not 0 <= channel <= 15:
+            return _respond(err('BAD_REQUEST', 'Traccia non valida (0-15)', {'field': 'channel'}))
+        data, rev = daw.get_track_notes(channel)
+        return jsonify(ok(revision=rev, channel=channel, **data))
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/track/<int:channel>/events/batch', methods=['PUT'])
+def daw_edit_events_batch(channel):
+    try:
+        edits, rev, bad = _batch_request(channel, 'edits')
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.edit_events_batch(channel, edits, expected_revision=rev),
+                              'Modifica eventi fallita')
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/track/<int:channel>/events/batch', methods=['DELETE'])
+def daw_delete_events_batch(channel):
+    try:
+        indices, rev, bad = _batch_request(channel, 'indices')
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.delete_events_batch(channel, indices, expected_revision=rev),
+                              'Eliminazione eventi fallita')
     except Exception as e:
         return _respond(err('INTERNAL', str(e)))
 
