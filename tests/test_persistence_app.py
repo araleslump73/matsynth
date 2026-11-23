@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -228,6 +229,56 @@ class SceneRouteTests(_AppCase):
         self.assertEqual(self.client.get(f'/api/scenes/{sid}').get_json()['scene']['name'], 'Due')
         self.assertEqual(self.app.scene_state.public()['name'], 'Due')
 
+    def test_legacy_rename_of_v1_scene_refuses_empty_name_l1(self):
+        sid = self.client.post('/api/scenes', json={'name': 'Uno'}).get_json()['scene']['id']
+        for bad in ('', '   '):
+            r = self.client.post('/api/presets/rename', json={'old_filename': sid + '.json', 'new_name': bad})
+            self.assertEqual((r.status_code, self._code(r)), (400, 'BAD_REQUEST'))
+        r = self.client.get(f'/api/scenes/{sid}')
+        self.assertEqual((r.status_code, r.get_json()['scene']['name']), (200, 'Uno'))
+        r = self.client.post('/api/presets/rename', json={'old_filename': sid + '.json', 'new_name': '  Tre  '})
+        self.assertEqual(self.client.get(f'/api/scenes/{sid}').get_json()['scene']['name'], 'Tre')
+
+    def test_legacy_delete_updates_library_and_current_scene_l7(self):
+        sid = self.client.post('/api/scenes', json={'name': 'Uno'}).get_json()['scene']['id']
+        self.client.patch(f'/api/scenes/{sid}', json={'favorite': True, 'order': 0})
+        self.assertEqual(self.app.scene_state.public()['scene_id'], sid)
+        r = self.client.delete(f'/api/presets/delete/{sid}.json')
+        self.assertEqual(r.status_code, 200)
+        lib = ps.load_library(self.app.LIBRARY_FILE)
+        self.assertNotIn(sid, lib['scene_favorites'] + lib['scene_order'])
+        self.assertEqual(self.app.scene_state.public(), {'scene_id': None, 'name': None, 'dirty': True})
+
+    def test_concurrent_library_patches_are_not_lost_l7(self):
+        # Interleaving forzato: la prima PATCH si ferma dentro il salvataggio della
+        # libreria; la seconda deve attendere (lock) e non partire da una copia vecchia.
+        real_save = self.app._save_library
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+
+        def slow_save(lib):
+            calls.append(1)
+            if len(calls) == 1:
+                entered.set()
+                release.wait(5)
+            real_save(lib)
+
+        def patch(sid):
+            self.app.app.test_client().patch(f'/api/scenes/{sid}', json={'favorite': True})
+
+        with mock.patch.object(self.app, '_save_library', slow_save):
+            a = threading.Thread(target=patch, args=('legacy_minimal',))
+            a.start()
+            self.assertTrue(entered.wait(5))
+            b = threading.Thread(target=patch, args=('legacy_pan',))
+            b.start()
+            b.join(0.3)                       # senza lock B finirebbe qui, prima di A
+            release.set()
+            a.join(5)
+            b.join(5)
+        self.assertEqual(set(ps.load_library(self.app.LIBRARY_FILE)['scene_favorites']),
+                         {'legacy_minimal', 'legacy_pan'})
+
 
 class RecallTests(_AppCase):
 
@@ -364,6 +415,22 @@ class SoundfontRouteTests(_AppCase):
         self.assertEqual(self.app.sf_state.public()['state'], 'failed')
         self.assertEqual(self.app.sf_id, '2')
         self.assertFalse(os.path.exists(self.app.STATE_FILE) and self._state().get('font') == 'B.sf2')
+
+    def test_unexpected_exception_does_not_leave_loading_forever_l6(self):
+        self._sf('C.sf2')
+
+        def boom(cmd):
+            raise RuntimeError('console rotta')
+        self.app.send_fluid = boom
+        r = self.client.post('/api/soundfont/load', json={'file': 'C.sf2'})
+        self.assertEqual(r.status_code, 202)
+        self.assertTrue(wait_until(lambda: self.app.sf_state.public()['state'] != 'loading', timeout=3))
+        st = self.app.sf_state.public()
+        self.assertEqual(st['state'], 'failed')
+        self.assertIn('console rotta', st['error'])
+        self.app.send_fluid = self.fluid
+        self.assertEqual(self.client.post('/api/soundfont/load', json={'file': 'C.sf2'}).status_code, 202)
+        self.assertTrue(wait_until(lambda: self.app.sf_state.public()['state'] != 'loading'))
 
     def test_legacy_load_sf2_route_updates_state(self):
         self._sf()
@@ -543,6 +610,121 @@ class ProjectRouteTests(_AppCase):
         st = r.get_json()['project_state']
         self.assertEqual((st['id'], st['dirty']), (None, True))
 
+    def test_listing_and_name_check_do_not_revalidate_after_writes(self):
+        a = self._save_as('A')
+        self._save_as('B')
+        with mock.patch.object(ps, 'validate_project', side_effect=AssertionError('rivalidato')):
+            listing = {m['id']: m for m in self.client.get('/api/projects').get_json()['projects']}
+            self.assertTrue(listing[a]['valid'])
+            self.assertEqual(listing[a]['name'], 'A')
+            self.app._project_meta_cache.clear()             # es. dopo il riavvio
+            self.assertEqual(self.app._project_name_taken('a'), a)
+            self.assertIsNone(self.app._project_name_taken('C'))
+
+
+class SessionOpLockTests(_AppCase):
+    """H1: Salva/Salva come intrecciati con Apri/Import/Nuovo/richiamo. Interleaving
+    forzato: la Salva resta sospesa dentro `daw.snapshot_session` su un Event
+    finche' il test non ha provato le altre operazioni (non ci si affida al GIL)."""
+
+    def _note_file(self, note, name):
+        mid = mido.MidiFile(type=1, ticks_per_beat=480)
+        tr = mido.MidiTrack()
+        tr.append(mido.Message('note_on', note=note, velocity=90, time=0))
+        tr.append(mido.Message('note_off', note=note, velocity=0, time=480))
+        mid.tracks.append(tr)
+        buf = io.BytesIO()
+        mid.save(file=buf)
+        with open(os.path.join(self.app.MIDI_DIR, name), 'wb') as f:
+            f.write(buf.getvalue())
+        return buf.getvalue()
+
+    def _suspended_snapshot(self):
+        daw = self.app.daw
+        real = daw.snapshot_session
+        entered, release = threading.Event(), threading.Event()
+
+        def slow():
+            entered.set()
+            release.wait(5)
+            return real()
+        daw.snapshot_session = slow
+        self.addCleanup(lambda: daw.__dict__.pop('snapshot_session', None))
+        self.addCleanup(release.set)
+        return entered, release
+
+    def _in_thread(self, method, url, **kw):
+        out = {}
+
+        def run():
+            out['r'] = getattr(self.app.app.test_client(), method)(url, **kw)
+        th = threading.Thread(target=run)
+        th.start()
+        return th, out
+
+    def _notes(self, path):
+        doc = json.load(open(path, encoding='utf-8'))
+        return [ev[1][1] for tr in doc['tracks'] for ev in tr['events'] if (ev[1][0] & 0xF0) == 0x90]
+
+    def test_save_blocks_concurrent_session_operations_with_409(self):
+        self.app.daw.add_note(0, 60, 100, 0.0, 1.0)
+        r = self.client.post('/api/projects/save_as', json={'name': 'A'})
+        pid_a = r.get_json()['project_state']['id']
+        path_a = os.path.join(self.app.PROJECTS_DIR, pid_a + '.matsynth.json')
+        self.app.daw.load_session(self.app.daw.empty_session())
+        self.app.daw.add_note(0, 40, 100, 0.0, 1.0)
+        pid_b = self.client.post('/api/projects/save_as', json={'name': 'B'}).get_json()['project_state']['id']
+        self.client.post('/api/projects/open', json={'id': pid_a, 'discard_changes': True,
+                                                     'soundfont': 'keep_current'})
+        self.assertEqual(self.app.project_state.public()['id'], pid_a)
+        midi72 = self._note_file(72, 'n72.mid')
+        rev = self.app.daw.revision
+
+        entered, release = self._suspended_snapshot()
+        th, out = self._in_thread('post', '/api/projects/save', json={})
+        self.assertTrue(entered.wait(5))
+        tries = [
+            self.client.post('/api/daw/midi/upload', data={'file': (io.BytesIO(midi72), 'n72.mid'),
+                                                           'discard_changes': 'true'},
+                             content_type='multipart/form-data'),
+            self.client.get('/api/daw/midi/load/n72.mid?merge=true'),
+            self.client.post('/api/projects/open', json={'id': pid_b, 'discard_changes': True,
+                                                         'soundfont': 'keep_current'}),
+            self.client.post('/api/projects/new', json={'discard_changes': True}),
+            self.client.post('/api/projects/save_as', json={'name': 'C'}),
+            self.client.post('/api/scenes/legacy_minimal/recall', json={'discard_changes': True}),
+            self.client.patch(f'/api/projects/{pid_b}', json={'name': 'B2'}),
+            self.client.delete(f'/api/projects/{pid_b}'),
+        ]
+        for r in tries:
+            self.assertEqual((r.status_code, self._code(r)), (409, 'OPERATION_IN_PROGRESS'), r.request.path)
+        release.set()
+        th.join(5)
+        self.assertEqual(out['r'].status_code, 200, out['r'].get_json())
+        self.assertEqual(self._notes(path_a), [60])          # il file di A contiene A, non 72 ne' B
+        self.assertEqual(self.app.daw.revision, rev)
+        pst = self.app.project_state.public()
+        self.assertEqual((pst['id'], pst['name'], pst['dirty']), (pid_a, 'A', False))
+        self.assertTrue(os.path.exists(os.path.join(self.app.PROJECTS_DIR, pid_b + '.matsynth.json')))
+        # Lock rilasciato: le stesse operazioni ora passano.
+        r = self.client.post('/api/daw/midi/upload', data={'file': (io.BytesIO(midi72), 'n72.mid'),
+                                                           'discard_changes': 'true'},
+                             content_type='multipart/form-data')
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(self._notes(path_a), [60])
+        self.assertIsNone(self.app.project_state.public()['id'])
+
+    def test_lock_is_released_after_errors(self):
+        r = self.client.post('/api/projects/save', json={})
+        self.assertEqual(self._code(r), 'NO_CURRENT_FILE')
+        with mock.patch.object(self.app, '_build_current_project_doc', side_effect=RuntimeError('x')):
+            try:
+                r = self.client.post('/api/projects/save_as', json={'name': 'X'})
+                self.assertEqual(r.status_code, 500)
+            except RuntimeError:
+                pass                                     # PROPAGATE_EXCEPTIONS attivo
+        self.assertEqual(self.client.post('/api/projects/new', json={'discard_changes': True}).status_code, 200)
+
 
 class MidiRouteTests(_AppCase):
 
@@ -620,11 +802,74 @@ class MidiRouteTests(_AppCase):
         mid.save(file=buf)
         with open(os.path.join(self.app.MIDI_DIR, 'tm.mid'), 'wb') as f:
             f.write(buf.getvalue())
-        r = self.client.get('/api/daw/midi/load/tm.mid')
+        r = self.client.get('/api/daw/midi/load/tm.mid?convert=false')
         self.assertEqual((r.status_code, self._code(r)), (422, 'IMPORT_NEEDS_CONVERSION'))
         r = self.client.get('/api/daw/midi/load/tm.mid?convert=1')
         self.assertEqual(r.status_code, 200)
         self.assertIn('IMPORT_CONVERTED', [w['code'] for w in r.get_json()['warnings']])
+
+    def _smf_file(self, name, tempo_bpm=None, program=None, channel=0):
+        mid = mido.MidiFile(type=1, ticks_per_beat=480)
+        tr = mido.MidiTrack()
+        if tempo_bpm is not None:
+            tr.append(mido.MetaMessage('set_tempo', tempo=mido.bpm2tempo(tempo_bpm), time=0))
+        if program is not None:
+            tr.append(mido.Message('program_change', channel=channel, program=program, time=0))
+        tr.append(mido.Message('note_on', channel=channel, note=60, velocity=90, time=0))
+        tr.append(mido.Message('note_off', channel=channel, note=60, velocity=0, time=480))
+        mid.tracks.append(tr)
+        buf = io.BytesIO()
+        mid.save(file=buf)
+        with open(os.path.join(self.app.MIDI_DIR, name), 'wb') as f:
+            f.write(buf.getvalue())
+
+    def test_legacy_client_without_convert_gets_automatic_conversion_m3(self):
+        self._smf_file('m68.mid')
+        mid = mido.MidiFile(os.path.join(self.app.MIDI_DIR, 'm68.mid'))
+        mid.tracks[0].insert(0, mido.MetaMessage('time_signature', numerator=6, denominator=8, time=0))
+        mid.save(os.path.join(self.app.MIDI_DIR, 'm68.mid'))
+        # Stessa chiamata di legacy_daw.js (dawLoadMidiFile): nessun `convert`.
+        r = self.client.get('/api/daw/midi/load/m68.mid')
+        self.assertEqual(r.status_code, 200, r.get_json())
+        w = [w for w in r.get_json()['warnings'] if w['code'] == 'IMPORT_CONVERTED']
+        self.assertEqual(w[0]['details']['issues'], [{'type': 'meter', 'value': '6/8'}])
+        self.assertEqual(self.app.daw.beats_per_measure, 4)
+        data = {'file': (io.BytesIO(open(os.path.join(self.app.MIDI_DIR, 'm68.mid'), 'rb').read()), 'm68.mid'),
+                'convert': 'false'}
+        r = self.client.post('/api/daw/midi/upload', data=data, content_type='multipart/form-data')
+        self.assertEqual((r.status_code, self._code(r)), (422, 'IMPORT_NEEDS_CONVERSION'))
+
+    def test_bpm_outside_range_is_a_conversion_not_silent_l8(self):
+        self._smf_file('slow.mid', tempo_bpm=20)
+        r = self.client.get('/api/daw/midi/load/slow.mid?convert=false')
+        self.assertEqual((r.status_code, self._code(r)), (422, 'IMPORT_NEEDS_CONVERSION'))
+        self.assertEqual(r.get_json()['error']['details']['issues'], [{'type': 'tempo_range', 'value': 20}])
+        self.assertNotEqual(self.app.daw.bpm, 30)
+        r = self.client.get('/api/daw/midi/load/slow.mid?convert=true')
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.app.daw.bpm, 30)
+        self.assertIn({'type': 'tempo_range', 'value': 20},
+                      [i for w in r.get_json()['warnings'] if w['code'] == 'IMPORT_CONVERTED'
+                       for i in w['details']['issues']])
+        self._smf_file('fast.mid', tempo_bpm=400)
+        r = self.client.get('/api/daw/midi/load/fast.mid?convert=true')
+        self.assertEqual(self.app.daw.bpm, 300)
+
+    def test_internal_drum_bank_round_trip_uses_track_id_l5(self):
+        # Parte 9 interna rimappata sul canale FluidSynth 3 con bank 128 (batteria).
+        p9 = midi_router.default_part(9)
+        p9['destination']['channel'] = 3
+        p9['sound']['bank'] = 128
+        self.app.router.apply_part(p9, send='none')
+        self.app.daw.add_note(9, 36, 100, 0.0, 1.0)
+        r = self.client.post('/api/daw/midi/save', json={'name': 'drums'})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertFalse(r.get_json().get('warnings'))      # export: batteria rappresentabile sul canale 10
+        p9['sound']['bank'] = 0
+        self.app.router.apply_part(p9, send='none')
+        r = self.client.get('/api/daw/midi/load/drums.mid?discard_changes=true')
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(self.app.router.get_part(9)['sound']['bank'], 128)
 
 
 class DawRouteTests(_AppCase):

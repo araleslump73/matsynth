@@ -8,6 +8,7 @@ import time
 import subprocess
 import threading
 import copy
+import functools
 import shutil
 import midi_router
 import project_store as ps
@@ -668,12 +669,16 @@ def api_presets_load(filename):
 def api_presets_delete(filename):
     """Elimina un preset"""
     try:
+        filename = os.path.basename(filename)
         preset_path = os.path.join(PRESETS_DIR, filename)
         
         if not os.path.exists(preset_path):
             return jsonify({'status': 'error', 'message': 'Preset non trovato'}), 404
         
         os.remove(preset_path)
+        if filename.endswith('.json'):
+            # Ogni preset e' anche una scena (4.2): preferiti, ordine e scena corrente.
+            _scene_removed(filename[:-5])
         return jsonify({'status': 'ok', 'message': 'Preset eliminato con successo'})
     except Exception as e:
         print(f"[Preset] Delete error: {e}")
@@ -700,14 +705,23 @@ def api_presets_rename():
             # Scena v1: il nome file e' l'ID (stabile, usato da preferiti e
             # scena corrente): cambia solo `name`, il file resta (4.2, A10b).
             old_stem = os.path.basename(old_path)[:-5]
-            taken = _scene_name_taken(new_name, exclude_id=old_stem)
-            if taken:
-                body, http = err('NAME_EXISTS', f'Nome gia\' usato: "{new_name}"', {'existing_id': taken})
+            name = str(new_name).strip()[:64]
+            if not name:
+                body, http = err('BAD_REQUEST', 'new_name: 1..64 caratteri', {'field': 'new_name'})
                 return jsonify(body), http
-            preset_data['name'] = str(new_name)[:64]
+            taken = _scene_name_taken(name, exclude_id=old_stem)
+            if taken:
+                body, http = err('NAME_EXISTS', f'Nome gia\' usato: "{name}"', {'existing_id': taken})
+                return jsonify(body), http
+            preset_data['name'] = name
+            try:
+                ps.validate_scene(preset_data)      # mai scrivere una scena che poi non si apre (L1)
+            except ps.ContractError as e:
+                body, http = _store_error(e, preset_data)
+                return jsonify(body), http
             ps.atomic_write_json(old_path, preset_data)
-            _scene_renamed(old_stem, old_stem, preset_data['name'])
-            return jsonify({'status': 'ok', 'ok': True, 'message': f'Preset rinominato in "{new_name}"',
+            _scene_renamed(old_stem, old_stem, name)
+            return jsonify({'status': 'ok', 'ok': True, 'message': f'Preset rinominato in "{name}"',
                             'new_filename': os.path.basename(old_path)})
 
         # Aggiorna il nome
@@ -2116,9 +2130,31 @@ def api_part_patch(t):
 # ==========================================
 # PERSISTENZA: SCENE, PROGETTI, SOUNDFONT (ui-persistence, contracts sez. 4, 5, 8.2)
 # ==========================================
-# Route sottili: schema/validazione/I/O in project_store.py. Nessun lock tenuto
-# durante I/O verso disco, console FluidSynth o porte; lo snapshot della DAW si
-# prende sotto il suo lock e si serializza fuori.
+# Route sottili: schema/validazione/I/O in project_store.py. Nessun lock DAW
+# tenuto durante I/O verso disco, console FluidSynth o porte; lo snapshot della
+# DAW si prende sotto il suo lock e si serializza fuori.
+
+# Operazioni di sessione (Salva, Salva come, Apri, Nuovo, Import MIDI, richiamo
+# scena, PATCH/DELETE/upload progetto) una alla volta (review H1): senza, una
+# Salva intrecciata con Apri/Import scriveva nel file A il contenuto di B.
+# Non bloccante: se occupato -> 409 OPERATION_IN_PROGRESS, mai attesa. Non e'
+# il lock della DAW e la callback MIDI non lo prende mai: tenerlo durante
+# l'I/O non viola 6.7.
+_session_op_lock = threading.Lock()
+
+
+def _session_op(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        if not _session_op_lock.acquire(blocking=False):
+            return _respond(err('OPERATION_IN_PROGRESS',
+                                'Un\'altra operazione su progetto o scena è in corso: riprova tra poco.'))
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _session_op_lock.release()
+    return wrapper
+
 
 def _store_error(e, doc=None, supported=1):
     """ContractError/StoreError -> busta d'errore (sez. 2.1/2.3)."""
@@ -2218,7 +2254,18 @@ def _run_soundfont_load(filename, mark_dirty=True):
     """Carica `filename` (stato gia' `loading`): unload di tutti i font, load,
     poi verifica con `fonts`. `loaded` SOLO se l'output contiene il file
     (nessun ritardo fisso usato come verifica). Nessun lock tenuto qui.
-    Ritorna la risposta della console a `load`."""
+    Ritorna la risposta della console a `load`. Qualunque eccezione chiude lo
+    stato come `failed`: `loading` non resta mai appeso (review L6)."""
+    try:
+        return _do_soundfont_load(filename, mark_dirty)
+    except Exception as e:
+        print(f'[SoundFont] caricamento di {filename} interrotto: {e}')
+        if sf_state.is_loading():
+            sf_state.finish('failed', filename, None, f'Caricamento interrotto: {e}')
+        return ''
+
+
+def _do_soundfont_load(filename, mark_dirty):
     global sf_id
     path = os.path.join(SF2_DIR, filename)
     raw = send_fluid("fonts")
@@ -2288,6 +2335,18 @@ def _save_library(lib):
     ps.atomic_write_json(_library_path(), lib)
 
 
+_library_lock = threading.Lock()   # read-modify-write di library.json (review L7)
+
+
+def _update_library(change):
+    """Applica `change(lib) -> lib | None` e salva (None = nulla da scrivere),
+    sotto `_library_lock`: due PATCH concorrenti non si perdono a vicenda."""
+    with _library_lock:
+        lib = change(_load_library())
+        if lib is not None:
+            _save_library(lib)
+
+
 def _scene_file(scene_id):
     return os.path.join(PRESETS_DIR, f'{scene_id}.json')
 
@@ -2354,14 +2413,16 @@ def _scene_name_taken(name, exclude_id=None):
 def _scene_renamed(old_id, new_id, new_name):
     """Aggiorna libreria e scena corrente dopo una rinomina (route legacy)."""
     if old_id != new_id:
-        lib = _load_library()
-        if old_id in lib['scene_favorites'] or old_id in lib['scene_order']:
+        def rename(lib):
+            if old_id not in lib['scene_favorites'] and old_id not in lib['scene_order']:
+                return None
             lib['scene_favorites'] = [new_id if x == old_id else x for x in lib['scene_favorites']]
             lib['scene_order'] = [new_id if x == old_id else x for x in lib['scene_order']]
-            try:
-                _save_library(lib)
-            except ps.StoreError as e:
-                print(f'[Scene] libreria non aggiornata: {e.message}')
+            return lib
+        try:
+            _update_library(rename)
+        except ps.StoreError as e:
+            print(f'[Scene] libreria non aggiornata: {e.message}')
     cur = scene_state.public()
     if cur['scene_id'] == old_id:
         scene_state.set(new_id, new_name, cur['dirty'])
@@ -2507,8 +2568,7 @@ def api_scene_patch(scene_id):
             ps.atomic_write_json(_scene_file(scene_id), raw)
             _scene_renamed(scene_id, scene_id, name)
         if fav is not None or order is not None:
-            lib = ps.library_set_meta(_load_library(), scene_id, favorite=fav, order=order)
-            _save_library(lib)
+            _update_library(lambda lib: ps.library_set_meta(lib, scene_id, favorite=fav, order=order))
     except (ps.ContractError, ps.StoreError) as e:
         return _respond(_store_error(e))
     return jsonify(ok(scene_meta=_scene_meta(scene_id)))
@@ -2522,13 +2582,19 @@ def api_scene_delete(scene_id):
         os.remove(_scene_file(scene_id))
     except OSError as e:
         return _respond(err('DISK_ERROR', f'Eliminazione fallita: {e}'))
+    _scene_removed(scene_id)
+    return jsonify(ok('Scena eliminata'))
+
+
+def _scene_removed(scene_id):
+    """Dopo l'eliminazione del file: libreria e scena corrente (anche dalla
+    route legacy, review L7)."""
     try:
-        _save_library(ps.library_remove(_load_library(), scene_id))
+        _update_library(lambda lib: ps.library_remove(lib, scene_id))
     except ps.StoreError as e:
         print(f'[Scene] libreria non aggiornata: {e.message}')
     if scene_state.public()['scene_id'] == scene_id:
         scene_state.set(None, None, True)
-    return jsonify(ok('Scena eliminata'))
 
 
 def _sound_preflight(sound, allow_partial, sf_mode='require_match'):
@@ -2660,6 +2726,7 @@ def api_scene_preflight(scene_id):
 
 
 @app.route('/api/scenes/<scene_id>/recall', methods=['POST'])
+@_session_op
 def api_scene_recall(scene_id):
     return _scene_flow(scene_id, do_apply=True)
 
@@ -2707,11 +2774,38 @@ def _project_list():
     return out
 
 
+def _project_name_of(pid):
+    """Nome di un progetto per il SOLO controllo di unicita': dalla cache se
+    fresca, altrimenti lettura del JSON senza validazione completa (sul Pi la
+    validazione di 20 progetti grandi costa secondi). None se illeggibile o
+    non e' un progetto (formato diverso)."""
+    path = _project_file(pid)
+    cached = _project_meta_cache.get(path)
+    if cached and cached[0] == ps.file_stat(path):
+        return cached[1]['name'] if cached[1]['valid'] else None
+    try:
+        doc = ps.read_json_file(path, ps.MAX_PROJECT_BYTES)
+    except (ps.ContractError, ps.StoreError):
+        return None
+    if not isinstance(doc, dict) or doc.get('format') != ps.PROJECT_FORMAT:
+        return None
+    name = doc.get('name')
+    return name if isinstance(name, str) else None
+
+
 def _project_name_taken(name, exclude_id=None):
     key = str(name).casefold()
-    for m in _project_list():
-        if m['id'] != exclude_id and m['valid'] and str(m['name']).casefold() == key:
-            return m['id']
+    if not os.path.isdir(PROJECTS_DIR):
+        return None
+    for fn in sorted(os.listdir(PROJECTS_DIR)):
+        if not fn.endswith(ps.PROJECT_SUFFIX) or fn.startswith('.'):
+            continue
+        pid = fn[:-len(ps.PROJECT_SUFFIX)]
+        if pid == exclude_id:
+            continue
+        other = _project_name_of(pid)
+        if other is not None and other.casefold() == key:
+            return pid
     return None
 
 
@@ -2754,10 +2848,17 @@ def _build_current_project_doc(pid, name, created, source_scene):
 
 
 def _write_project_doc(pid, doc):
+    """Scrive un documento GIA' validato e riempie la cache dei metadati con
+    lo stat appena scritto: il prossimo elenco non rilegge ne' rivalida il
+    file (risorse Pi, review)."""
     os.makedirs(PROJECTS_DIR, exist_ok=True)
     path = _project_file(pid)
     ps.atomic_write_json(path, doc)
-    return ps.file_stat(path)
+    st = ps.file_stat(path)
+    if st is not None:
+        _project_meta_cache[path] = (st, {'id': pid, 'name': doc['name'], 'modified': doc['modified'],
+                                          'size_bytes': st[1], 'valid': True})
+    return st
 
 
 @app.route('/api/projects')
@@ -2771,6 +2872,7 @@ def api_projects_current():
 
 
 @app.route('/api/projects/new', methods=['POST'])
+@_session_op
 def api_project_new():
     data = _json_body() or {}
     error = _common_replace_checks(data)
@@ -2785,6 +2887,7 @@ def api_project_new():
 
 
 @app.route('/api/projects/open', methods=['POST'])
+@_session_op
 def api_project_open():
     data = _json_body()
     if data is None:
@@ -2835,6 +2938,7 @@ def api_project_open():
 
 
 @app.route('/api/projects/save', methods=['POST'])
+@_session_op
 def api_project_save():
     data = _json_body() or {}
     overwrite = data.get('overwrite', False)
@@ -2859,6 +2963,7 @@ def api_project_save():
 
 
 @app.route('/api/projects/save_as', methods=['POST'])
+@_session_op
 def api_project_save_as():
     data = _json_body()
     if data is None:
@@ -2892,6 +2997,7 @@ def api_project_save_as():
 
 
 @app.route('/api/projects/<pid>', methods=['PATCH'])
+@_session_op
 def api_project_patch(pid):
     if not _project_exists(pid):
         return _respond(err('NOT_FOUND', 'Progetto non trovato', {'kind': 'project'}))
@@ -2918,6 +3024,7 @@ def api_project_patch(pid):
 
 
 @app.route('/api/projects/<pid>', methods=['DELETE'])
+@_session_op
 def api_project_delete(pid):
     if not _project_exists(pid):
         return _respond(err('NOT_FOUND', 'Progetto non trovato', {'kind': 'project'}))
@@ -2944,6 +3051,7 @@ def api_project_download(pid):
 
 
 @app.route('/api/projects/upload', methods=['POST'])
+@_session_op
 def api_project_upload():
     f = request.files.get('file')
     if f is None or not f.filename:
@@ -2988,7 +3096,8 @@ def _apply_imported_programs(channel_programs):
             continue
         part = router.get_part(t)
         if part['destination']['kind'] == 'internal':
-            part['sound'] = {'bank': ps.smf_to_fluid_bank(prog.get('bank'), part['destination']['channel']),
+            # Stesso criterio dell'export: canale SMF = ID traccia (deviazione 10, review L5).
+            part['sound'] = {'bank': ps.smf_to_fluid_bank(prog.get('bank'), t),
                              'program': prog.get('program', 0), 'name': None}
         else:
             part['sound'] = ps.smf_to_external_sound(part['sound'], prog.get('bank'), prog.get('program'))
@@ -3012,11 +3121,13 @@ def _parse_flag(value):
 
 def _midi_import(midi_bytes, merge, convert, discard, source_name):
     """Logica comune load/upload. `discard` None = client legacy (nessun
-    controllo dirty, D13). Ritorna (body, http)."""
+    controllo dirty, D13). `convert` None = client legacy: conversione
+    automatica con warning IMPORT_CONVERTED (D26); solo `false` esplicito da'
+    422 IMPORT_NEEDS_CONVERSION. Ritorna (body, http)."""
     if discard is not None and not merge and project_state.public()['dirty'] and not discard:
         return err('UNSAVED_CHANGES', 'Il progetto ha modifiche non salvate', {'scope': 'project'})
     try:
-        info = daw.import_midi(midi_bytes, merge=merge, convert=bool(convert))
+        info = daw.import_midi(midi_bytes, merge=merge, convert=convert is None or bool(convert))
     except RuntimeError as e:
         return err('TRANSPORT_ACTIVE', str(e), {'is_playing': daw.is_playing,
                                                 'is_recording': daw.is_recording}, http=409)
@@ -3215,6 +3326,7 @@ def daw_midi_list():
 
 
 @app.route('/api/daw/midi/load/<filename>')
+@_session_op
 def daw_midi_load(filename):
     """Carica un file MIDI salvato nelle tracce del DAW"""
     try:
@@ -3264,6 +3376,7 @@ def daw_midi_download(filename):
 
 
 @app.route('/api/daw/midi/upload', methods=['POST'])
+@_session_op
 def daw_midi_upload():
     """Carica un file MIDI dal PC nelle tracce del DAW"""
     try:

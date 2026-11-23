@@ -323,6 +323,16 @@ test('PORTS_UNAVAILABLE: richiamo parziale solo dopo consenso (allow_partial); r
     assert.equal(recallCalls(h).length, 1);
 });
 
+test('OPERATION_IN_PROGRESS: solo un avviso breve (toast), nessun dialogo e nessuna riprova', async () => {
+    const h = harness({ 'POST /api/scenes/s-1/recall': errR('OPERATION_IN_PROGRESS') }, []);
+    const r = await h.svc.recall('s-1');
+    assert.deepEqual([r.ok, r.reason], [false, 'busy']);
+    assert.equal(recallCalls(h).length, 1);
+    assert.equal(h.dialogs.length, 0);
+    assert.equal(h.notes[0][0], 'warn');
+    assert.match(h.notes[0][1], /riprova tra poco/);
+});
+
 test('PARTIAL_APPLY e\' un errore (mai successo) e rilegge lo stato', async () => {
     const h = harness({ 'POST /api/scenes/s-1/recall': errR('PARTIAL_APPLY', { committed: true, applied_parts: [0], failed_parts: [1, 2] }, { http: 503 }) }, []);
     const r = await h.svc.recall('s-1');

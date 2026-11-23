@@ -245,6 +245,7 @@
         NOT_INTERNAL_PART: 'Comando valido solo per le parti interne.',
         SOUNDFONT_LOADING: 'Un SoundFont è in caricamento: attendi la fine.',
         UNSAVED_CHANGES: 'Ci sono modifiche non salvate.',
+        OPERATION_IN_PROGRESS: 'Un\'altra operazione su progetto o scena è in corso: riprova tra poco.',
         DISK_FULL: 'Disco pieno.',
         DISK_ERROR: 'Errore di scrittura su disco.',
         INTERNAL: 'Errore interno del server.'

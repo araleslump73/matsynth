@@ -363,7 +363,7 @@ def migrate_event_clips(events, clips):
 
 PROJECT_KEYS = ('format', 'schema_version', 'id', 'name', 'created', 'modified',
                 'transport', 'sound', 'tracks', 'next_clip_id')
-PROJECT_OPTIONAL_KEYS = ('devices', 'source_scene')
+PROJECT_OPTIONAL_KEYS = ('devices', 'source_scene', 'event_clip_ids')
 TRACK_KEYS = ('id', 'name', 'color', 'mute', 'solo', 'events', 'clips')
 CLIP_KEYS = ('id', 'start_beat', 'end_beat', 'name', 'created_at')
 
@@ -451,11 +451,15 @@ def validate_project(doc):
                     _str(desc['client'], _join(_join(dp, direction), 'client'), 1, 128)
                     _str(desc['port'], _join(_join(dp, direction), 'port'), 0, 128)
 
+    marker = doc.get('event_clip_ids')
+    if marker is not None and not isinstance(marker, bool):
+        _fail('event_clip_ids', 'bool atteso')
+
     warnings = []
     _list(doc['tracks'], 'tracks', 16)
     clip_ids = set()
     total_events = 0
-    uses_clip_ids = False
+    uses_clip_ids = marker is True
     overlaps = []
     for i, tr in enumerate(doc['tracks']):
         tp = _join('tracks', i)
@@ -529,6 +533,11 @@ def validate_project(doc):
 
 
 def project_uses_clip_ids(doc):
+    """True per i documenti D3: chiave `event_clip_ids: true` (scritta sempre
+    dal writer, D27) oppure almeno un evento con il terzo elemento. Solo i
+    documenti pre-D3 vanno migrati per intervalli (6.4)."""
+    if doc.get('event_clip_ids') is True:
+        return True
     return any(len(ev) == 3 for tr in doc['tracks'] for ev in tr['events'])
 
 
@@ -614,6 +623,7 @@ def build_project_doc(session, sound, meta):
         'source_scene': meta.get('source_scene'),
         'tracks': tracks,
         'next_clip_id': max(int(session['next_clip_id']), max_id + 1),
+        'event_clip_ids': True,
     }
     if meta.get('devices'):
         doc['devices'] = meta['devices']

@@ -325,6 +325,10 @@
                 switch (code) {
                     case 'TRANSPORT_ACTIVE':
                         return transportDialog(det.is_recording ? 'Record' : 'Play').then(function () { return { ok: false, reason: 'transport' }; });
+                    case 'OPERATION_IN_PROGRESS':
+                        // Un altro dispositivo sta salvando/aprendo: avviso breve, nessuna riprova automatica.
+                        ui.notify(msg(r), 'warn');
+                        return { ok: false, reason: 'busy' };
                     case 'UNSAVED_CHANGES':
                         return ui.choice({
                             title: 'Modifiche non salvate',

@@ -3039,6 +3039,11 @@ class MultiTrackDAW:
             n, d = next(iter(sig_values))
             if n not in (3, 4) or d != 4:
                 issues.append({'type': 'meter', 'value': f'{n}/{d}'})
+        imported_bpm = int(round(mido.tempo2bpm(tempos[0][2]))) if tempos else self.bpm
+        if not 30 <= imported_bpm <= 300:
+            # Riportato in 30..300: e' una conversione, mai in silenzio (review L8).
+            issues.append({'type': 'tempo_range', 'value': imported_bpm})
+            imported_bpm = max(30, min(300, imported_bpm))
         warnings = []
         if issues:
             if not convert:
@@ -3046,9 +3051,8 @@ class MultiTrackDAW:
                                'Il file usa tempo/metro non supportati: serve una conversione esplicita',
                                {'issues': issues})
             warnings.append({'code': 'IMPORT_CONVERTED',
-                             'message': 'Importato con il primo tempo e 4/4 dove il metro non e\' supportato',
+                             'message': 'Importato con il primo tempo (in 30..300 BPM) e 4/4 dove il metro non e\' supportato',
                              'details': {'issues': issues}})
-        imported_bpm = int(round(mido.tempo2bpm(tempos[0][2]))) if tempos else self.bpm
         imported_ts = self.beats_per_measure
         if sigs:
             n, d = sigs[0][2], sigs[0][3]

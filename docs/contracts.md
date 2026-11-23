@@ -149,9 +149,10 @@ Regole di compatibilita':
 | `DEVICE_IN_USE` | 409 | Eliminazione alias usato da parti. `details.parts`. |
 | `EMPTY_CLIPBOARD` | 409 | Incolla con appunti vuoti. |
 | `NOT_INTERNAL_PART` | 409 | Comando solo-FluidSynth (route legacy `/select_prog`, `/reset_channel`) su parte esterna. |
+| `OPERATION_IN_PROGRESS` | 409 | Un'altra operazione di sessione e' in corso (Salva, Salva come, Apri, Nuovo, Import MIDI sostitutivo/Aggiungi, richiamo scena, PATCH/DELETE/upload progetto: sez. 5.6). Nessuna attesa lato server; stato invariato; il client mostra un avviso breve e NON riprova da solo. |
 | `VALIDATION_FAILED` | 422 | `details.path`, `details.reason`. |
 | `UNSUPPORTED_VERSION` | 422 | `schema_version` superiore a quella supportata o formato sconosciuto. `details.found`, `details.supported`. |
-| `IMPORT_NEEDS_CONVERSION` | 422 | SMF con tempo map, metro non 3/4-4/4 o metri multipli, senza `convert: true`. `details.issues`. |
+| `IMPORT_NEEDS_CONVERSION` | 422 | SMF con tempo map, metro non 3/4-4/4, metri multipli o BPM fuori da 30..300, con `convert: false` esplicito (assente = conversione, D26). `details.issues`. |
 | `PAYLOAD_TOO_LARGE` | 413 | `details.limit_bytes`. |
 | `SYNTH_UNAVAILABLE` | 503 | Console FluidSynth non raggiungibile o porta MIDI interna assente. |
 | `PORT_UNAVAILABLE` | 503 | Record senza input utilizzabile, Play senza alcuna destinazione disponibile, invio su porta assente. `details.tracks`/`details.alias`. |
@@ -164,7 +165,7 @@ Regole di compatibilita':
 
 ### 2.4 Codici di warning (`warnings[].code`)
 
-`SOUNDFONT_UNSPECIFIED` (scena senza SoundFont: applicata sul SoundFont caricato), `PART_UNAVAILABLE` (parte saltata con consenso `allow_partial`), `SHARED_DESTINATION`, `SHARED_INPUT`, `DOUBLE_MONITOR` (sez. 3.6), `MONITOR_HANDLED_BY_ALSA` (modalita' legacy, sez. 10), `UNPAIRED_NOTE_ON` (note-on senza note-off nel documento), `CLIP_OVERLAP_PRESENT` (progetto aperto con clip sovrapposti ed eventi senza `clip_id`: assegnati con la migrazione di 6.4), `BANK_NOT_REPRESENTABLE` (export SMF, sez. 7.3), `IMPORT_DROPPED_EVENTS` (SysEx/realtime scartati all'import, con conteggi), `IMPORT_CONVERTED` (import con `convert: true`), `PLAYBACK_TRACKS_UNAVAILABLE` (Play avviato ma alcune tracce hanno destinazione non disponibile), `LEGACY_FIELD_DEFAULTED` (scena legacy con campi assenti riempiti dai default, sez. 4.3).
+`SOUNDFONT_UNSPECIFIED` (scena senza SoundFont: applicata sul SoundFont caricato), `PART_UNAVAILABLE` (parte saltata con consenso `allow_partial`), `SHARED_DESTINATION`, `SHARED_INPUT`, `DOUBLE_MONITOR` (sez. 3.6), `MONITOR_HANDLED_BY_ALSA` (modalita' legacy, sez. 10), `UNPAIRED_NOTE_ON` (note-on senza note-off nel documento), `CLIP_OVERLAP_PRESENT` (progetto aperto con clip sovrapposti ed eventi senza `clip_id`: assegnati con la migrazione di 6.4), `BANK_NOT_REPRESENTABLE` (export SMF, sez. 7.3), `IMPORT_DROPPED_EVENTS` (SysEx/realtime scartati all'import, con conteggi), `IMPORT_CONVERTED` (import con `convert: true` o con `convert` assente, D26; `details.issues`), `PLAYBACK_TRACKS_UNAVAILABLE` (Play avviato ma alcune tracce hanno destinazione non disponibile), `LEGACY_FIELD_DEFAULTED` (scena legacy con campi assenti riempiti dai default, sez. 4.3).
 
 ### 2.5 Socket.IO: ack
 
@@ -454,7 +455,7 @@ Owner: `ui-persistence` (`project_store.py` + route). Consumatore UI: `ui-studio
 
 ### 5.1 Schema v1
 
-File `PROJECTS_DIR/<id>.matsynth.json`, con `PROJECTS_DIR = /home/matteo/matsynth_web/projects/` (nuova costante in `app.py`, da aggiungere a `tests/helpers.redirect_app_paths`). Chiavi esatte della radice (extra -> `VALIDATION_FAILED`; `devices` e `source_scene` facoltative):
+File `PROJECTS_DIR/<id>.matsynth.json`, con `PROJECTS_DIR = /home/matteo/matsynth_web/projects/` (nuova costante in `app.py`, da aggiungere a `tests/helpers.redirect_app_paths`). Chiavi esatte della radice (extra -> `VALIDATION_FAILED`; `devices`, `source_scene` e `event_clip_ids` facoltative):
 
 | Campo | Tipo | Regole |
 | --- | --- | --- |
@@ -473,6 +474,7 @@ File `PROJECTS_DIR/<id>.matsynth.json`, con `PROJECTS_DIR = /home/matteo/matsynt
 | `tracks[i].events` | array di `[beat, [b0, b1(, b2)]]` | Vedi 5.2. |
 | `tracks[i].clips` | array di `{"id", "start_beat", "end_beat", "name", "created_at"}` | `id` int >= 1 unico nel progetto; `0 <= start_beat < end_beat`; `name` stringa `<= 64`; `created_at` numero (epoch s, come oggi). |
 | `next_clip_id` | int | `>` di ogni `clips[].id`. |
+| `event_clip_ids` | bool | Facoltativo (D27). `true` = documento con ownership per ID (D3): gli eventi senza terzo elemento sono liberi e la migrazione per intervalli di 6.4 NON si applica. Il writer lo scrive sempre `true`; assente o `false` = documento pre-D3 (migrato se nessun evento ha il terzo elemento). Tipo diverso da bool -> `VALIDATION_FAILED`. |
 | `devices` | oggetto alias -> `{"label", "input", "output"}` | Facoltativo, informativo: descrittori (3.4) degli alias usati, per proporre l'associazione su un altro Pi. MAI associazione automatica. |
 
 Esempio: `docs/schemas/project_v1.json`.
@@ -528,6 +530,8 @@ Stato backend `project_state = {"id": "p-..." | null, "name": "Senza titolo", "d
 - `dirty = false` solo dopo Salva, Salva come, Apri, Nuovo riusciti. Un undo che riporta allo stato salvato NON azzera `dirty` (semplicita').
 - Arm, posizione, Play/Record, click, preferenze di vista NON rendono `dirty`.
 - L'evento `project_state` si emette solo quando un campo cambia (il passaggio `false -> true` una volta, non a ogni mutazione).
+
+**Una operazione di sessione alla volta.** Salva, Salva come, Apri, Nuovo, Import MIDI (sostitutivo e Aggiungi, `load` e `upload`), richiamo scena, PATCH/DELETE/upload progetto prendono un lock di operazione a livello di modulo (`_session_op_lock`, `acquire(blocking=False)`): se e' occupato rispondono subito `409 OPERATION_IN_PROGRESS`, senza attesa e senza effetti. Senza questo lock una Salva intrecciata con Apri/Import/Nuovo scriveva nel file A il contenuto di B (review `ui-persistence` H1). Non e' il lock DAW (6.7) e la callback MIDI non lo prende mai: tenerlo durante l'I/O e' ammesso.
 
 Regole comuni a Nuovo / Apri / Import sostitutivo: trasporto fermo (altrimenti `409 TRANSPORT_ACTIVE`, nessuno stop automatico) e, se `dirty` e manca `discard_changes: true`, `409 UNSAVED_CHANGES` (`details.scope: "project"`). L'UI propone **Salva / Scarta / Annulla** (Salva = Salva o Salva come, poi ripete la richiesta; Scarta = ripete con `discard_changes: true`).
 
@@ -602,7 +606,7 @@ Un clip e' un **marcatore di intervallo** sulla traccia (`{id, start_beat, end_b
 
 **Clip sovrapposti consentiti (D3).** Con l'ownership per ID (6.3) spostare un clip non trascina mai gli eventi di un altro clip (corregge A18). L'intervallo `[start_beat, end_beat)` del clip e' la sua cornice visiva: DEVE contenere tutti i note-on e gli eventi non-nota posseduti (i note-off possono uscirne). `CLIP_OVERLAP` non viene piu' prodotto dalle operazioni su clip; `CLIP_OVERLAP_PRESENT` resta solo come warning informativo all'apertura di progetti v1 senza `clip_id` (vedi "Migrazione" sotto).
 
-- Migrazione: eventi senza `clip_id` (progetti salvati prima di D3, sessione importata, dati vecchi) ricevono l'ID con la regola 6.3 "intervalli", applicata clip per clip in ordine di ID crescente: un evento gia' assegnato non cambia clip. Gli eventi che restano fuori sono liberi.
+- Migrazione: si applica solo ai documenti pre-D3 (nessun evento con terzo elemento e `event_clip_ids` diverso da `true`, D27). Eventi senza `clip_id` (progetti salvati prima di D3, sessione importata, dati vecchi) ricevono l'ID con la regola 6.3 "intervalli", applicata clip per clip in ordine di ID crescente: un evento gia' assegnato non cambia clip. Gli eventi che restano fuori sono liberi.
 - `next_clip_id` non decresce mai: undo/redo ripristinano clip con i loro ID ma il contatore resta `max(corrente, snapshot)` (oggi `_restore_snapshot` lo riporta indietro: un ID potrebbe essere riassegnato dopo un undo, anomalia A19).
 
 Operazioni. Ogni operazione che modifica dati: un solo livello di undo, un solo `daw_state_update`, `revision` incrementata, progetto `dirty`. Durante Play o Record: `409 TRANSPORT_ACTIVE` per tutte le operazioni su clip, taglia, incolla, duplica e cancella intervallo (le route clip lo fanno gia'; `paste_at` oggi ritorna 0 in silenzio). Copia e' sempre consentita. Svuota traccia/tutto restano come oggi (nessun controllo di trasporto). Aggiungi/modifica/elimina nota ed eventi restano vietati solo durante Record (come oggi), consentiti in Play: il playback in corso usa la copia di eventi presa a inizio giro.
@@ -686,7 +690,7 @@ Il dizionario `channel_programs` scambiato con `export_midi`/`import_midi` ha la
 - **Tutti gli altri** Program Change e CC0/CC32 restano **eventi nel tempo** al loro beat (fixture: `(4.0, [0xC0, 12])` in `tracks[0]`). Il PC a beat non zero non e' piu' perso e non "vince" sul suono iniziale (anomalia A1).
 - Restano compatibili: `test_workload_import_export_import_is_stable` (PC iniziali consumati: `total_events == 16000`), `test_sustain_and_pitchbend_survive_round_trip`.
 - Note, CC, sustain, pitch bend, poly/channel pressure preservati. Messaggi senza canale (SysEx, realtime, meta non gestiti) scartati e **contati**: warning `IMPORT_DROPPED_EVENTS` con `details.counts`.
-- Tempo/metro: un solo `set_tempo` (o tutti uguali) e al massimo un `time_signature` con numeratore 3 o 4 e denominatore 4 -> import normale. Altrimenti (tempo map, metri diversi o multipli) -> `422 IMPORT_NEEDS_CONVERSION` con `details.issues` (es. `[{"type":"tempo_map","count":3},{"type":"meter","value":"6/8"}]`) salvo `convert: true` (query/form), che usa il **primo** tempo e 4/4 se il metro non e' supportato, e risponde con warning `IMPORT_CONVERTED`. Oggi vince l'ultimo `set_tempo` in silenzio.
+- Tempo/metro: un solo `set_tempo` (o tutti uguali) e al massimo un `time_signature` con numeratore 3 o 4 e denominatore 4 -> import normale. Altrimenti (tempo map, metri diversi o multipli) -> `422 IMPORT_NEEDS_CONVERSION` con `details.issues` (es. `[{"type":"tempo_map","count":3},{"type":"meter","value":"6/8"}]`) salvo `convert: true` (query/form), che usa il **primo** tempo e 4/4 se il metro non e' supportato, e risponde con warning `IMPORT_CONVERTED`. `convert` assente (client legacy, D26) = come `convert: true`; solo `convert: false` esplicito da' il 422. Un primo tempo fuori da `30..300` BPM e' anch'esso una conversione (`{"type":"tempo_range","value":<bpm>}` in `details.issues`, BPM riportato nell'intervallo), mai un clamp silenzioso. Oggi vince l'ultimo `set_tempo` in silenzio.
 - **Clip**: l'import crea un clip per traccia importata, `[primo beat, ultimo beat + 0.125)` (stesso margine della fine Record, 6.4: ogni evento importato e' posseduto; anomalia A7). Gli eventi importati appartengono al clip creato; con Aggiungi resta un clip separato anche se interseca clip esistenti (D3).
 - Un solo livello di undo per l'intero import (A13); `revision` +1; progetto `dirty` (5.6, staccato dal file se sostitutivo).
 - Nomi traccia: con Sostituisci, se una traccia SMF contiene un solo canale e un meta `track_name`, quel nome DOVREBBE diventare il nome della traccia (troncato a 32).
@@ -764,7 +768,7 @@ Legenda colonna "Cambia": **=** invariata; **+** estensione additiva (campi nuov
 | PUT `/api/daw/track/<t>/edit_note_pair`, DELETE `/delete_note_pair` | + | persistence | `expected_revision?`; + `revision`. |
 | POST `/api/daw/midi/save` | S | persistence | Conversione bank 7.3; nomi traccia; warning `BANK_NOT_REPRESENTABLE`. |
 | GET `/api/daw/midi/list`, DELETE `/delete/<f>`, GET `/download/<f>` | = | — | |
-| GET `/api/daw/midi/load/<f>`, POST `/api/daw/midi/upload` | S | persistence | Import 7.2; parametri nuovi facoltativi `convert`, `discard_changes` (query per `load`, form per `upload`). Controllo `dirty` solo se il parametro `discard_changes` e' presente: `false` + progetto `dirty` + Sostituisci -> `409 UNSAVED_CHANGES`; `true` -> procede. Parametro assente (client legacy) = comportamento attuale senza controllo (D13); i client nuovi DEVONO inviarlo sempre. `409` durante transport invariato. |
+| GET `/api/daw/midi/load/<f>`, POST `/api/daw/midi/upload` | S | persistence | Import 7.2; parametri nuovi facoltativi `convert`, `discard_changes` (query per `load`, form per `upload`). Controllo `dirty` solo se il parametro `discard_changes` e' presente: `false` + progetto `dirty` + Sostituisci -> `409 UNSAVED_CHANGES`; `true` -> procede. Parametro assente (client legacy) = comportamento attuale senza controllo (D13); i client nuovi DEVONO inviarlo sempre. `convert` assente = conversione automatica con warning (D26); i client nuovi DEVONO inviarlo (`false` per chiedere conferma all'utente). `409` durante transport invariato. |
 
 **Override HTTP legacy** (unici casi in cui `error.code` e HTTP non seguono la tabella 2.3; tutto il resto la segue):
 
@@ -1177,6 +1181,8 @@ Ogni voce: scelta adottata in questo contratto (le fasi la implementano) e racco
 | D23 | Duplica traccia con `include_config: true` (`ui-studio`). | Copiati destinazione, suono, CC e monitor; l'ingresso della parte destinazione NON viene copiato (evita due parti sullo stesso ingresso); per destinazione interna il canale resta quello della parte destinazione. Da confermare con l'utente. |
 | D24 | File fuori dall'ownership di `ui-live` (11.2) toccati da `ui-live`. | `shell.js`: vista predefinita = Suona (`DEFAULT_VIEW = 'live'`, `prefs.lastView`/hash restano prioritari), rimosso il segnaposto `initLive`, guardia delle scorciatoie legacy spostata in fase di bubble con `stopImmediatePropagation` (prima, in cattura, bloccava anche i tasti nei pannelli, nella barra globale e nella vista Suona: Esc, Invio nei dialoghi, frecce). `settings.js`: la scheda SoundFont delle Impostazioni e' sostituita da Libreria > SoundFont (un solo posto per caricare un SF, con il flusso a due passi D9); `openPanel('settings','soundfont')` rimanda li'. Nessun file Python toccato. |
 | D25 | Categorie del browser suoni (piano: "ricerca/categorie"). | Il SoundFont non espone categorie: si usano le famiglie General MIDI (`program / 8`) e "Batterie" per bank >= 120. Sui SoundFont non GM sono solo indicative; la ricerca per nome/bank-program resta sempre disponibile. |
+| D26 | Import SMF da client legacy senza `convert` (review `ui-persistence` M3): con `convert` assente = `false`, la vecchia UI non importava piu' file con piu' tempi o metro 6/8 e non aveva modo di convertire. | Come D13: `convert` assente = conversione automatica (primo tempo, 4/4, BPM in 30..300) con warning `IMPORT_CONVERTED` e `details.issues`; solo `convert: false` esplicito da' `422 IMPORT_NEEDS_CONVERSION`. I client nuovi DEVONO inviare `convert`. **Da confermare con l'utente.** |
+| D27 | Documenti D3 senza eventi posseduti (review `ui-persistence` L4): un progetto con clip ma nessun evento con terzo elemento era indistinguibile da un pre-D3, e alla riapertura la migrazione assegnava ai clip gli eventi liberi nella loro cornice. | Chiave di radice facoltativa `event_clip_ids: true` (5.1), sempre scritta dal writer: disattiva la migrazione di 6.4. Eccezione esplicita a 5.1/D18 (chiavi extra rifiutate) senza incrementare `schema_version`: i file nuovi aperti da una versione precedente del codice danno `VALIDATION_FAILED` (nessuna versione rilasciata la precede). **Da confermare con l'utente.** |
 
 Nessuna contraddizione bloccante trovata nel piano. Le tensioni principali (D1/D2 default espliciti vs compatibilita' legacy, D6 rewind dopo Record: deciso dall'utente di mantenerlo come opzione, D16 suffissi legacy) sono risolte dando priorita' al piano per la UI nuova e conservando il comportamento legacy solo sulle route legacy.
 

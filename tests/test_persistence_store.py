@@ -157,6 +157,22 @@ class SessionDocTests(unittest.TestCase):
         self.assertEqual(list(sess['event_clips'][0]), [1] * 6)
         self.assertEqual(list(sess['event_clips'][1]), [2] * 4)
 
+    def test_d3_document_without_owned_events_does_not_adopt_free_events_l4(self):
+        # Clip rimasto senza note proprie + eventi liberi incollati nella sua cornice.
+        s = self._session()
+        s['event_clips'][0] = array('H', [0, 0, 0, 0])
+        doc = json.loads(json.dumps(ps.build_project_doc(s, self._sound(), {'id': 'p-1', 'name': 'x'})))
+        self.assertIs(doc['event_clip_ids'], True)
+        self.assertTrue(all(len(ev) == 2 for ev in doc['tracks'][0]['events']))
+        self.assertEqual(ps.validate_project(doc), [])
+        self.assertEqual(list(ps.project_to_session(doc)['event_clips'][0]), [0, 0, 0, 0])
+        del doc['event_clip_ids']                       # stesso file senza chiave = pre-D3: migrato
+        self.assertEqual(list(ps.project_to_session(doc)['event_clips'][0]), [1, 1, 1, 1])
+        doc['event_clip_ids'] = 'si'
+        with self.assertRaises(ps.ContractError) as cm:
+            ps.validate_project(doc)
+        self.assertEqual(cm.exception.path, 'event_clip_ids')
+
     def test_writer_drops_dangling_ids_and_normalizes_nibble(self):
         s = self._session()
         s['event_clips'][0] = array('H', [7, 1, 0, 0])       # 7 non esiste: mai scritto
