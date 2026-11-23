@@ -1,6 +1,6 @@
 /* MatSynth - settings.js (fase ui-offline-settings)
- * Pannello Impostazioni della shell: Connessione, Audio e hardware, MIDI (porte e alias), Modalita' MIDI,
- * SoundFont (provvisorio fino alla sezione Libreria > SoundFont di ui-live).
+ * Pannello Impostazioni della shell: Connessione, Audio e hardware, MIDI (porte e alias), Modalita' MIDI.
+ * (Il SoundFont si gestisce in Libreria > SoundFont, ui-live: qui un rimando per i vecchi link.)
  *
  * Regole:
  *  - Nessuna richiesta all'avvio della pagina: i dati si leggono solo quando il pannello si apre o si cambia
@@ -32,8 +32,7 @@
         { id: 'connessione', title: 'Connessione' },
         { id: 'audio', title: 'Audio e hardware' },
         { id: 'midi', title: 'MIDI' },
-        { id: 'modalita', title: 'Modalità' },
-        { id: 'soundfont', title: 'SoundFont' }
+        { id: 'modalita', title: 'Modalità' }
     ];
 
     function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
@@ -712,53 +711,8 @@
             load();
         }
 
-        /* ── Scheda: SoundFont (provvisoria) ────────────────────────────── */
-        function renderSoundfont(host, gen) {
-            var out = status();
-            var sel = h('select', { id: 'st-sf2', class: 'ms-select', disabled: true }, [h('option', { text: 'Ricerca SoundFont…' })]);
-            var load = btn('Carica SoundFont', 'st-primary', 'folder-open');
-            load.disabled = true;
-            var box = h('div');
-            host.appendChild(card('SoundFont', [
-                note('Provvisorio: la gestione dei SoundFont passerà alla Libreria. Caricare un SoundFont scarica quello attuale: fermalo prima.'),
-                field('File .sf2 / .sf3', sel, 'st-sf2'), h('div', { class: 'ms-actions' }, [load]), box, out]));
-            var current = '';
-            Promise.all([http.request('GET', '/list_sf2'), http.request('GET', '/get_state')]).then(function (rs) {
-                if (gen !== loadGen) return;
-                sel.textContent = '';
-                var files = rs[0].ok && Array.isArray(rs[0].body) ? rs[0].body : null;
-                if (!files) { setStatus(out, 'error', 'Elenco non letto: ' + errorText(rs[0])); sel.appendChild(h('option', { text: 'Non disponibile' })); return; }
-                current = rs[1].ok && rs[1].body && typeof rs[1].body.font === 'string' ? rs[1].body.font : '';
-                if (!files.length) { sel.appendChild(h('option', { text: 'Nessun SoundFont trovato' })); return; }
-                files.forEach(function (f) { sel.appendChild(h('option', { value: f, text: f })); });
-                if (current && files.indexOf(current) >= 0) sel.value = current;
-                sel.disabled = false; load.disabled = false;
-                if (current) setStatus(out, '', 'Attuale: ' + current);
-            });
-            load.addEventListener('click', function () {
-                var file = sel.value;
-                if (!file) return;
-                var g = snapshotGuard();
-                askConfirm(box, {
-                    title: 'Caricare "' + file + '"?', text: 'Il SoundFont attuale viene scaricato e il nuovo caricato: il suono si interrompe per qualche secondo.',
-                    warnings: g.warnings, blocked: g.blocked ? g.reason : '', confirmLabel: 'Conferma caricamento', icon: 'folder-open',
-                    onConfirm: function () {
-                        busy(load, function () {
-                            setStatus(out, 'busy', 'Caricamento in corso (fino a 30 s)…');
-                            return http.request('GET', '/load_sf2/' + encodeURIComponent(file)).then(function (r) {
-                                if (!r.ok) { setStatus(out, 'error', 'Caricamento non riuscito: ' + errorText(r)); return; }
-                                // La risposta e' il testo di FluidSynth: dice che il comando e' stato inviato, non verifica l'ascolto.
-                                setStatus(out, 'ok', 'Comando inviato a FluidSynth: ' + (typeof r.body === 'string' ? r.body : 'ok') + '. Ricarica la pagina per aggiornare gli strumenti.');
-                                box.appendChild(reloadButton());
-                            });
-                        });
-                    }
-                });
-            });
-        }
-
         /* ── Schede e apertura ──────────────────────────────────────────── */
-        var RENDERERS = { connessione: renderConnessione, audio: renderAudio, midi: renderMidi, modalita: renderModalita, soundfont: renderSoundfont };
+        var RENDERERS = { connessione: renderConnessione, audio: renderAudio, midi: renderMidi, modalita: renderModalita };
 
         function buildTabs() {
             tabsEl.textContent = '';
@@ -818,6 +772,8 @@
         if (MS.shell && typeof MS.shell.openPanel === 'function') {
             var orig = MS.shell.openPanel;
             MS.shell.openPanel = function (name, section) {
+                // Il SoundFont non e' piu' qui: i vecchi collegamenti (?section=soundfont) aprono la Libreria.
+                if (name === 'settings' && section === 'soundfont') return orig.call(MS.shell, 'library', 'soundfont');
                 if (name === 'settings' && section) pendingSection = section;
                 return orig.apply(MS.shell, arguments);
             };

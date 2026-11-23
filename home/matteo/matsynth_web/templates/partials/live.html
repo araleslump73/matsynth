@@ -1,29 +1,67 @@
-{# Vista Suona: SEGNAPOSTO della fase ui-shell. ui-live possiede questo file e static/js/live.js:
-   scene preferite, browser dei suoni, richiamo scena. Qui solo cio' che dimostra il riuso del
-   pannello sonoro unico (static/js/part_panel.js) e dello stato condiviso. #}
-<div class="ms-live">
-    <section class="ms-card" aria-labelledby="live-scene-title">
-        <h2 id="live-scene-title" class="ms-card-title">Scena attuale</h2>
-        <p class="ms-scene-line">
-            <strong id="live-scene-name">Nessuna scena caricata</strong>
-            <span id="live-scene-dirty" class="ms-pill ms-pill-warn" hidden>modificata</span>
-        </p>
-        <button type="button" class="ms-btn ms-btn-secondary" data-open-panel="library" data-section="scene">
-            <i class="fas fa-book" aria-hidden="true"></i> Scene&hellip;
-        </button>
-    </section>
+{# Vista Suona (fase ui-live). Una sola implementazione per telefono e tablet: sotto i 768 px le sezioni si impilano
+   (scena, parte, dettaglio, master); da 768 px in su diventano tre colonne (scene | parti | dettaglio) solo via CSS.
+   Il contenuto dinamico lo disegna static/js/live.js; il pannello sonoro e' quello unico di static/js/part_panel.js. #}
+<div class="lv-root" id="lv-root">
 
-    <section class="ms-card" aria-labelledby="live-part-title">
-        <h2 id="live-part-title" class="ms-card-title">Parte selezionata</h2>
-        <div class="ms-field">
-            <label for="live-part-select">Parte</label>
-            <select id="live-part-select" class="ms-select">
-                {% for i in range(16) %}<option value="{{ i }}">Parte {{ i + 1 }}</option>
-                {% endfor %}
-            </select>
+    <section class="lv-col lv-scenes" aria-labelledby="lv-scene-title">
+        <div class="ms-card lv-card">
+            <h2 id="lv-scene-title" class="ms-card-title">Scena attuale</h2>
+            <p class="lv-sceneline">
+                <strong id="lv-scene-name" class="lv-scenename">Nessuna scena caricata</strong>
+                <span id="lv-scene-dirty" class="lv-pill lv-pill-warn" hidden><i class="fas fa-pen" aria-hidden="true"></i> modificata</span>
+            </p>
+            <div class="lv-actions">
+                <button type="button" id="lv-save" class="lv-btn lv-btn-primary"><i class="fas fa-save" aria-hidden="true"></i> Salva</button>
+                <button type="button" id="lv-saveas" class="lv-btn"><i class="fas fa-plus" aria-hidden="true"></i> Salva come&hellip;</button>
+                <button type="button" class="lv-btn" data-open-panel="library" data-section="scene"><i class="fas fa-book" aria-hidden="true"></i> Tutte le scene&hellip;</button>
+            </div>
+            <div id="lv-transport-note" class="lv-notice" role="status" hidden>
+                <span>Play o Record sono attivi: il richiamo delle scene è bloccato finché non premi Stop.</span>
+                <button type="button" id="lv-stop" class="lv-btn lv-btn-danger"><i class="fas fa-stop" aria-hidden="true"></i> Stop</button>
+            </div>
+            <div class="lv-searchrow">
+                <button type="button" id="lv-prev" class="lv-btn lv-btn-icon" aria-label="Scena precedente" title="Scena precedente"><i class="fas fa-chevron-left" aria-hidden="true"></i></button>
+                <label class="lv-sr" for="lv-scene-search">Cerca scena</label>
+                <input type="search" id="lv-scene-search" class="lv-input" placeholder="Cerca scena" autocomplete="off">
+                <button type="button" id="lv-next" class="lv-btn lv-btn-icon" aria-label="Scena successiva" title="Scena successiva"><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
+            </div>
+            <p id="lv-scene-info" class="ms-note lv-info" role="status"></p>
+            <ul id="lv-scene-results" class="lv-scenegrid" hidden></ul>
+            <h3 id="lv-fav-title" class="lv-subtitle"><i class="fas fa-star" aria-hidden="true"></i> Scene preferite</h3>
+            <ul id="lv-favs" class="lv-scenegrid" aria-labelledby="lv-fav-title"></ul>
         </div>
-        <div id="live-part-panel"></div>
     </section>
 
-    <p class="ms-note">Vista Suona in costruzione: scelta del suono, scene preferite e richiamo arrivano con la fase dedicata. Tutte le funzioni attuali restano in Studio.</p>
+    <section class="lv-col lv-parts" id="lv-parts" aria-labelledby="lv-part-title">
+        <div class="ms-card lv-card">
+            <h2 id="lv-part-title" class="ms-card-title">Parti (1-16)</h2>
+            <div class="lv-partnav">
+                <button type="button" id="lv-part-prev" class="lv-btn lv-btn-icon" aria-label="Parte precedente"><i class="fas fa-chevron-left" aria-hidden="true"></i></button>
+                <button type="button" id="lv-part-toggle" class="lv-btn lv-btn-grow" aria-expanded="false" aria-controls="lv-partlist">
+                    <span id="lv-part-current" class="lv-part-current">Parte 1</span> <i class="fas fa-chevron-down" aria-hidden="true"></i>
+                </button>
+                <button type="button" id="lv-part-next" class="lv-btn lv-btn-icon" aria-label="Parte successiva"><i class="fas fa-chevron-right" aria-hidden="true"></i></button>
+            </div>
+            <ul id="lv-partlist" class="lv-partlist"></ul>
+        </div>
+    </section>
+
+    <section class="lv-col lv-detail" aria-labelledby="lv-detail-title">
+        <div class="ms-card lv-card">
+            <h2 id="lv-detail-title" class="ms-card-title">Parte selezionata</h2>
+            <div id="lv-part-panel"></div>
+        </div>
+        <div class="ms-card lv-card lv-master" aria-labelledby="lv-master-title">
+            <h2 id="lv-master-title" class="ms-card-title">Master interno</h2>
+            <p class="ms-note">Vale solo per FluidSynth: non cambia l'audio degli strumenti esterni.</p>
+            <div id="lv-master-rows"></div>
+            <p id="lv-master-status" class="pp-status" role="status" aria-live="polite"></p>
+        </div>
+    </section>
+
 </div>
+{# Ordine: prima il servizio Scene/SoundFont (registra le sezioni della Libreria), poi la vista. `defer`: girano dopo shell.js
+   (sincrono in fondo al body) e prima di settings.js (partial successivo), cosi' il link /?panel=library&section=scene
+   trova la sezione gia' registrata. #}
+<script src="/static/js/library_scenes.js" defer></script>
+<script src="/static/js/live.js" defer></script>

@@ -16,9 +16,9 @@
     var api = MS.api, state = MS.state, units = MS.units, partPanel = MS.partPanel, library = MS.library;
 
     var VIEWS = ['live', 'studio', 'editor'];
-    // Suona e' ancora un segnaposto finche' non arriva ui-live: fino ad allora la pagina si apre su Studio
-    // (= comportamento precedente). ui-live cambia solo questa costante.
-    var DEFAULT_VIEW = 'studio';
+    // Vista predefinita: Suona (ui-live l'ha resa operativa). Una vista scelta in precedenza (prefs.lastView) o
+    // l'hash dell'URL hanno la precedenza.
+    var DEFAULT_VIEW = 'live';
     var PANELS = ['library', 'settings'];
 
     var currentView = null;
@@ -26,7 +26,6 @@
     var lastFocus = null;
     var initialized = false;
     var snapshotGen = 0;
-    var livePanel = null;
     var toastTimer = null;
 
     function $(id) { return doc.getElementById(id); }
@@ -131,13 +130,14 @@
     }
 
     /* ── Scorciatoie legacy: attive solo in Studio ─────────────────────── */
-    // Il listener legacy su document (Spazio = Play, Ctrl+S, ...) resta, ma in fase di cattura lo
-    // zittiamo fuori da Studio, con un pannello aperto o con il focus sulla barra della shell:
-    // altrimenti Spazio su un pulsante della shell avvierebbe la riproduzione e annullerebbe il click.
+    // I listener legacy su document (Spazio = Play, Ctrl+S, ...) restano. Questa guardia e' in fase di bubble
+    // su document ed e' registrata PRIMA di legacy_daw.js: stopImmediatePropagation ferma solo i listener legacy
+    // successivi, mentre i listener dei target (pannelli, barra globale, vista Suona, Studio su body) hanno gia'
+    // ricevuto il tasto. Si zittisce il legacy fuori da Studio, con un pannello aperto o con il focus nella shell.
     function guardLegacyShortcuts(e) {
         var t = e.target;
         var inChrome = t && t.closest && t.closest('.ms-globalbar, .ms-panel, #view-live');
-        if (currentView !== 'studio' || openPanelName || inChrome) e.stopPropagation();
+        if (currentView !== 'studio' || openPanelName || inChrome) e.stopImmediatePropagation();
     }
 
     /* ── Barra globale ─────────────────────────────────────────────────── */
@@ -287,10 +287,9 @@
             // Clic sullo sfondo scuro (fuori dal foglio) = chiudi.
             if (openPanelName && e.target.classList && e.target.classList.contains('ms-panel')) closePanel();
         });
-        // Entrambi in fase di cattura e in quest'ordine: il pannello gestisce Esc/Tab prima che la guardia
-        // fermi la propagazione verso i listener legacy.
+        // Pannello in cattura (Esc/Tab prima di tutto); guardia legacy in bubble (vedi guardLegacyShortcuts).
         doc.addEventListener('keydown', onPanelKeydown, true);
-        doc.addEventListener('keydown', guardLegacyShortcuts, true);
+        doc.addEventListener('keydown', guardLegacyShortcuts, false);
         var panic_ = $('ms-panic');
         if (panic_) panic_.addEventListener('click', panic);
 
@@ -298,24 +297,6 @@
         state.subscribe('transport', renderTransport);
         state.subscribe('scene', renderDirty);
         state.subscribe('project', renderDirty);
-    }
-
-    /* ── Vista Suona (segnaposto finche' non arriva ui-live) ───────────── */
-    function initLive() {
-        var host = $('live-part-panel');
-        var select = $('live-part-select');
-        if (!host || !select || !partPanel) return;
-        // Stesso pannello sonoro dell'inspector Studio: qui in versione moderna (ID con prefisso, campi numerici).
-        livePanel = partPanel.mount(host, { partId: 0 });
-        select.addEventListener('change', function () { livePanel.setPart(parseInt(select.value, 10)); });
-        function renderScene() {
-            var s = state.get('scene');
-            setText($('live-scene-name'), s && s.name ? s.name : 'Nessuna scena caricata');
-            var d = $('live-scene-dirty');
-            if (d) d.hidden = !(s && s.dirty);
-        }
-        state.subscribe('scene', renderScene);
-        renderScene();
     }
 
     /* ── Boot ──────────────────────────────────────────────────────────── */
@@ -364,7 +345,6 @@
         bootSync();
         if (library) library.mount($('ms-library-tabs'), $('ms-library-body'));
         wireUi();
-        initLive();
         renderConnection(); renderTransport(); renderDirty();
         var hash = (root.location && root.location.hash || '').replace('#', '');
         var start = VIEWS.indexOf(hash) >= 0 ? hash : state.getPref('lastView', DEFAULT_VIEW);
