@@ -8,11 +8,31 @@ import io
 import time
 import math
 import threading
+from array import array
 from collections import defaultdict
+from contextlib import contextmanager
 
 import midi_router
+import project_store
 
 RECORD_GRACE_S = 0.01   # ignora i primi 10 ms di Record (eventi residui)
+
+
+class DawError(Exception):
+    """Rifiuto con codice di contratto (sez. 2.3). NON e' un RuntimeError:
+    `import_midi` usa RuntimeError solo per "trasporto attivo" (route -> 409)."""
+
+    def __init__(self, code, message, details=None, http=None):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+        self.details = dict(details or {})
+        self.http = http
+
+
+def _ids_zero(n):
+    """array('H') di n zeri (2 byte per evento: leggero sul Pi)."""
+    return array('H', bytes(2 * n))
 
 
 class MultiTrackDAW:
@@ -32,15 +52,39 @@ class MultiTrackDAW:
                 crea un router solo in memoria (bootstrap del registro dalle
                 porte enumerate, parti di default, legacy, nessun disco).
         """
+        # Stato per-thread (richieste Flask concorrenti): ultimo errore e
+        # revisione risultante dell'ultima mutazione di QUESTO thread.
+        self._tls = threading.local()
+        # Lock di editing (sez. 6.7): controllo revisione + mutazione + sort.
+        # MAI tenuto durante I/O (disco, console, MIDI) ne' durante emit:
+        # l'emissione di daw_state_update e l'hook di dirty partono dopo il
+        # rilascio (vedi _edit()). Rientrante: le mutazioni si annidano.
+        self._edit_lock = threading.RLock()
+        self._edit_depth = 0
+        self._edit_owner = None
+        self._emit_pending = False
+        self._content_pending = False
+        # Revisione globale (sez. 6.6): non si ripete tra riavvii, < 2^53.
+        self.revision = int(time.time() * 1000)
+        # Hook "contenuto del progetto cambiato" (sez. 5.6), collegato da app.py
+        # a project_store.ProjectState.mark_dirty. Chiamato fuori dal lock.
+        self.on_content_change = None
+
         self.bpm = bpm
         self.beat_duration = 60.0 / bpm  # durata di un beat in secondi
         self.beats_per_measure = 4       # 4/4 di default
         self.slot_beats = 0.125          # risoluzione densità (1/8 di beat)
         self.socketio = socketio  # WebSocket per notifiche real-time
-        
+
         # Storage tracce: {channel_id: [(beat_position, midi_msg), ...]}
         # Gli eventi sono salvati in beat (unità musicale) per supportare cambi di BPM
         self.tracks = defaultdict(list)
+        # ID del clip proprietario di ogni evento (D3), parallelo a tracks[t]:
+        # stessa lunghezza, stesso ordine, permutati insieme in OGNI mutazione.
+        # array('H') = 2 byte per evento (16x500 coppie: ~32 KB).
+        self.event_clips = {ch: array('H') for ch in range(16)}
+        for ch in range(16):
+            self.tracks[ch]
 
         # Clip model: one clip per recording take (MVP clip-based workflow)
         self.clips = defaultdict(list)   # {channel_id: [{id,start_beat,end_beat,name,created_at}, ...]}
@@ -102,7 +146,10 @@ class MultiTrackDAW:
         # Porte MIDI: tutte tramite il router (unico lettore per input,
         # unica risoluzione delle destinazioni, tracciamento note).
         self._audible = bytearray(b'\x01' * 16)   # gate mute/solo letto sotto il lock della porta
-        self._rec_lock = threading.Lock()
+        # La callback di Record appende a tracks[t] e event_clips[t] sotto lo
+        # STESSO lock delle mutazioni e degli snapshot (ui-persistence): una
+        # copia per salvataggio/undo non vede mai le due strutture disallineate.
+        self._rec_lock = self._edit_lock
         self._rec_tracks = frozenset()
         self._rec_start_time = 0.0
         self._rec_initial_pos = 0.0
@@ -135,6 +182,22 @@ class MultiTrackDAW:
         """Compatibilita': porta interna FluidSynth aperta dal router (o None)."""
         return self.router.internal_port_object() if self.router else None
 
+    @property
+    def _density_dirty(self):
+        # Le due cache (densita' e note map) erano invalidate da un flag unico
+        # che la prima ricalcolata azzerava: l'altra restava vecchia. Ora
+        # "sporco" svuota entrambe e ogni mappa ricalcola solo se manca.
+        return False
+
+    @_density_dirty.setter
+    def _density_dirty(self, value):
+        if value:
+            self._cached_density_map = None
+            self._cached_note_map = None
+            # Una mappa calcolata FUORI dal lock su uno snapshot precedente non
+            # deve finire in cache dopo un'invalidazione (vedi _note_map).
+            self._cache_gen = getattr(self, '_cache_gen', 0) + 1
+
     def _fail(self, code, message, details=None, http=None):
         self.last_error = {'code': code, 'message': message,
                            'details': details or {}, 'http': http}
@@ -147,8 +210,162 @@ class MultiTrackDAW:
         for ch in range(16):
             self._audible[ch] = 1 if (self.solo[ch] if any_solo else not self.muted[ch]) else 0
     
+    # ── stato per-thread ──────────────────────────────────────────────
+
+    @property
+    def last_error(self):
+        """{code, message, details, http} dell'ultimo rifiuto di QUESTO thread
+        (le richieste Flask concorrenti non si sovrascrivono l'errore)."""
+        return getattr(self._tls, 'last_error', None)
+
+    @last_error.setter
+    def last_error(self, value):
+        self._tls.last_error = value
+
+    @property
+    def last_revision(self):
+        """Revisione letta sotto il lock alla fine dell'ultima mutazione di
+        QUESTO thread: le route la restituiscono al client (mai `revision`
+        riletta dopo, che potrebbe includere modifiche di altri client)."""
+        return getattr(self._tls, 'revision', self.revision)
+
+    # ── lock di editing e notifiche differite (sez. 6.7) ──────────────
+
+    @contextmanager
+    def _edit(self):
+        """Sezione critica di editing. All'uscita piu' esterna: revisione
+        risultante salvata per il thread, poi (FUORI dal lock) un solo
+        daw_state_update e un solo hook on_content_change."""
+        self._edit_lock.acquire()
+        if self._edit_depth == 0:
+            self._edit_owner = threading.get_ident()
+        self._edit_depth += 1
+        state = None
+        content = False
+        outer = False
+        try:
+            yield
+        finally:
+            self._edit_depth -= 1
+            if self._edit_depth == 0:
+                outer = True
+                emit, content = self._emit_pending, self._content_pending
+                self._emit_pending = self._content_pending = False
+                self._edit_owner = None
+                self._tls.revision = self.revision
+                if emit and self.socketio:
+                    try:
+                        state = self.get_state()
+                    except Exception as e:
+                        print(f"[DAW] get_state fallito: {e}")
+            self._edit_lock.release()
+            if outer:
+                if state is not None:
+                    try:
+                        self.socketio.emit('daw_state_update', state, namespace='/')
+                    except Exception as e:
+                        print(f"[DAW] Errore emit daw_state_update: {e}")
+                if content:
+                    self._call_content_hook()
+
+    def _in_edit(self):
+        return self._edit_owner == threading.get_ident()
+
+    def _call_content_hook(self):
+        hook = self.on_content_change
+        if hook is not None:
+            try:
+                hook()
+            except Exception as e:
+                print(f"[DAW] on_content_change fallito: {e}")
+
+    def _content_changed(self):
+        """Il contenuto del progetto e' cambiato (sez. 5.6): hook differito
+        all'uscita dal lock se siamo dentro una mutazione."""
+        if self._in_edit():
+            self._content_pending = True
+        else:
+            self._call_content_hook()
+
+    def check_revision(self, expected):
+        """Controllo `expected_revision` (sez. 6.6), da chiamare sotto il lock.
+        None = controllo saltato (client legacy). Ritorna False e imposta
+        last_error REVISION_CONFLICT se obsoleta (API per ui-studio)."""
+        if expected is None or expected == self.revision:
+            return True
+        self._fail('REVISION_CONFLICT', 'Revisione obsoleta: aggiorna e riprova',
+                   {'expected_revision': expected, 'current_revision': self.revision})
+        return False
+
+    # ── strutture parallele tracks / event_clips (D3) ─────────────────
+
+    def _ids(self, ch):
+        """event_clips[ch] allineato a tracks[ch]. Se qualcuno ha assegnato
+        tracks[ch] senza event_clips (vecchi test/script) gli eventi sono
+        considerati liberi invece di disallineare gli ID."""
+        ids = self.event_clips.get(ch)
+        n = len(self.tracks[ch])
+        if ids is None or len(ids) != n:
+            if ids is not None and len(ids):
+                print(f"[DAW] event_clips[{ch}] disallineato ({len(ids)} vs {n}): eventi resi liberi")
+            ids = _ids_zero(n)
+            self.event_clips[ch] = ids
+        return ids
+
+    def _set_track(self, ch, events, ids):
+        if len(events) != len(ids):
+            raise DawError('INTERNAL', f'tracks/event_clips disallineati su traccia {ch}')
+        self.tracks[ch] = events
+        self.event_clips[ch] = ids
+        self.has_data[ch] = bool(events)
+
+    @staticmethod
+    def _sorted_pair(events, ids):
+        """Un solo sort stabile sugli indici, poi permutazione di entrambe
+        (sez. 6.1). Liste nuove: il playback che itera la vecchia non vede
+        mai una lista a meta' sort."""
+        order = sorted(range(len(events)), key=lambda i: events[i][0])
+        return [events[i] for i in order], array('H', [ids[i] for i in order])
+
+    def _set_sorted(self, ch, events, ids):
+        ev, ix = self._sorted_pair(events, ids)
+        self._set_track(ch, ev, ix)
+
+    def _drop_indices(self, ch, drop):
+        events, ids = self.tracks[ch], self._ids(ch)
+        keep = [i for i in range(len(events)) if i not in drop]
+        self._set_track(ch, [events[i] for i in keep], array('H', [ids[i] for i in keep]))
+
+    def _free_orphan_ids(self, ch):
+        """Eventi il cui clip non esiste piu' sulla traccia -> liberi (0):
+        un riferimento pendente renderebbe il progetto non riapribile."""
+        valid = {int(c['id']) for c in self.clips[ch]}
+        ids = self._ids(ch)
+        for i, cid in enumerate(ids):
+            if cid and cid not in valid:
+                ids[i] = 0
+
+    def _alloc_clip_id(self):
+        cid = self._next_clip_id
+        if cid > project_store.MAX_CLIP_ID:
+            raise DawError('INTERNAL', 'Limite di ID clip del progetto raggiunto')
+        self._next_clip_id = cid + 1
+        return cid
+
+    def _clip_at(self, ch, beat):
+        """ID del clip piu' recente (ID maggiore) che contiene `beat` (6.3), o 0."""
+        best = 0
+        for c in self.clips[ch]:
+            if c['start_beat'] <= beat < c['end_beat'] and int(c['id']) > best:
+                best = int(c['id'])
+        return best
+
     def _emit_state_change(self):
-        """Emette lo stato DAW corrente via WebSocket"""
+        """Emette lo stato DAW corrente via WebSocket (differito all'uscita
+        dal lock se chiamato dentro una mutazione)."""
+        if self._in_edit():
+            self._emit_pending = True
+            return
         if self.socketio:
             state = self.get_state()
             self.socketio.emit('daw_state_update', state, namespace='/')
@@ -336,19 +553,16 @@ class MultiTrackDAW:
         if self.record_thread:
             self.record_thread.join(timeout=1.0)
 
-        for ch in self._recording_channels:
-            self._close_open_recorded_notes(ch, stop_beat)
-            if self.tracks[ch]:
-                self.tracks[ch].sort(key=lambda x: x[0])
-                self.has_data[ch] = True
-                self._density_dirty = True
-                print(f"[DAW] Registrati {len(self.tracks[ch])} eventi su canale {ch}")
-
-        # Build one clip per channel for the just-finished recording take
-        self._finalize_recording_clips()
-        
-        print("[DAW] Registrazione fermata")
-        self._emit_state_change()  # Notifica via WebSocket
+        with self._edit():
+            for ch in self._recording_channels:
+                self._close_open_recorded_notes(ch, stop_beat)
+            # Clip del take sugli eventi in coda (ancora non ordinati), poi un
+            # solo sort permutato per traccia (ui-persistence: D3).
+            if self._finalize_recording_clips():
+                self.revision += 1          # una volta sola allo stop (sez. 6.6)
+                self._content_changed()
+            print("[DAW] Registrazione fermata")
+            self._emit_state_change()  # Notifica via WebSocket
         return True
 
     def _close_open_recorded_notes(self, ch, stop_beat):
@@ -376,36 +590,42 @@ class MultiTrackDAW:
                 sustain[mch] = data[2] >= 64
         beat = max(stop_beat, last_beat)
         added = 0
+        ids = self._ids(ch)
         for (mch, note), count in sorted(open_notes.items()):
             for _ in range(count):
                 self.tracks[ch].append((beat, [0x80 | mch, note, 0]))
+                ids.append(0)
                 added += 1
         for mch, held in sorted(sustain.items()):
             if held:
                 self.tracks[ch].append((beat, [0xB0 | mch, 64, 0]))
+                ids.append(0)
                 added += 1
         if added:
             print(f"[DAW] Stop Record: chiusi {added} eventi aperti su traccia {ch}")
 
     def _finalize_recording_clips(self):
-        """Create clip objects from events recorded in the last take."""
+        """Clip del take appena registrato (sez. 6.4, D3): solo gli eventi di
+        questo take (la coda di tracks[ch], non ancora ordinata) ricevono l'ID
+        del clip nuovo; cornice [primo, ultimo + 0.125) cosi' anche il
+        note-off/CC64=0 di chiusura e' contenuto. Poi sort permutato.
+        Ritorna True se almeno una traccia ha eventi nuovi. Chiamare sotto _edit()."""
         channels = self._recording_channels or []
-        if not channels:
-            return
-
+        recorded = False
         for ch in channels:
-            start_idx = self._record_start_event_index.get(ch, len(self.tracks[ch]))
+            ids = self._ids(ch)
+            start_idx = min(self._record_start_event_index.get(ch, len(self.tracks[ch])),
+                            len(self.tracks[ch]))
             new_events = self.tracks[ch][start_idx:]
             if not new_events:
                 continue
-
+            recorded = True
             start_beat = min(b for b, _ in new_events)
-            end_beat = max(b for b, _ in new_events)
-            if end_beat <= start_beat:
-                end_beat = start_beat + 0.125
+            end_beat = max(b for b, _ in new_events) + project_store.CLIP_TAIL_BEATS
 
-            clip_id = self._next_clip_id
-            self._next_clip_id += 1
+            clip_id = self._alloc_clip_id()
+            for i in range(start_idx, len(ids)):
+                ids[i] = clip_id
             self.clips[ch].append({
                 'id': clip_id,
                 'start_beat': float(start_beat),
@@ -413,10 +633,14 @@ class MultiTrackDAW:
                 'name': f'Take {clip_id}',
                 'created_at': time.time()
             })
+            self._set_sorted(ch, self.tracks[ch], ids)
+            self._density_dirty = True
+            print(f"[DAW] Registrati {len(self.tracks[ch])} eventi su canale {ch}")
 
         self._recording_channels = []
         self._record_start_event_index = {}
         self._record_take_start_beat = 0.0
+        return recorded
     
     def start_playback(self):
         """Avvia la riproduzione di tutte le tracce registrate"""
@@ -553,6 +777,7 @@ class MultiTrackDAW:
         self.loop_start = float(start_beat)
         self.loop_end = float(end_beat)
         self._emit_state_change()
+        self._content_changed()          # punti di loop: parte del progetto (5.6)
         return True
 
     def toggle_loop(self):
@@ -562,6 +787,7 @@ class MultiTrackDAW:
         else:
             self.loop_enabled = False
         self._emit_state_change()
+        self._content_changed()
         return self.loop_enabled
 
     
@@ -589,6 +815,7 @@ class MultiTrackDAW:
         self.muted[channel] = muted
         self._apply_audibility()
         self._emit_state_change()  # Notifica via WebSocket
+        self._content_changed()
         return True
     
     def solo_track(self, channel, solo=True):
@@ -599,6 +826,7 @@ class MultiTrackDAW:
         self.solo[channel] = solo
         self._apply_audibility()
         self._emit_state_change()
+        self._content_changed()
         return True
 
     def _apply_audibility(self):
@@ -613,13 +841,13 @@ class MultiTrackDAW:
     
     def clear_track(self, channel):
         """Cancella tutti gli eventi di una traccia"""
-        self._push_undo()
-        self.tracks[channel] = []
-        self.clips[channel] = []
-        self.has_data[channel] = False
-        self._density_dirty = True
-        print(f"[DAW] Traccia {channel} cancellata")
-        self._emit_state_change()
+        with self._edit():
+            self._push_undo()
+            self._set_track(channel, [], array('H'))
+            self.clips[channel] = []
+            self._density_dirty = True
+            print(f"[DAW] Traccia {channel} cancellata")
+            self._emit_state_change()
         return True
     
     def clear_range(self, channel, start_beat, end_beat):
@@ -627,67 +855,85 @@ class MultiTrackDAW:
 
         Usa il note-pair-aware approach: se il note_on è nel range, sia note_on
         che note_off vengono rimossi per mantenere l'integrità delle coppie.
+        (Semantica clip: ui-studio, A16. Qui solo l'invariante event_clips.)
         """
         if channel < 0 or channel > 15:
             return False
-        indices_to_delete = self._get_note_pair_indices_in_range(channel, start_beat, end_beat)
-        if not indices_to_delete:
-            return True
-        self._push_undo()
-        before = len(self.tracks[channel])
-        self.tracks[channel] = [
-            (b, msg) for idx, (b, msg) in enumerate(self.tracks[channel])
-            if idx not in indices_to_delete
-        ]
-        self.clips[channel] = [
-            c for c in self.clips[channel]
-            if c['end_beat'] <= start_beat or c['start_beat'] >= end_beat
-        ]
-        removed = before - len(self.tracks[channel])
-        self.has_data[channel] = len(self.tracks[channel]) > 0
-        self._density_dirty = True
-        print(f"[DAW] clear_range ch={channel} [{start_beat:.2f}, {end_beat:.2f}) rimossi {removed} eventi")
-        self._emit_state_change()
+        with self._edit():
+            indices_to_delete = self._get_note_pair_indices_in_range(channel, start_beat, end_beat)
+            if not indices_to_delete:
+                return True
+            self._push_undo()
+            before = len(self.tracks[channel])
+            self._drop_indices(channel, indices_to_delete)
+            self.clips[channel] = [
+                c for c in self.clips[channel]
+                if c['end_beat'] <= start_beat or c['start_beat'] >= end_beat
+            ]
+            self._free_orphan_ids(channel)
+            removed = before - len(self.tracks[channel])
+            self._density_dirty = True
+            print(f"[DAW] clear_range ch={channel} [{start_beat:.2f}, {end_beat:.2f}) rimossi {removed} eventi")
+            self._emit_state_change()
         return True
 
     def clear_all_tracks(self):
         """Cancella tutte le tracce"""
-        self._push_undo()
-        for ch in range(16):
-            self.tracks[ch] = []
-            self.clips[ch] = []
-            self.has_data[ch] = False
-        self._density_dirty = True
-        print("[DAW] Tutte le tracce cancellate")
-        self._emit_state_change()
+        with self._edit():
+            self._push_undo()
+            for ch in range(16):
+                self._set_track(ch, [], array('H'))
+                self.clips[ch] = []
+            self._density_dirty = True
+            print("[DAW] Tutte le tracce cancellate")
+            self._emit_state_change()
         return True
 
     # ──────────────────────────────────────────────────────────────────
     # UNDO / REDO (leggero per Pi Zero 2W, max 10 livelli)
     # ──────────────────────────────────────────────────────────────────
 
-    def _take_snapshot(self):
-        """Cattura stato corrente tracce (shallow copy — tuple sono immutabili)."""
-        return {
-            'tracks': {ch: list(self.tracks[ch]) for ch in range(16)},
-            'clips': {ch: [dict(c) for c in self.clips[ch]] for ch in range(16)},
-            'next_clip_id': self._next_clip_id,
-            'has_data': self.has_data.copy(),
-            'track_names': self.track_names.copy(),
-            'track_colors': self.track_colors.copy()
-        }
+    def _take_snapshot(self, transport=False):
+        """Cattura stato corrente tracce (copie superficiali: le tuple e le liste
+        di byte sono condivise, immutabili per contratto; event_clips copiato:
+        2 byte/evento). Le liste vanno COPIATE: la callback di Record appende
+        in place, uno snapshot per riferimento assorbirebbe il take.
+        `transport=True` (import MIDI) include BPM e metro."""
+        with self._edit_lock:
+            snap = {
+                'tracks': {ch: list(self.tracks[ch]) for ch in range(16)},
+                'event_clips': {ch: array('H', self._ids(ch)) for ch in range(16)},
+                'clips': {ch: [dict(c) for c in self.clips[ch]] for ch in range(16)},
+                'next_clip_id': self._next_clip_id,
+                'has_data': self.has_data.copy(),
+                'track_names': self.track_names.copy(),
+                'track_colors': self.track_colors.copy()
+            }
+            if transport:
+                snap['transport'] = (self.bpm, self.beats_per_measure)
+            return snap
 
-    def _push_undo(self):
-        """Salva snapshot nello stack undo. Chiamare PRIMA dell'operazione distruttiva."""
-        self._undo_stack.append(self._take_snapshot())
+    def _push_undo(self, transport=False):
+        """Salva snapshot nello stack undo. Chiamare PRIMA dell'operazione
+        distruttiva e DOPO la validazione (A21), sotto _edit(). Incrementa la
+        revisione (sez. 6.6) e marca il progetto modificato (5.6)."""
+        self._undo_stack.append(self._take_snapshot(transport))
         if len(self._undo_stack) > self._MAX_UNDO:
             self._undo_stack.pop(0)
         self._redo_stack.clear()
+        self.revision += 1
+        self._density_dirty = True
+        self._content_changed()
 
     def _restore_snapshot(self, snapshot):
         """Applica uno snapshot alle tracce."""
         for ch in range(16):
-            self.tracks[ch] = snapshot['tracks'].get(ch, [])
+            events = snapshot['tracks'].get(ch, [])
+            ids = snapshot.get('event_clips', {}).get(ch)
+            if ids is None or len(ids) != len(events):
+                ids = _ids_zero(len(events))
+            self.tracks[ch] = events
+            self.event_clips[ch] = ids
             self.clips[ch] = [dict(c) for c in snapshot.get('clips', {}).get(ch, [])]
             self.has_data[ch] = snapshot['has_data'].get(ch, False)
         self._next_clip_id = int(snapshot.get('next_clip_id', self._next_clip_id))
@@ -695,27 +941,36 @@ class MultiTrackDAW:
             self.track_names = snapshot['track_names'].copy()
         if 'track_colors' in snapshot:
             self.track_colors = snapshot['track_colors'].copy()
+        if 'transport' in snapshot:
+            self.bpm, self.beats_per_measure = snapshot['transport']
+            self.beat_duration = 60.0 / self.bpm
+        self.revision += 1
+        self._content_changed()
         self._density_dirty = True
         self._emit_state_change()
 
     def undo(self):
         """Annulla l'ultima operazione distruttiva."""
-        if self.is_recording or self.is_playing:
-            return False
-        if not self._undo_stack:
-            return False
-        self._redo_stack.append(self._take_snapshot())
-        self._restore_snapshot(self._undo_stack.pop())
+        with self._edit():
+            if self.is_recording or self.is_playing:
+                return False
+            if not self._undo_stack:
+                return False
+            snap = self._undo_stack.pop()
+            self._redo_stack.append(self._take_snapshot('transport' in snap))
+            self._restore_snapshot(snap)
         return True
 
     def redo(self):
         """Ripristina l'ultima operazione annullata."""
-        if self.is_recording or self.is_playing:
-            return False
-        if not self._redo_stack:
-            return False
-        self._undo_stack.append(self._take_snapshot())
-        self._restore_snapshot(self._redo_stack.pop())
+        with self._edit():
+            if self.is_recording or self.is_playing:
+                return False
+            if not self._redo_stack:
+                return False
+            snap = self._redo_stack.pop()
+            self._undo_stack.append(self._take_snapshot('transport' in snap))
+            self._restore_snapshot(snap)
         return True
 
     # ──────────────────────────────────────────────────────────────────
@@ -742,56 +997,72 @@ class MultiTrackDAW:
         """
         Paste clipboard events at target_beat on the given channel.
         Returns number of pasted events.
+        (Semantica: ui-studio. Qui solo l'invariante event_clips: eventi liberi.)
         """
         if not self._clipboard or self.is_recording or self.is_playing:
             return 0
         if channel < 0 or channel > 15:
             return 0
-        self._push_undo()
-        for rel_beat, msg_bytes in self._clipboard:
-            self.tracks[channel].append((target_beat + rel_beat, msg_bytes))
-        self.tracks[channel].sort(key=lambda x: x[0])
-        self.has_data[channel] = len(self.tracks[channel]) > 0
-        self._density_dirty = True
-        self._emit_state_change()
+        with self._edit():
+            self._push_undo()
+            events = list(self.tracks[channel])
+            ids = array('H', self._ids(channel))
+            for rel_beat, msg_bytes in self._clipboard:
+                events.append((target_beat + rel_beat, msg_bytes))
+                ids.append(0)
+            self._set_sorted(channel, events, ids)
+            self._density_dirty = True
+            self._emit_state_change()
         return len(self._clipboard)
 
     def duplicate_track(self, src_channel, dest_channel):
         """Copy MIDI events from src_channel to dest_channel. Only events are copied, not instrument/CC/color/name.
-        If dest_channel has existing events, they are replaced. Returns dest channel or -1."""
+        If dest_channel has existing events, they are replaced. Returns dest channel or -1.
+        I clip non vengono copiati (ui-studio, A17): gli eventi copiati sono liberi."""
         if self.is_recording or self.is_playing:
             return -1
         if src_channel < 0 or src_channel > 15 or dest_channel < 0 or dest_channel > 15:
             return -1
         if src_channel == dest_channel:
             return -1
-        if not self.tracks[src_channel]:
-            return -1
-        was_empty = not self.tracks[dest_channel]
-        self._push_undo()
-        self.tracks[dest_channel] = list(self.tracks[src_channel])
-        self.has_data[dest_channel] = True
-        # Only set name if dest was empty
-        if was_empty:
-            self.track_names[dest_channel] = 'Copy of ' + self.track_names.get(src_channel, f'Track {src_channel+1}')
-        self._density_dirty = True
-        self._emit_state_change()
+        with self._edit():
+            if not self.tracks[src_channel]:
+                return -1
+            was_empty = not self.tracks[dest_channel]
+            self._push_undo()
+            src = list(self.tracks[src_channel])
+            self._set_track(dest_channel, src, _ids_zero(len(src)))
+            # Only set name if dest was empty
+            if was_empty:
+                self.track_names[dest_channel] = 'Copy of ' + self.track_names.get(src_channel, f'Track {src_channel+1}')
+            self._density_dirty = True
+            self._emit_state_change()
         return dest_channel
 
     def rename_track(self, channel, name):
-        """Rename a track. Name is trimmed to 32 chars."""
+        """Rename a track. Name is trimmed to 32 chars. Un livello di undo (A14)."""
         if channel < 0 or channel > 15:
             return False
-        self.track_names[channel] = str(name)[:32]
-        self._emit_state_change()
+        new = str(name)[:32]
+        if not new:
+            return self._fail('BAD_REQUEST', 'Nome obbligatorio', {'field': 'name'})
+        with self._edit():
+            if self.track_names.get(channel) != new:
+                self._push_undo()
+                self.track_names[channel] = new
+            self._emit_state_change()
         return True
 
     def set_track_color(self, channel, color_index):
-        """Set track color by palette index (0-15)."""
+        """Set track color by palette index (0-15). Un livello di undo (A14)."""
         if channel < 0 or channel > 15:
             return False
-        self.track_colors[channel] = max(0, min(15, int(color_index)))
-        self._emit_state_change()
+        color = max(0, min(15, int(color_index)))
+        with self._edit():
+            if self.track_colors.get(channel) != color:
+                self._push_undo()
+                self.track_colors[channel] = color
+            self._emit_state_change()
         return True
 
     # ──────────────────────────────────────────────────────────────────
@@ -830,16 +1101,10 @@ class MultiTrackDAW:
         Applica quantizzazione post-registrazione a uno o più canali MIDI.
 
         Algoritmo:
-          - Accoppia ogni note_on con il suo note_off per conservare la durata.
+          - Accoppia ogni note_on con il suo note_off (regola FIFO unica, 6.2/A26)
+            per conservare la durata; le note aperte non vengono spostate.
           - Quantizza il note_on; note_off = note_on_quantizzato + durata originale.
-          - Riordina gli eventi per posizione temporale.
-
-        Args:
-            channels:    lista di canali 0-15 da processare.
-                         Lista vuota = tutti i canali con dati.
-            grid_beats:  dimensione della griglia in beat.
-            strength:    0.0-1.0 (1.0 = allineamento perfetto).
-            swing:       0.0-1.0 (0.5 = straight, ciclo jazz tipico ≈ 0.67).
+          - Riordina gli eventi (sort permutato insieme a event_clips).
 
         Returns:
             dict {channel: n_note_quantizzate} oppure None se in play/rec.
@@ -847,61 +1112,48 @@ class MultiTrackDAW:
         if self.is_recording or self.is_playing:
             return None
 
-        if not channels:
-            channels = [ch for ch in range(16) if self.has_data[ch]]
-
-        self._push_undo()
-        results = {}
-
-        for ch in channels:
-            if not self.has_data[ch] or not self.tracks[ch]:
-                continue
-
-            events = self.tracks[ch]
-            active_notes = {}   # note_num → (on_beat, on_index)
-            new_beats = {}      # event_index → nuova posizione in beat
-            modified = 0
-
-            for i, (beat, msg_bytes) in enumerate(events):
-                try:
-                    msg = mido.Message.from_bytes(msg_bytes)
-                except Exception:
+        with self._edit():
+            if not channels:
+                channels = [ch for ch in range(16) if self.has_data[ch]]
+            results = {}
+            pending = {}
+            for ch in channels:
+                if not self.has_data[ch] or not self.tracks[ch]:
                     continue
-
-                if msg.type == 'note_on' and msg.velocity > 0:
-                    active_notes[msg.note] = (beat, i)
-
-                elif msg.type == 'note_off' or (
-                        msg.type == 'note_on' and msg.velocity == 0):
-                    if msg.note in active_notes:
-                        on_beat, on_idx = active_notes.pop(msg.note)
-                        duration = beat - on_beat
-
-                        q_on  = self._quantize_beat_pos(
-                            on_beat, grid_beats, swing, strength)
-                        q_off = q_on + max(0.0, duration)
-
-                        new_beats[on_idx] = q_on
-                        new_beats[i]      = q_off
-                        modified += 1
-
-            if new_beats:
-                new_events = [
-                    (new_beats.get(i, beat), msg_bytes)
-                    for i, (beat, msg_bytes) in enumerate(events)
-                ]
-                new_events.sort(key=lambda x: x[0])
-                self.tracks[ch] = new_events
-
-            results[ch] = modified
-            print(f"[DAW] quantize ch={ch}: {modified} note, "
-                  f"grid={grid_beats}, str={strength:.2f}, swing={swing:.2f}")
-
-        if results:
-            self._density_dirty = True
-            self._emit_state_change()
-
+                events = self.tracks[ch]
+                new_beats = {}
+                modified = 0
+                for _n, _v, on_beat, off_beat, on_idx, off_idx in self._pair_notes(events):
+                    if off_idx < 0:
+                        continue
+                    q_on = self._quantize_beat_pos(on_beat, grid_beats, swing, strength)
+                    q_off = q_on + max(0.0, off_beat - on_beat)
+                    if q_on == on_beat and q_off == off_beat:
+                        continue                # gia' in griglia: nessuna modifica
+                    new_beats[on_idx] = q_on
+                    new_beats[off_idx] = q_off
+                    modified += 1
+                if new_beats:
+                    pending[ch] = [(new_beats.get(i, beat), msg_bytes)
+                                   for i, (beat, msg_bytes) in enumerate(events)]
+                results[ch] = modified
+                print(f"[DAW] quantize ch={ch}: {modified} note, "
+                      f"grid={grid_beats}, str={strength:.2f}, swing={swing:.2f}")
+            # Calcolo completo PRIMA dell'undo: nessun livello vuoto (A21).
+            if pending:
+                self._push_undo()
+                for ch, new_events in pending.items():
+                    self._set_sorted(ch, new_events, self._ids(ch))
+                self._density_dirty = True
+                self._emit_state_change()
         return results
+
+    @staticmethod
+    def _pair_notes(events):
+        """Funzione UNICA di accoppiamento note-on/off (sez. 6.2): FIFO per
+        altezza, sui byte grezzi. [(note, vel, on_beat, off_beat, on_idx, off_idx)],
+        off_idx = -1 (off_beat None) per le note aperte. API per ui-studio."""
+        return project_store.pair_notes(events or [])
 
     def _get_note_pair_indices_in_range(self, channel, start_beat, end_beat):
         """Return set of event indices for notes whose note_on starts in [start_beat, end_beat).
@@ -909,93 +1161,66 @@ class MultiTrackDAW:
         A note 'belongs' to a range if its note_on is in the range.
         Both note_on AND note_off indices are included so note pairs stay intact.
         Non-note events (CC, pitch bend, etc.) in the range are also included.
+        Regola unica di sez. 6.3 (project_store.owned_indices, accoppiamento FIFO).
         """
         events = self.tracks.get(channel, [])
         if not events:
             return set()
+        return project_store.owned_indices(events, start_beat, end_beat)
 
-        notes, _, _, _ = self._build_notes_full(events)
-        indices = set()
-
-        # Include both on/off indices for notes whose note_on is in range
-        for _note, _vel, s_beat, _e_beat, on_idx, off_idx in notes:
-            if start_beat <= s_beat < end_beat:
-                indices.add(on_idx)
-                if off_idx >= 0:
-                    indices.add(off_idx)
-
-        # Include non-note events in the range (CC, pitch bend, etc.)
-        for idx, (beat, msg_bytes) in enumerate(events):
-            if idx in indices:
-                continue
-            if start_beat <= beat < end_beat:
-                try:
-                    msg = mido.Message.from_bytes(msg_bytes)
-                except Exception:
-                    indices.add(idx)
-                    continue
-                if msg.type not in ('note_on', 'note_off'):
-                    indices.add(idx)
-
-        return indices
-
-    def transpose_notes(self, channel, semitones, start_beat=None, end_beat=None):
+    def transpose_notes(self, channel, semitones, start_beat=None, end_beat=None, expected_revision=None):
         """Transpose note events on a channel by semitones.
 
         If start_beat/end_beat are provided, transpose only notes whose note_on
         is within [start_beat, end_beat). Both note_on and note_off are transposed
-        to keep note pairs consistent.
+        to keep note pairs consistent. Con `expected_revision` obsoleta: False
+        (last_error REVISION_CONFLICT), nessuna modifica.
         """
         if self.is_recording or self.is_playing:
             return None
         if channel < 0 or channel > 15:
             return 0
 
-        events = self.tracks.get(channel)
-        if not events:
-            return 0
-
         st = float(start_beat) if start_beat is not None else None
         en = float(end_beat) if end_beat is not None else None
-        if st is not None and en is not None and en <= st:
-            return 0
-
         semitones = int(semitones)
-        if semitones == 0:
-            return 0
 
-        # When a range is given, use note-pair-aware index set
-        if st is not None and en is not None:
-            pair_indices = self._get_note_pair_indices_in_range(channel, st, en)
-        else:
-            pair_indices = None  # transpose all
+        with self._edit():
+            if not self.check_revision(expected_revision):
+                return False
+            events = self.tracks.get(channel)
+            if not events:
+                return 0
+            if st is not None and en is not None and en <= st:
+                return 0
+            if semitones == 0:
+                return 0
 
-        updated = []
-        modified = 0
-        for idx, (beat, msg_bytes) in enumerate(events):
-            try:
-                msg = mido.Message.from_bytes(msg_bytes)
-            except Exception:
-                updated.append((beat, msg_bytes))
-                continue
+            # When a range is given, use note-pair-aware index set
+            if st is not None and en is not None:
+                pair_indices = self._get_note_pair_indices_in_range(channel, st, en)
+            else:
+                pair_indices = None  # transpose all
 
-            should_transpose = (pair_indices is None or idx in pair_indices)
+            updated = list(events)
+            modified = 0
+            for idx, (beat, data) in enumerate(events):
+                if pair_indices is not None and idx not in pair_indices:
+                    continue
+                if (data[0] & 0xF0) in (0x80, 0x90) and len(data) > 2:
+                    new_note = max(0, min(127, int(data[1]) + semitones))
+                    if new_note != data[1]:
+                        updated[idx] = (beat, [data[0], new_note, data[2]])
+                        modified += 1
 
-            if should_transpose and hasattr(msg, 'note') and msg.type in ('note_on', 'note_off'):
-                new_note = max(0, min(127, int(msg.note) + semitones))
-                if new_note != msg.note:
-                    msg = msg.copy(note=new_note)
-                    modified += 1
-            updated.append((beat, msg.bytes()))
+            if modified <= 0:
+                return 0
 
-        if modified <= 0:
-            return 0
-
-        self._push_undo()
-        self.tracks[channel] = updated
-        self.has_data[channel] = len(self.tracks[channel]) > 0
-        self._density_dirty = True
-        self._emit_state_change()
+            self._push_undo()
+            # Ordine invariato: event_clips resta valido cosi' com'e'.
+            self._set_track(channel, updated, self._ids(channel))
+            self._density_dirty = True
+            self._emit_state_change()
         print(f"[DAW] transpose ch={channel} semitones={semitones} modified={modified} range=({st},{en})")
         return modified
 
@@ -1003,7 +1228,15 @@ class MultiTrackDAW:
         """Return clips for a channel sorted by start beat."""
         if channel < 0 or channel > 15:
             return []
-        return sorted([dict(c) for c in self.clips[channel]], key=lambda c: c['start_beat'])
+        with self._edit_lock:
+            return sorted([dict(c) for c in self.clips[channel]], key=lambda c: c['start_beat'])
+
+    def get_clips_with_revision(self, channel):
+        with self._edit_lock:
+            return self.get_clips(channel), self.revision
+
+    # Operazioni clip: semantica di ui-studio (D3/A18). Qui solo lock +
+    # invariante tracks/event_clips (sort permutato, nessun ID pendente).
 
     def move_clip(self, channel, clip_id, target_start_beat):
         """Move a clip and all its note-pair-aware events to a target start beat.
@@ -1016,33 +1249,33 @@ class MultiTrackDAW:
         if channel < 0 or channel > 15:
             return False
 
-        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-        if not clip:
-            return False
+        with self._edit():
+            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+            if not clip:
+                return False
 
-        old_start = float(clip['start_beat'])
-        old_end = float(clip['end_beat'])
-        target_start = max(0.0, float(target_start_beat))
-        delta = target_start - old_start
-        if abs(delta) < 1e-9:
-            return True
+            old_start = float(clip['start_beat'])
+            old_end = float(clip['end_beat'])
+            target_start = max(0.0, float(target_start_beat))
+            delta = target_start - old_start
+            if abs(delta) < 1e-9:
+                return True
 
-        indices_to_move = self._get_note_pair_indices_in_range(channel, old_start, old_end)
+            indices_to_move = self._get_note_pair_indices_in_range(channel, old_start, old_end)
 
-        self._push_undo()
-        moved = []
-        for idx, (beat, msg_bytes) in enumerate(self.tracks[channel]):
-            if idx in indices_to_move:
-                moved.append((max(0.0, beat + delta), msg_bytes))
-            else:
-                moved.append((beat, msg_bytes))
-        moved.sort(key=lambda x: x[0])
-        self.tracks[channel] = moved
+            self._push_undo()
+            moved = []
+            for idx, (beat, msg_bytes) in enumerate(self.tracks[channel]):
+                if idx in indices_to_move:
+                    moved.append((max(0.0, beat + delta), msg_bytes))
+                else:
+                    moved.append((beat, msg_bytes))
+            self._set_sorted(channel, moved, self._ids(channel))
 
-        clip['start_beat'] = max(0.0, old_start + delta)
-        clip['end_beat'] = max(clip['start_beat'] + 0.01, old_end + delta)
-        self._density_dirty = True
-        self._emit_state_change()
+            clip['start_beat'] = max(0.0, old_start + delta)
+            clip['end_beat'] = max(clip['start_beat'] + 0.01, old_end + delta)
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
     def delete_clip(self, channel, clip_id):
@@ -1056,33 +1289,32 @@ class MultiTrackDAW:
         if channel < 0 or channel > 15:
             return False
 
-        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-        if not clip:
-            return False
+        with self._edit():
+            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+            if not clip:
+                return False
 
-        start_beat = float(clip['start_beat'])
-        end_beat = float(clip['end_beat'])
-        indices_to_delete = self._get_note_pair_indices_in_range(channel, start_beat, end_beat)
+            start_beat = float(clip['start_beat'])
+            end_beat = float(clip['end_beat'])
+            indices_to_delete = self._get_note_pair_indices_in_range(channel, start_beat, end_beat)
 
-        self._push_undo()
-        self.tracks[channel] = [
-            (b, msg) for idx, (b, msg) in enumerate(self.tracks[channel])
-            if idx not in indices_to_delete
-        ]
-        self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) != int(clip_id)]
-        self.has_data[channel] = len(self.tracks[channel]) > 0
-        self._density_dirty = True
-        self._emit_state_change()
+            self._push_undo()
+            self._drop_indices(channel, indices_to_delete)
+            self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) != int(clip_id)]
+            self._free_orphan_ids(channel)
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
     def transpose_clip(self, channel, clip_id, semitones):
         """Transpose note events inside one clip range."""
         if channel < 0 or channel > 15:
             return 0
-        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-        if not clip:
-            return 0
-        return self.transpose_notes(channel, semitones, clip['start_beat'], clip['end_beat'])
+        with self._edit():
+            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+            if not clip:
+                return 0
+            return self.transpose_notes(channel, semitones, clip['start_beat'], clip['end_beat'])
 
     def resize_clip(self, channel, clip_id, new_end_beat):
         """Non-destructive clip resize: only changes end_beat, does NOT delete events.
@@ -1096,23 +1328,23 @@ class MultiTrackDAW:
         if channel < 0 or channel > 15:
             return False
 
-        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-        if not clip:
-            return False
-
         try:
             new_end_val = float(new_end_beat)
         except (TypeError, ValueError):
             return False
 
-        new_end = max(float(clip['start_beat']) + 0.125, new_end_val)
-        if abs(new_end - float(clip['end_beat'])) < 1e-9:
-            return True
+        with self._edit():
+            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+            if not clip:
+                return False
+            new_end = max(float(clip['start_beat']) + 0.125, new_end_val)
+            if abs(new_end - float(clip['end_beat'])) < 1e-9:
+                return True
 
-        self._push_undo()
-        clip['end_beat'] = new_end
-        self._density_dirty = True
-        self._emit_state_change()
+            self._push_undo()
+            clip['end_beat'] = new_end
+            self._density_dirty = True
+            self._emit_state_change()
         print(f"[DAW] resize_clip ch={channel} id={clip_id} new_end={new_end:.3f}")
         return True
 
@@ -1122,44 +1354,45 @@ class MultiTrackDAW:
         Original clip becomes [start_beat, split_beat).
         New clip becomes [split_beat, end_beat).
         Events are NOT moved — they stay in place. Each clip just marks a range.
+        (Riassegnazione degli ID per evento alla meta' destra: ui-studio.)
         """
         if self.is_recording or self.is_playing:
             return None
         if channel < 0 or channel > 15:
             return False
 
-        clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-        if not clip:
-            return False
-
         try:
             split_at = float(split_beat)
         except (TypeError, ValueError):
             return False
-        old_start = float(clip['start_beat'])
-        old_end = float(clip['end_beat'])
 
-        # split_beat must be strictly inside the clip
-        if split_at <= old_start + 0.01 or split_at >= old_end - 0.01:
-            return False
+        with self._edit():
+            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
+            if not clip:
+                return False
+            old_start = float(clip['start_beat'])
+            old_end = float(clip['end_beat'])
 
-        self._push_undo()
+            # split_beat must be strictly inside the clip
+            if split_at <= old_start + 0.01 or split_at >= old_end - 0.01:
+                return False
 
-        # Shrink original clip to [start, split)
-        clip['end_beat'] = split_at
+            self._push_undo()
 
-        # Create new clip for [split, end)
-        new_id = self._next_clip_id
-        self._next_clip_id += 1
-        self.clips[channel].append({
-            'id': new_id,
-            'start_beat': split_at,
-            'end_beat': old_end,
-            'name': f'{clip.get("name", "Clip")} (split)',
-            'created_at': time.time()
-        })
-        self._density_dirty = True
-        self._emit_state_change()
+            # Shrink original clip to [start, split)
+            clip['end_beat'] = split_at
+
+            # Create new clip for [split, end)
+            new_id = self._alloc_clip_id()
+            self.clips[channel].append({
+                'id': new_id,
+                'start_beat': split_at,
+                'end_beat': old_end,
+                'name': f'{clip.get("name", "Clip")} (split)',
+                'created_at': time.time()
+            })
+            self._density_dirty = True
+            self._emit_state_change()
         print(f"[DAW] split_clip ch={channel} id={clip_id} at={split_at:.3f} -> new_id={new_id}")
         return new_id
 
@@ -1167,7 +1400,8 @@ class MultiTrackDAW:
         """Merge multiple clips into one spanning their combined range.
 
         Events are NOT moved. The resulting clip covers min(start_beat)..max(end_beat).
-        Original clips are removed and replaced by one new clip.
+        Original clips are removed and replaced by one new clip; gli eventi dei
+        clip uniti passano al nuovo ID (altrimenti resterebbero ID pendenti).
         """
         if self.is_recording or self.is_playing:
             return None
@@ -1178,56 +1412,74 @@ class MultiTrackDAW:
             id_set = set(int(cid) for cid in clip_ids)
         except (TypeError, ValueError):
             return False
-        matching = [c for c in self.clips[channel] if int(c['id']) in id_set]
-        if len(matching) < 2:
-            return False
 
-        min_start = min(float(c['start_beat']) for c in matching)
-        max_end = max(float(c['end_beat']) for c in matching)
+        with self._edit():
+            matching = [c for c in self.clips[channel] if int(c['id']) in id_set]
+            if len(matching) < 2:
+                return False
 
-        self._push_undo()
+            min_start = min(float(c['start_beat']) for c in matching)
+            max_end = max(float(c['end_beat']) for c in matching)
 
-        # Remove old clips
-        self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) not in id_set]
+            self._push_undo()
 
-        # Create merged clip
-        new_id = self._next_clip_id
-        self._next_clip_id += 1
-        self.clips[channel].append({
-            'id': new_id,
-            'start_beat': min_start,
-            'end_beat': max_end,
-            'name': f'Merged {new_id}',
-            'created_at': time.time()
-        })
-        self._density_dirty = True
-        self._emit_state_change()
+            # Remove old clips
+            self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) not in id_set]
+
+            # Create merged clip
+            new_id = self._alloc_clip_id()
+            self.clips[channel].append({
+                'id': new_id,
+                'start_beat': min_start,
+                'end_beat': max_end,
+                'name': f'Merged {new_id}',
+                'created_at': time.time()
+            })
+            ids = self._ids(channel)
+            for i, cid in enumerate(ids):
+                if cid in id_set:
+                    ids[i] = new_id
+            self._density_dirty = True
+            self._emit_state_change()
         print(f"[DAW] merge_clips ch={channel} ids={list(id_set)} -> new_id={new_id} range=[{min_start:.3f}, {max_end:.3f}]")
         return new_id
 
     def set_bpm(self, bpm):
         """
         Imposta il tempo (BPM)
-        Gli eventi sono salvati in beat, quindi cambiano velocità automaticamente
+        Gli eventi sono salvati in beat, quindi cambiano velocità automaticamente.
+        Emette daw_state_update (A20) e rende il progetto modificato.
         """
         if self.is_recording or self.is_playing:
             return False
-        
+
         self.bpm = max(30, min(300, bpm))
         self.beat_duration = 60.0 / self.bpm
         print(f"[DAW] BPM impostato a {self.bpm}")
+        self._emit_state_change()
+        self._content_changed()
         return True
 
     def set_time_signature(self, beats_per_measure):
-        """Imposta il numeratore della misura (es. 3 o 4)."""
+        """Imposta il numeratore della misura (es. 3 o 4). Emette (A20), dirty."""
         if beats_per_measure not in (3, 4):
             return False
         self.beats_per_measure = beats_per_measure
         print(f"[DAW] Time signature impostato a {beats_per_measure}/4")
+        self._emit_state_change()
+        self._content_changed()
         return True
-    
+
+    def get_events_decoded_with_revision(self, channel=-1):
+        return self._events_decoded(channel)
+
     def get_state(self):
-        """Ritorna lo stato completo del sistema"""
+        """Ritorna lo stato completo del sistema (con `revision`, sez. 6.6).
+        Letto sotto il lock di editing: stato coerente con la revisione."""
+        with self._edit_lock:
+            return self._get_state_locked()
+
+    def _get_state_locked(self):
         # Calcola la durata di ogni traccia (converti beat in secondi per visualizzazione)
         track_durations = {}
         max_duration = 0.0
@@ -1264,7 +1516,8 @@ class MultiTrackDAW:
             'can_redo': len(self._redo_stack) > 0,
             'track_names': self.track_names.copy(),
             'track_colors': self.track_colors.copy(),
-            'clips': {ch: self.get_clips(ch) for ch in range(16)}
+            'clips': {ch: self.get_clips(ch) for ch in range(16)},
+            'revision': self.revision,
         }
 
     # --- MIDI note name helper ---
@@ -1282,14 +1535,19 @@ class MultiTrackDAW:
         Returns decoded MIDI events for a channel (or all channels if channel=-1).
         Pairs Note On/Off to compute duration. Returns list of dicts.
         """
-        result = []
+        return self._events_decoded(channel)[0]
+
+    def _events_decoded(self, channel=-1):
         channels = range(16) if channel < 0 else [channel]
+        snap, snap_ids, _bpm, rev, _gen = self._tracks_snapshot(channels)
+        result = []
 
         for ch in channels:
-            events = self.tracks.get(ch)
+            events = snap[ch]
             if not events:
                 continue
             # Build Note On → Note Off mapping for duration
+            ids = snap_ids[ch]
             note_on_map = {}  # {note_num: [(index_in_result, beat_pos), ...]}
             for idx_in_track, (beat_pos, msg_bytes) in enumerate(events):
                 try:
@@ -1301,6 +1559,7 @@ class MultiTrackDAW:
                     'idx': idx_in_track,
                     'beat': round(beat_pos, 4),
                     'type': msg.type,
+                    'clip': ids[idx_in_track],       # ID clip proprietario (D3), 0 = libero
                 }
                 if msg.type == 'note_on' and msg.velocity > 0:
                     entry['note'] = self._midi_note_name(msg.note)
@@ -1327,182 +1586,207 @@ class MultiTrackDAW:
                 elif msg.type == 'pitchwheel':
                     entry['pitch'] = msg.pitch
                 result.append(entry)
-        return result
+        return result, rev
 
-    def edit_event(self, channel, index, updates):
+    # ── Editing indicizzato (sez. 6.6): expected_revision, validazione PRIMA
+    # dell'undo (A21), un solo sort permutato, emit dopo il rilascio del lock.
+    # Errori in last_error (per-thread): RECORDING_ACTIVE / BAD_REQUEST con
+    # HTTP 400 conservato (override legacy 8.1), REVISION_CONFLICT 409.
+
+    def _refuse_recording(self):
+        return self._fail('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                          {'is_recording': True}, http=400)
+
+    def _bad_index(self, field='index'):
+        return self._fail('BAD_REQUEST', 'Indice evento non valido', {'field': field}, http=400)
+
+    @staticmethod
+    def _beat_value(v):
+        b = float(v)
+        if not math.isfinite(b) or b < 0 or b > project_store.MAX_BEAT:
+            raise ValueError(f'beat fuori intervallo 0..{project_store.MAX_BEAT}')
+        return b
+
+    def edit_event(self, channel, index, updates, expected_revision=None):
         """
         Edit an event's beat position and/or velocity.
         Only allowed when not recording.
         Returns True on success.
         """
         if self.is_recording:
-            return False
-        events = self.tracks.get(channel)
-        if not events or index < 0 or index >= len(events):
-            return False
+            return self._refuse_recording()
+        with self._edit():
+            if not self.check_revision(expected_revision):
+                return False
+            events = self.tracks.get(channel)
+            if not events or index < 0 or index >= len(events):
+                return self._bad_index()
+            beat_pos, msg_bytes = events[index]
+            try:
+                msg = mido.Message.from_bytes(msg_bytes)
+                if 'beat' in updates:
+                    beat_pos = self._beat_value(updates['beat'])
+                if 'velocity' in updates and hasattr(msg, 'velocity'):
+                    msg = msg.copy(velocity=max(0, min(127, int(updates['velocity']))))
+                if 'note' in updates and hasattr(msg, 'note'):
+                    msg = msg.copy(note=max(0, min(127, int(updates['note']))))
+                if 'cc_num' in updates and hasattr(msg, 'control'):
+                    msg = msg.copy(control=max(0, min(127, int(updates['cc_num']))))
+                if 'cc_value' in updates and hasattr(msg, 'value'):
+                    msg = msg.copy(value=max(0, min(127, int(updates['cc_value']))))
+                if 'pitch' in updates and hasattr(msg, 'pitch'):
+                    msg = msg.copy(pitch=max(-8192, min(8191, int(updates['pitch']))))
+                if 'program' in updates and hasattr(msg, 'program'):
+                    msg = msg.copy(program=max(0, min(127, int(updates['program']))))
+            except (ValueError, TypeError) as e:
+                return self._fail('BAD_REQUEST', f'Valore non valido: {e}', {'field': 'updates'}, http=400)
 
-        self._push_undo()
-        beat_pos, msg_bytes = events[index]
-
-        try:
-            msg = mido.Message.from_bytes(msg_bytes)
-        except Exception:
-            return False
-
-        if 'beat' in updates:
-            beat_pos = float(updates['beat'])
-        if 'velocity' in updates and hasattr(msg, 'velocity'):
-            msg = msg.copy(velocity=max(0, min(127, int(updates['velocity']))))
-        if 'note' in updates and hasattr(msg, 'note'):
-            msg = msg.copy(note=max(0, min(127, int(updates['note']))))
-        if 'cc_num' in updates and hasattr(msg, 'control'):
-            msg = msg.copy(control=max(0, min(127, int(updates['cc_num']))))
-        if 'cc_value' in updates and hasattr(msg, 'value'):
-            msg = msg.copy(value=max(0, min(127, int(updates['cc_value']))))
-        if 'pitch' in updates and hasattr(msg, 'pitch'):
-            msg = msg.copy(pitch=max(-8192, min(8191, int(updates['pitch']))))
-        if 'program' in updates and hasattr(msg, 'program'):
-            msg = msg.copy(program=max(0, min(127, int(updates['program']))))
-
-        events[index] = (beat_pos, msg.bytes())
-
-        # Re-sort if beat changed
-        if 'beat' in updates:
-            events.sort(key=lambda x: x[0])
+            self._push_undo()
+            new_events = list(events)
+            new_events[index] = (beat_pos, msg.bytes())
+            if 'beat' in updates:
+                self._set_sorted(channel, new_events, self._ids(channel))
+            else:
+                self._set_track(channel, new_events, self._ids(channel))
             self._density_dirty = True
-
-        self._emit_state_change()
+            self._emit_state_change()
         return True
 
-    def delete_event(self, channel, index):
+    def delete_event(self, channel, index, expected_revision=None):
         """
         Delete an event by index.
         Only allowed when not recording.
         Returns True on success.
         """
         if self.is_recording:
-            return False
-        events = self.tracks.get(channel)
-        if not events or index < 0 or index >= len(events):
-            return False
-
-        self._push_undo()
-        del events[index]
-        if not events:
-            self.has_data[channel] = False
-        self._density_dirty = True
-        self._emit_state_change()
+            return self._refuse_recording()
+        with self._edit():
+            if not self.check_revision(expected_revision):
+                return False
+            events = self.tracks.get(channel)
+            if not events or index < 0 or index >= len(events):
+                return self._bad_index()
+            self._push_undo()
+            self._drop_indices(channel, {index})
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
     # ── Atomic note-pair operations (note = note_on + note_off) ──
 
-    def add_note(self, channel, note, velocity, start_beat, length_beats):
+    def add_note(self, channel, note, velocity, start_beat, length_beats, expected_revision=None):
         """
         Add a complete note (note_on + note_off) to a track.
         Inserts both events, sorts once. Returns True on success.
+        La nota riceve l'ID del clip piu' recente che contiene start_beat (6.3).
         """
         if self.is_recording:
-            return False
+            return self._refuse_recording()
         if channel < 0 or channel > 15:
-            return False
-        note = max(0, min(127, int(note)))
-        velocity = max(1, min(127, int(velocity)))
-        start_beat = max(0.0, float(start_beat))
-        length_beats = max(0.001, float(length_beats))
-        end_beat = start_beat + length_beats
+            return self._fail('BAD_REQUEST', 'Traccia non valida', {'field': 'channel'}, http=400)
+        try:
+            note = max(0, min(127, int(note)))
+            velocity = max(1, min(127, int(velocity)))
+            start_beat = self._beat_value(max(0.0, float(start_beat)))
+            length_beats = max(0.001, float(length_beats))
+            end_beat = self._beat_value(start_beat + length_beats)
+        except (ValueError, TypeError) as e:
+            return self._fail('BAD_REQUEST', f'Valore non valido: {e}', {'field': 'start_beat'}, http=400)
 
-        self._push_undo()
-        events = self.tracks.setdefault(channel, [])
-        msg_on = mido.Message('note_on', channel=channel, note=note, velocity=velocity)
-        msg_off = mido.Message('note_off', channel=channel, note=note, velocity=0)
-        events.append((start_beat, msg_on.bytes()))
-        events.append((end_beat, msg_off.bytes()))
-        events.sort(key=lambda x: x[0])
-        self.has_data[channel] = True
-        self._density_dirty = True
-        self._emit_state_change()
+        with self._edit():
+            if not self.check_revision(expected_revision):
+                return False
+            self._push_undo()
+            cid = self._clip_at(channel, start_beat)
+            events = list(self.tracks[channel])
+            ids = array('H', self._ids(channel))
+            msg_on = mido.Message('note_on', channel=channel, note=note, velocity=velocity)
+            msg_off = mido.Message('note_off', channel=channel, note=note, velocity=0)
+            events.append((start_beat, msg_on.bytes()))
+            events.append((end_beat, msg_off.bytes()))
+            ids.append(cid)
+            ids.append(cid)            # il note-off ha sempre l'ID del suo note-on
+            self._set_sorted(channel, events, ids)
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
-    def edit_note_pair(self, channel, on_idx, off_idx, updates):
+    def edit_note_pair(self, channel, on_idx, off_idx, updates, expected_revision=None):
         """
         Atomically edit both note_on and note_off events for a single note.
         updates may contain: on_beat, off_beat, note, velocity.
         Sorts the events list once at the end. Returns True on success.
         """
         if self.is_recording:
-            return False
-        events = self.tracks.get(channel)
-        if not events:
-            return False
-        n_events = len(events)
-        if on_idx < 0 or on_idx >= n_events:
-            return False
-        if off_idx >= 0 and off_idx >= n_events:
-            return False
-
-        self._push_undo()
-        need_sort = False
-
-        # Edit note_on event
-        if on_idx >= 0:
-            beat_pos, msg_bytes = events[on_idx]
-            try:
-                msg = mido.Message.from_bytes(msg_bytes)
-            except Exception:
+            return self._refuse_recording()
+        with self._edit():
+            if not self.check_revision(expected_revision):
                 return False
-            if 'on_beat' in updates:
-                beat_pos = float(updates['on_beat'])
-                need_sort = True
-            if 'note' in updates and hasattr(msg, 'note'):
-                msg = msg.copy(note=max(0, min(127, int(updates['note']))))
-            if 'velocity' in updates and hasattr(msg, 'velocity'):
-                msg = msg.copy(velocity=max(0, min(127, int(updates['velocity']))))
-            events[on_idx] = (beat_pos, msg.bytes())
+            events = self.tracks.get(channel)
+            if not events:
+                return self._bad_index('on_idx')
+            n_events = len(events)
+            if on_idx < 0 or on_idx >= n_events:
+                return self._bad_index('on_idx')
+            if off_idx >= 0 and off_idx >= n_events:
+                return self._bad_index('off_idx')
 
-        # Edit note_off event
-        if off_idx >= 0:
-            beat_pos, msg_bytes = events[off_idx]
+            # Tutto calcolato e validato prima dell'undo (A21).
+            new_events = list(events)
+            need_sort = False
             try:
+                beat_pos, msg_bytes = events[on_idx]
                 msg = mido.Message.from_bytes(msg_bytes)
-            except Exception:
-                return False
-            if 'off_beat' in updates:
-                beat_pos = float(updates['off_beat'])
-                need_sort = True
-            if 'note' in updates and hasattr(msg, 'note'):
-                msg = msg.copy(note=max(0, min(127, int(updates['note']))))
-            events[off_idx] = (beat_pos, msg.bytes())
+                if 'on_beat' in updates:
+                    beat_pos = self._beat_value(updates['on_beat'])
+                    need_sort = True
+                if 'note' in updates and hasattr(msg, 'note'):
+                    msg = msg.copy(note=max(0, min(127, int(updates['note']))))
+                if 'velocity' in updates and hasattr(msg, 'velocity'):
+                    msg = msg.copy(velocity=max(0, min(127, int(updates['velocity']))))
+                new_events[on_idx] = (beat_pos, msg.bytes())
 
-        if need_sort:
-            events.sort(key=lambda x: x[0])
+                if off_idx >= 0:
+                    beat_pos, msg_bytes = events[off_idx]
+                    msg = mido.Message.from_bytes(msg_bytes)
+                    if 'off_beat' in updates:
+                        beat_pos = self._beat_value(updates['off_beat'])
+                        need_sort = True
+                    if 'note' in updates and hasattr(msg, 'note'):
+                        msg = msg.copy(note=max(0, min(127, int(updates['note']))))
+                    new_events[off_idx] = (beat_pos, msg.bytes())
+            except (ValueError, TypeError) as e:
+                return self._fail('BAD_REQUEST', f'Valore non valido: {e}', {'field': 'updates'}, http=400)
 
-        self._density_dirty = True
-        self._emit_state_change()
+            self._push_undo()
+            if need_sort:
+                self._set_sorted(channel, new_events, self._ids(channel))
+            else:
+                self._set_track(channel, new_events, self._ids(channel))
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
-    def delete_note_pair(self, channel, on_idx, off_idx):
+    def delete_note_pair(self, channel, on_idx, off_idx, expected_revision=None):
         """
         Atomically delete both note_on and note_off events for a note.
         Handles index adjustment internally. Returns True on success.
         """
         if self.is_recording:
-            return False
-        events = self.tracks.get(channel)
-        if not events:
-            return False
-
-        # Collect valid indices, sort descending to delete from the end first
-        indices = sorted(set(i for i in [on_idx, off_idx] if 0 <= i < len(events)), reverse=True)
-        if not indices:
-            return False
-
-        self._push_undo()
-        for idx in indices:
-            del events[idx]
-        if not events:
-            self.has_data[channel] = False
-        self._density_dirty = True
-        self._emit_state_change()
+            return self._refuse_recording()
+        with self._edit():
+            if not self.check_revision(expected_revision):
+                return False
+            events = self.tracks.get(channel)
+            if not events:
+                return self._bad_index('on_idx')
+            indices = set(i for i in [on_idx, off_idx] if 0 <= i < len(events))
+            if not indices:
+                return self._bad_index('on_idx')
+            self._push_undo()
+            self._drop_indices(channel, indices)
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
     def edit_notes_batch(self, channel, edits):
@@ -1510,56 +1794,59 @@ class MultiTrackDAW:
         Atomically edit multiple note pairs in a single operation.
         edits: list of dicts, each with on_idx, off_idx, and optional on_beat, off_beat, note, velocity.
         All changes are applied before sorting once.
+        (Validazione 422 / expected_revision obbligatoria: ui-studio, A28.)
         """
         if self.is_recording:
             return False
-        events = self.tracks.get(channel)
-        if not events:
-            return False
-        n_events = len(events)
+        with self._edit():
+            events = self.tracks.get(channel)
+            if not events:
+                return False
+            n_events = len(events)
+            new_events = list(events)
+            need_sort = False
 
-        self._push_undo()
-        need_sort = False
+            for edit in edits:
+                on_idx = int(edit.get('on_idx', -1))
+                off_idx = int(edit.get('off_idx', -1))
 
-        for edit in edits:
-            on_idx = int(edit.get('on_idx', -1))
-            off_idx = int(edit.get('off_idx', -1))
+                # Edit note_on event
+                if 0 <= on_idx < n_events:
+                    beat_pos, msg_bytes = new_events[on_idx]
+                    try:
+                        msg = mido.Message.from_bytes(msg_bytes)
+                    except Exception:
+                        continue
+                    if 'on_beat' in edit:
+                        beat_pos = float(edit['on_beat'])
+                        need_sort = True
+                    if 'note' in edit and hasattr(msg, 'note'):
+                        msg = msg.copy(note=max(0, min(127, int(edit['note']))))
+                    if 'velocity' in edit and hasattr(msg, 'velocity'):
+                        msg = msg.copy(velocity=max(0, min(127, int(edit['velocity']))))
+                    new_events[on_idx] = (beat_pos, msg.bytes())
 
-            # Edit note_on event
-            if 0 <= on_idx < n_events:
-                beat_pos, msg_bytes = events[on_idx]
-                try:
-                    msg = mido.Message.from_bytes(msg_bytes)
-                except Exception:
-                    continue
-                if 'on_beat' in edit:
-                    beat_pos = float(edit['on_beat'])
-                    need_sort = True
-                if 'note' in edit and hasattr(msg, 'note'):
-                    msg = msg.copy(note=max(0, min(127, int(edit['note']))))
-                if 'velocity' in edit and hasattr(msg, 'velocity'):
-                    msg = msg.copy(velocity=max(0, min(127, int(edit['velocity']))))
-                events[on_idx] = (beat_pos, msg.bytes())
+                # Edit note_off event
+                if 0 <= off_idx < n_events:
+                    beat_pos, msg_bytes = new_events[off_idx]
+                    try:
+                        msg = mido.Message.from_bytes(msg_bytes)
+                    except Exception:
+                        continue
+                    if 'off_beat' in edit:
+                        beat_pos = float(edit['off_beat'])
+                        need_sort = True
+                    if 'note' in edit and hasattr(msg, 'note'):
+                        msg = msg.copy(note=max(0, min(127, int(edit['note']))))
+                    new_events[off_idx] = (beat_pos, msg.bytes())
 
-            # Edit note_off event
-            if 0 <= off_idx < n_events:
-                beat_pos, msg_bytes = events[off_idx]
-                try:
-                    msg = mido.Message.from_bytes(msg_bytes)
-                except Exception:
-                    continue
-                if 'off_beat' in edit:
-                    beat_pos = float(edit['off_beat'])
-                    need_sort = True
-                if 'note' in edit and hasattr(msg, 'note'):
-                    msg = msg.copy(note=max(0, min(127, int(edit['note']))))
-                events[off_idx] = (beat_pos, msg.bytes())
-
-        if need_sort:
-            events.sort(key=lambda x: x[0])
-
-        self._density_dirty = True
-        self._emit_state_change()
+            self._push_undo()
+            if need_sort:
+                self._set_sorted(channel, new_events, self._ids(channel))
+            else:
+                self._set_track(channel, new_events, self._ids(channel))
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
     def delete_notes_batch(self, channel, pairs):
@@ -1570,57 +1857,41 @@ class MultiTrackDAW:
         """
         if self.is_recording:
             return False
-        events = self.tracks.get(channel)
-        if not events:
-            return False
-        n_events = len(events)
+        with self._edit():
+            events = self.tracks.get(channel)
+            if not events:
+                return False
+            n_events = len(events)
 
-        indices = set()
-        for pair in pairs:
-            on_idx = int(pair.get('on_idx', -1))
-            off_idx = int(pair.get('off_idx', -1))
-            if 0 <= on_idx < n_events:
-                indices.add(on_idx)
-            if 0 <= off_idx < n_events:
-                indices.add(off_idx)
+            indices = set()
+            for pair in pairs:
+                on_idx = int(pair.get('on_idx', -1))
+                off_idx = int(pair.get('off_idx', -1))
+                if 0 <= on_idx < n_events:
+                    indices.add(on_idx)
+                if 0 <= off_idx < n_events:
+                    indices.add(off_idx)
 
-        if not indices:
-            return False
+            if not indices:
+                return False
 
-        self._push_undo()
-        for idx in sorted(indices, reverse=True):
-            del events[idx]
-        if not events:
-            self.has_data[channel] = False
-        self._density_dirty = True
-        self._emit_state_change()
+            self._push_undo()
+            self._drop_indices(channel, indices)
+            self._density_dirty = True
+            self._emit_state_change()
         return True
 
     def get_track_activity(self, channel, start_beat=0.0, end_beat=9999.0):
-        """Restituisce intervalli uniti di attività note per una traccia nel range richiesto."""
-        events = self.tracks.get(channel)
-        if not events:
-            return []
+        """Restituisce intervalli uniti di attività note per una traccia nel range richiesto.
+        Accoppiamento FIFO unico (A26)."""
+        with self._edit_lock:
+            events = self.tracks.get(channel)
+            if not events:
+                return []
+            pairs = self._pair_notes(events)
 
-        active_notes = {}
-        intervals = []
-
-        for beat_position, msg_bytes in events:
-            try:
-                msg = mido.Message.from_bytes(msg_bytes)
-            except Exception:
-                continue
-
-            if msg.type == 'note_on' and msg.velocity > 0:
-                active_notes[msg.note] = beat_position
-            elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
-                if msg.note in active_notes:
-                    start = active_notes.pop(msg.note)
-                    intervals.append((start, beat_position))
-
-        # Chiudi eventuali note rimaste aperte fino all'end richiesto
-        for start in active_notes.values():
-            intervals.append((start, end_beat))
+        # Le note rimaste aperte arrivano fino all'end richiesto
+        intervals = [(on_b, end_beat if off_b is None else off_b) for _n, _v, on_b, off_b, _i, _j in pairs]
 
         # Unisci intervalli sovrapposti e applica culling con la finestra richiesta
         intervals = [iv for iv in intervals if iv[1] > start_beat and iv[0] < end_beat]
@@ -1642,31 +1913,13 @@ class MultiTrackDAW:
         return merged
 
     def _build_intervals_full(self, events):
-        """Costruisce intervalli completi (start, end) in beat per tutte le note."""
+        """Costruisce intervalli completi (start, end) in beat per tutte le note
+        (accoppiamento FIFO unico, A26; note aperte fino all'ultimo beat)."""
         if not events:
             return [], 0.0
-
-        active_notes = {}
-        intervals = []
-        max_beat = 0.0
-
-        for beat_position, msg_bytes in events:
-            max_beat = max(max_beat, beat_position)
-            try:
-                msg = mido.Message.from_bytes(msg_bytes)
-            except Exception:
-                continue
-
-            if msg.type == 'note_on' and msg.velocity > 0:
-                active_notes[msg.note] = beat_position
-            elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
-                if msg.note in active_notes:
-                    start = active_notes.pop(msg.note)
-                    intervals.append((start, beat_position))
-
-        for start in active_notes.values():
-            intervals.append((start, max_beat))
-
+        max_beat = max(b for b, _ in events)
+        intervals = [(on_b, max_beat if off_b is None else off_b)
+                     for _n, _v, on_b, off_b, _i, _j in self._pair_notes(events)]
         intervals.sort(key=lambda iv: iv[0])
         return intervals, max_beat
 
@@ -1677,53 +1930,34 @@ class MultiTrackDAW:
         """
         if not events:
             return [], 0.0, 127, 0
-
-        active_notes = {}
-        notes = []
-        max_beat = 0.0
-        min_note = 127
-        max_note = 0
-
-        for idx, (beat_position, msg_bytes) in enumerate(events):
-            max_beat = max(max_beat, beat_position)
-            try:
-                msg = mido.Message.from_bytes(msg_bytes)
-            except Exception:
-                continue
-
-            if msg.type == 'note_on' and msg.velocity > 0:
-                active_notes.setdefault(msg.note, []).append((beat_position, msg.velocity, idx))
-            elif msg.type in ('note_off', 'note_on') and (msg.type == 'note_off' or msg.velocity == 0):
-                if msg.note in active_notes and active_notes[msg.note]:
-                    start, vel, on_idx = active_notes[msg.note].pop(0)
-                    notes.append((msg.note, vel, start, beat_position, on_idx, idx))
-                    min_note = min(min_note, msg.note)
-                    max_note = max(max_note, msg.note)
-                    if not active_notes[msg.note]:
-                        del active_notes[msg.note]
-
-        for note_num, pending in active_notes.items():
-            for start, vel, on_idx in pending:
-                notes.append((note_num, vel, start, max_beat, on_idx, -1))
-                min_note = min(min_note, note_num)
-                max_note = max(max_note, note_num)
-
+        max_beat = max(b for b, _ in events)
+        notes = [(n, v, on_b, max_beat if off_b is None else off_b, on_i, off_i)
+                 for n, v, on_b, off_b, on_i, off_i in self._pair_notes(events)]
+        if not notes:
+            return [], max_beat, 127, 0
+        min_note = min(n[0] for n in notes)
+        max_note = max(n[0] for n in notes)
         notes.sort(key=lambda n: n[2])
         return notes, max_beat, min_note, max_note
 
-    def get_full_note_map(self):
-        """Return per-channel note data for piano-roll rendering. Cached."""
-        if not self.is_recording and not self._density_dirty and self._cached_note_map is not None:
-            return self._cached_note_map
+    def _tracks_snapshot(self, channels=range(16)):
+        """Copie superficiali sotto il lock: il calcolo pesante (16000 eventi)
+        avviene fuori, cosi' la callback di Record non resta bloccata."""
+        with self._edit_lock:
+            return ({ch: list(self.tracks.get(ch) or []) for ch in channels},
+                    {ch: array('H', self._ids(ch)) for ch in channels},
+                    self.beats_per_measure, self.revision, getattr(self, '_cache_gen', 0))
 
-        beats_per_measure = self.beats_per_measure
+    def _note_map(self):
+        with self._edit_lock:
+            cached = self._cached_note_map
+            if not self.is_recording and cached is not None:
+                return cached, self.revision
+        snap, _ids, beats_per_measure, rev, gen = self._tracks_snapshot()
         total_beats = 0.0
         tracks = {}
-
         for ch in range(16):
-            notes, max_beat, min_note, max_note = self._build_notes_full(
-                self.tracks.get(ch)
-            )
+            notes, max_beat, min_note, max_note = self._build_notes_full(snap[ch])
             total_beats = max(total_beats, max_beat)
             if notes:
                 tracks[ch] = {
@@ -1734,32 +1968,34 @@ class MultiTrackDAW:
                     'min_note': min_note,
                     'max_note': max_note
                 }
-
         if total_beats <= 0:
             total_beats = beats_per_measure * 4
+        result = {'total_beats': total_beats, 'beats_per_measure': beats_per_measure, 'tracks': tracks}
+        with self._edit_lock:
+            if gen == getattr(self, '_cache_gen', 0) and not self.is_recording:
+                self._cached_note_map = result
+        return result, rev
 
-        result = {
-            'total_beats': total_beats,
-            'beats_per_measure': beats_per_measure,
-            'tracks': tracks
-        }
-        self._cached_note_map = result
-        self._density_dirty = False
-        return result
+    def get_full_note_map(self):
+        """Return per-channel note data for piano-roll rendering. Cached."""
+        return self._note_map()[0]
 
-    def get_full_density_map(self):
-        """Ritorna la mappa di densità (slot di 1/8 beat) per tutte le tracce. Cached."""
-        # Bypass cache during recording — events are added continuously
-        if not self.is_recording and not self._density_dirty and self._cached_density_map is not None:
-            return self._cached_density_map
+    def get_full_note_map_with_revision(self):
+        """(mappa, revisione dello snapshot da cui e' calcolata)."""
+        return self._note_map()
 
-        slot = self.slot_beats
-        beats_per_measure = self.beats_per_measure
+    def _density_map(self):
+        with self._edit_lock:
+            cached = self._cached_density_map
+            if not self.is_recording and cached is not None:
+                return cached, self.revision
+            slot = self.slot_beats
+        snap, _ids, beats_per_measure, rev, gen = self._tracks_snapshot()
 
         all_intervals = {}
         total_beats = 0.0
         for ch in range(16):
-            intervals, max_beat = self._build_intervals_full(self.tracks.get(ch))
+            intervals, max_beat = self._build_intervals_full(snap[ch])
             all_intervals[ch] = intervals
             total_beats = max(total_beats, max_beat)
 
@@ -1771,8 +2007,7 @@ class MultiTrackDAW:
 
         for ch in range(16):
             arr = [0] * slots_count
-            intervals = all_intervals[ch]
-            for start, end in intervals:
+            for start, end in all_intervals[ch]:
                 if end <= start:
                     continue
                 s_slot = max(0, int(math.floor(start / slot)))
@@ -1787,10 +2022,18 @@ class MultiTrackDAW:
             'beats_per_measure': beats_per_measure,
             'tracks': density
         }
-        self._cached_density_map = result
-        self._density_dirty = False
-        return result
-    
+        with self._edit_lock:
+            if gen == getattr(self, '_cache_gen', 0) and not self.is_recording:
+                self._cached_density_map = result
+        return result, rev
+
+    def get_full_density_map_with_revision(self):
+        return self._density_map()
+
+    def get_full_density_map(self):
+        """Ritorna la mappa di densità (slot di 1/8 beat) per tutte le tracce. Cached."""
+        return self._density_map()[0]
+
     def toggle_metronome(self):
         """Toggle metronomo on/off"""
         self.metronome_enabled = not self.metronome_enabled
@@ -1904,7 +2147,9 @@ class MultiTrackDAW:
             for ch in targets:
                 data = msg.bytes()
                 data[0] = (data[0] & 0xF0) | ch     # evento salvato sul canale della traccia
+                ids = self._ids(ch)                 # PRIMA dell'append (stessa lunghezza)
                 self.tracks[ch].append((beat_position, data))
+                ids.append(0)                       # parallelo (D3): ID assegnato allo stop
                 emitted.append((ch, len(self.tracks[ch]) - 1))
                 if msg.type == 'note_on' and msg.velocity > 0:
                     self.active_notes[ch] += 1
@@ -2040,16 +2285,24 @@ class MultiTrackDAW:
         Include Bank Select + Program Change per ogni canale.
 
         Args:
-            channel_programs: dict {ch_int: {'bank': int, 'program': int}} dai settings correnti
-        Ritorna i bytes del file MIDI.
+            channel_programs: dict {ch_int: {'bank': int|None, 'program': int|None}}
+                rappresentazione NEUTRA (sez. 7.1): bank = (MSB << 7) | LSB.
+                `bank: None` = nessun CC0/CC32 iniziale, `program: None` =
+                nessun PC iniziale; canale assente = CC0=0, CC32=0, PC 0.
+        Ritorna i bytes del file MIDI. Nomi traccia = nomi DAW (sez. 7.3).
         """
+        # Copie superficiali sotto il lock, costruzione del file fuori.
+        with self._edit_lock:
+            snapshot = {ch: list(self.tracks.get(ch) or []) for ch in range(16)}
+            names = dict(self.track_names)
+            bpm, bpmeas = self.bpm, self.beats_per_measure
         mid = mido.MidiFile(type=1, ticks_per_beat=480)
-        tempo = mido.bpm2tempo(self.bpm)
+        tempo = mido.bpm2tempo(bpm)
         if channel_programs is None:
             channel_programs = {}
 
         for ch in range(16):
-            events = self.tracks.get(ch)
+            events = snapshot[ch]
             if not events:
                 continue
 
@@ -2058,27 +2311,28 @@ class MultiTrackDAW:
             if len(mid.tracks) == 0:
                 track.append(mido.MetaMessage('set_tempo', tempo=tempo, time=0))
                 track.append(mido.MetaMessage('time_signature',
-                                              numerator=self.beats_per_measure,
+                                              numerator=bpmeas,
                                               denominator=4, time=0))
             track.append(mido.MetaMessage('track_name',
-                                          name=f'Channel {ch + 1}', time=0))
+                                          name=str(names.get(ch) or f'Channel {ch + 1}'), time=0))
 
             # Inserisci Bank Select + Program Change a tick 0
             ch_prog = channel_programs.get(ch, {})
             bank = ch_prog.get('bank', 0)
-            prog = min(127, max(0, ch_prog.get('program', 0)))
-            bank_msb = min(127, max(0, (bank >> 7) & 0x7F))
-            bank_lsb = min(127, max(0, bank & 0x7F))
-            track.append(mido.Message('control_change', channel=ch,
-                                      control=0, value=bank_msb, time=0))
-            track.append(mido.Message('control_change', channel=ch,
-                                      control=32, value=bank_lsb, time=0))
-            track.append(mido.Message('program_change', channel=ch,
-                                      program=prog, time=0))
+            prog = ch_prog.get('program', 0)
+            if bank is not None:
+                bank_msb = min(127, max(0, (bank >> 7) & 0x7F))
+                bank_lsb = min(127, max(0, bank & 0x7F))
+                track.append(mido.Message('control_change', channel=ch,
+                                          control=0, value=bank_msb, time=0))
+                track.append(mido.Message('control_change', channel=ch,
+                                          control=32, value=bank_lsb, time=0))
+            if prog is not None:
+                track.append(mido.Message('program_change', channel=ch,
+                                          program=min(127, max(0, prog)), time=0))
 
-            sorted_events = sorted(events, key=lambda e: e[0])
             last_tick = 0
-            for beat_pos, msg_bytes in sorted_events:
+            for beat_pos, msg_bytes in events:      # gia' ordinati per beat
                 try:
                     msg = mido.Message.from_bytes(msg_bytes)
                 except Exception:
@@ -2091,7 +2345,7 @@ class MultiTrackDAW:
                 else:
                     msg = msg.copy(time=delta)
                 track.append(msg)
-                last_tick = abs_tick
+                last_tick = max(last_tick, abs_tick)
 
             track.append(mido.MetaMessage('end_of_track', time=0))
             mid.tracks.append(track)
@@ -2100,87 +2354,263 @@ class MultiTrackDAW:
         mid.save(file=buf)
         return buf.getvalue()
 
-    def import_midi(self, midi_bytes, merge=False):
+    # Meta gestiti dall'import: gli altri messaggi senza canale sono contati
+    # come scartati (warning IMPORT_DROPPED_EVENTS, sez. 7.2).
+    _IMPORT_HANDLED_META = frozenset(('set_tempo', 'time_signature', 'track_name', 'end_of_track'))
+
+    @staticmethod
+    def _analyze_smf(mid):
+        """Pre-passata su TUTTE le tracce per tick assoluto (sez. 7.2, A1):
+        tempo/metro, messaggi per canale in ordine (tick, sequenza), nomi
+        traccia, scartati. Nessuna mutazione della DAW."""
+        tempos, sigs, dropped = [], [], {}
+        per_ch = {}
+        names = {}
+        seq = 0
+        for tr_idx, track in enumerate(mid.tracks):
+            abs_tick = 0
+            chans = set()
+            name = None
+            for msg in track:
+                abs_tick += msg.time
+                seq += 1
+                if msg.is_meta:
+                    if msg.type == 'set_tempo':
+                        tempos.append((abs_tick, seq, msg.tempo))
+                    elif msg.type == 'time_signature':
+                        sigs.append((abs_tick, seq, msg.numerator, msg.denominator))
+                    elif msg.type == 'track_name':
+                        name = msg.name
+                    elif msg.type not in MultiTrackDAW._IMPORT_HANDLED_META:
+                        dropped[msg.type] = dropped.get(msg.type, 0) + 1
+                    continue
+                if not hasattr(msg, 'channel'):
+                    dropped[msg.type] = dropped.get(msg.type, 0) + 1
+                    continue
+                chans.add(msg.channel)
+                per_ch.setdefault(msg.channel, []).append((abs_tick, seq, msg))
+            if name and len(chans) == 1:
+                names[next(iter(chans))] = name
+        for lst in per_ch.values():
+            lst.sort(key=lambda x: (x[0], x[1]))
+        tempos.sort()
+        sigs.sort()
+        return tempos, sigs, per_ch, names, dropped
+
+    def import_midi(self, midi_bytes, merge=False, convert=False):
         """
-        Importa un file MIDI nelle tracce del DAW.
+        Importa un file MIDI nelle tracce del DAW (sez. 7.2).
 
         Args:
             midi_bytes: contenuto binario del file MIDI
             merge: se True, aggiunge agli eventi esistenti; se False, sostituisce
+            convert: accetta tempo map / metro non supportato usando il primo
+                tempo e 4/4 (warning IMPORT_CONVERTED); senza, DawError
+                IMPORT_NEEDS_CONVERSION.
         Returns:
-            dict con info su tracce importate
+            dict con info su tracce importate (+ 'warnings', 'clips').
+        Un solo livello di undo per l'intero import (A13); un clip per traccia
+        importata (A7); PC iniziale con bank MSB/LSB, altri PC/CC0/CC32 restano
+        eventi nel tempo (A1).
         """
         if self.is_recording or self.is_playing:
             raise RuntimeError('Cannot import while recording or playing')
 
-        buf = io.BytesIO(midi_bytes)
-        mid = mido.MidiFile(file=buf)
+        try:
+            mid = mido.MidiFile(file=io.BytesIO(midi_bytes))
+        except Exception as e:
+            raise DawError('VALIDATION_FAILED', f'File MIDI non valido: {e}',
+                           {'path': '', 'reason': str(e)})
 
-        # Leggi tempo dal file
-        imported_bpm = self.bpm
+        tempos, sigs, per_ch, names, dropped = self._analyze_smf(mid)
+
+        # Tempo/metro: controllo PRIMA di qualunque mutazione.
+        issues = []
+        if len({t[2] for t in tempos}) > 1:
+            issues.append({'type': 'tempo_map', 'count': len(tempos)})
+        sig_values = {(s[2], s[3]) for s in sigs}
+        if len(sig_values) > 1:
+            issues.append({'type': 'meter', 'count': len(sigs),
+                           'values': sorted(f'{n}/{d}' for n, d in sig_values)})
+        elif sig_values:
+            n, d = next(iter(sig_values))
+            if n not in (3, 4) or d != 4:
+                issues.append({'type': 'meter', 'value': f'{n}/{d}'})
+        warnings = []
+        if issues:
+            if not convert:
+                raise DawError('IMPORT_NEEDS_CONVERSION',
+                               'Il file usa tempo/metro non supportati: serve una conversione esplicita',
+                               {'issues': issues})
+            warnings.append({'code': 'IMPORT_CONVERTED',
+                             'message': 'Importato con il primo tempo e 4/4 dove il metro non e\' supportato',
+                             'details': {'issues': issues}})
+        imported_bpm = int(round(mido.tempo2bpm(tempos[0][2]))) if tempos else self.bpm
         imported_ts = self.beats_per_measure
-        for track in mid.tracks:
-            for msg in track:
-                if msg.type == 'set_tempo':
-                    imported_bpm = int(round(mido.tempo2bpm(msg.tempo)))
-                elif msg.type == 'time_signature':
-                    if msg.numerator in (3, 4):
-                        imported_ts = msg.numerator
+        if sigs:
+            n, d = sigs[0][2], sigs[0][3]
+            imported_ts = n if (n in (3, 4) and d == 4) else 4
+        if dropped:
+            warnings.append({'code': 'IMPORT_DROPPED_EVENTS',
+                             'message': 'Messaggi senza canale (SysEx, realtime, meta) scartati',
+                             'details': {'counts': dict(sorted(dropped.items()))}})
 
         ticks_per_beat = mid.ticks_per_beat or 480
+        channel_programs = {}       # {ch: {'bank': (MSB<<7)|LSB, 'program': p}}
+        new_by_ch = {}
+        for ch, msgs in per_ch.items():
+            first_note = next((tk for tk, _s, m in msgs if m.type == 'note_on' and m.velocity > 0), None)
+            initial = None                         # indice del PC iniziale
+            for i, (tk, _s, m) in enumerate(msgs):
+                if m.type == 'program_change':
+                    if first_note is None or tk <= first_note:
+                        initial = i
+                    break
+            consumed = set()
+            if initial is not None:
+                msb = lsb = 0
+                for i in range(initial):
+                    m = msgs[i][2]
+                    if m.type == 'control_change' and m.control in (0, 32):
+                        if m.control == 0:
+                            msb = m.value
+                        else:
+                            lsb = m.value
+                        consumed.add(i)            # sostituiti dal suono iniziale
+                consumed.add(initial)
+                channel_programs[ch] = {'bank': (msb << 7) | lsb,
+                                        'program': msgs[initial][2].program}
+            evs = [(tk / ticks_per_beat, m.bytes()) for i, (tk, _s, m) in enumerate(msgs)
+                   if i not in consumed]
+            if evs:
+                new_by_ch[ch] = evs
 
-        if not merge:
-            self.clear_all_tracks()
+        clips_created = {}
+        with self._edit():
+            if self.is_recording or self.is_playing:
+                raise RuntimeError('Cannot import while recording or playing')
+            self._push_undo(transport=True)        # UN livello per l'intero import (A13)
+            if not merge:
+                for ch in range(16):
+                    self._set_track(ch, [], array('H'))
+                    self.clips[ch] = []
+                for ch, name in names.items():
+                    if 0 <= ch <= 15 and str(name).strip():
+                        self.track_names[ch] = str(name).strip()[:32]
+            self.bpm = max(30, min(300, imported_bpm))
+            self.beat_duration = 60.0 / self.bpm
+            self.beats_per_measure = imported_ts
+            for ch, evs in new_by_ch.items():
+                clip_id = self._alloc_clip_id()
+                start_beat = min(b for b, _ in evs)
+                end_beat = max(b for b, _ in evs) + project_store.CLIP_TAIL_BEATS
+                self.clips[ch].append({'id': clip_id, 'start_beat': float(start_beat),
+                                       'end_beat': float(end_beat), 'name': f'Import {clip_id}',
+                                       'created_at': time.time()})
+                clips_created[ch] = clip_id
+                events = list(self.tracks[ch]) + evs
+                ids = array('H', self._ids(ch))
+                ids.extend(array('H', [clip_id]) * len(evs))
+                self._set_sorted(ch, events, ids)
+            self._density_dirty = True
+            self._emit_state_change()
+            info = {
+                'bpm': self.bpm,
+                'beats_per_measure': self.beats_per_measure,
+                'channels': sorted(new_by_ch),
+                'channel_programs': channel_programs,
+                'total_events': sum(len(self.tracks[ch]) for ch in new_by_ch),
+                'clips': clips_created,
+                'warnings': warnings,
+                'revision': self.revision,
+            }
+        print(f'[DAW] MIDI importato: BPM={info["bpm"]}, canali={info["channels"]}, programmi={channel_programs}')
+        return info
 
-        self.bpm = max(30, min(300, imported_bpm))
-        self.beat_duration = 60.0 / self.bpm
-        self.beats_per_measure = imported_ts
+    # ── Sessione (progetto nativo, sez. 5) ─────────────────────────────
 
-        imported_channels = set()
-        channel_programs = {}  # {ch: {'bank': int, 'program': int}}
-        bank_msb = {}  # temporaneo per Bank Select MSB per canale
+    def snapshot_session(self):
+        """Copia superficiale del contenuto musicale per il salvataggio
+        (sez. 5.5): liste di riferimenti, array copiati; presa sotto il lock
+        di editing (che e' anche quello della callback di Record), la
+        serializzazione avviene FUORI dal lock."""
+        with self._edit_lock:
+            return {
+                'tracks': {ch: list(self.tracks[ch]) for ch in range(16)},
+                'event_clips': {ch: array('H', self._ids(ch)) for ch in range(16)},
+                'clips': {ch: [dict(c) for c in self.clips[ch]] for ch in range(16)},
+                'track_names': dict(self.track_names), 'track_colors': dict(self.track_colors),
+                'muted': dict(self.muted), 'solo': dict(self.solo),
+                'bpm': self.bpm, 'beats_per_measure': self.beats_per_measure,
+                'loop_enabled': self.loop_enabled, 'loop_start': self.loop_start,
+                'loop_end': self.loop_end, 'next_clip_id': self._next_clip_id,
+                'revision': self.revision,
+            }
 
-        for track in mid.tracks:
-            abs_tick = 0
-            for msg in track:
-                abs_tick += msg.time
-                if msg.is_meta:
+    def load_session(self, content):
+        """Scambio atomico della sessione (Apri/Nuovo, sez. 5.6 punto 4).
+        `content` e' gia' completo e validato (project_store.project_to_session):
+        qui nessuna validazione puo' fallire a meta'. Trasporto fermo, undo/redo
+        svuotati, revisione +1, posizione 0, arm tutti off, click non avviato.
+        Non rende il progetto modificato (lo stato del progetto lo gestisce app.py)."""
+        for ch in range(16):
+            if len(content['tracks'].get(ch, [])) != len(content['event_clips'].get(ch, [])):
+                raise DawError('INTERNAL', f'Sessione incoerente sulla traccia {ch}')
+        with self._edit():
+            if self.is_playing or self.is_recording:
+                raise DawError('TRANSPORT_ACTIVE', 'Ferma Play/Record prima di aprire',
+                               {'is_playing': self.is_playing, 'is_recording': self.is_recording})
+            for ch in range(16):
+                self._set_track(ch, content['tracks'].get(ch, []),
+                                content['event_clips'].get(ch, array('H')))
+                self.clips[ch] = [dict(c) for c in content['clips'].get(ch, [])]
+                self.track_names[ch] = content['track_names'].get(ch, f'Track {ch + 1}')
+                self.track_colors[ch] = content['track_colors'].get(ch, ch)
+                self.muted[ch] = bool(content['muted'].get(ch, False))
+                self.solo[ch] = bool(content['solo'].get(ch, False))
+                self.armed[ch] = False
+            self.bpm = max(30, min(300, content['bpm']))
+            self.beat_duration = 60.0 / self.bpm
+            self.beats_per_measure = content['beats_per_measure']
+            self.loop_enabled = bool(content['loop_enabled'])
+            self.loop_start = float(content['loop_start'])
+            self.loop_end = float(content['loop_end'])
+            self._next_clip_id = int(content['next_clip_id'])
+            self._undo_stack.clear()
+            self._redo_stack.clear()
+            self.timeline_position = 0.0
+            self._update_audible()
+            self.revision += 1
+            self._density_dirty = True
+            self._emit_state_change()
+        return self.last_revision
+
+    @staticmethod
+    def empty_session():
+        """Contenuto di Nuovo progetto (sez. 5.6)."""
+        return {'tracks': {ch: [] for ch in range(16)},
+                'event_clips': {ch: array('H') for ch in range(16)},
+                'clips': {ch: [] for ch in range(16)},
+                'track_names': {ch: f'Track {ch + 1}' for ch in range(16)},
+                'track_colors': {ch: ch for ch in range(16)},
+                'muted': {ch: False for ch in range(16)}, 'solo': {ch: False for ch in range(16)},
+                'bpm': 120, 'beats_per_measure': 4, 'loop_enabled': False,
+                'loop_start': 0.0, 'loop_end': 0.0, 'next_clip_id': 1}
+
+    def check_invariants(self):
+        """Diagnostica/test: tracks[t] e event_clips[t] della stessa lunghezza,
+        eventi ordinati, nessun ID clip pendente. Ritorna la lista dei problemi."""
+        problems = []
+        with self._edit_lock:
+            for ch in range(16):
+                ev = self.tracks[ch]
+                ids = self.event_clips.get(ch)
+                if ids is None or len(ids) != len(ev):
+                    problems.append(f'traccia {ch}: {len(ev)} eventi, {None if ids is None else len(ids)} ID')
                     continue
-                if not hasattr(msg, 'channel'):
-                    continue
-                ch = msg.channel
-
-                # Cattura Bank Select MSB (CC 0)
-                if msg.type == 'control_change' and msg.control == 0:
-                    bank_msb[ch] = msg.value
-                    continue
-                # Ignora Bank Select LSB (CC 32)
-                if msg.type == 'control_change' and msg.control == 32:
-                    continue
-                # Cattura Program Change
-                if msg.type == 'program_change':
-                    channel_programs[ch] = {
-                        'bank': bank_msb.get(ch, 0),
-                        'program': msg.program
-                    }
-                    continue
-
-                beat_pos = abs_tick / ticks_per_beat
-                self.tracks[ch].append((beat_pos, msg.bytes()))
-                self.has_data[ch] = True
-                imported_channels.add(ch)
-
-        # Riordina le tracce per beat position
-        for ch in imported_channels:
-            self.tracks[ch].sort(key=lambda x: x[0])
-
-        self._density_dirty = True
-        self._emit_state_change()
-        print(f'[DAW] MIDI importato: BPM={self.bpm}, canali={sorted(imported_channels)}, programmi={channel_programs}')
-        return {
-            'bpm': self.bpm,
-            'beats_per_measure': self.beats_per_measure,
-            'channels': sorted(imported_channels),
-            'channel_programs': channel_programs,
-            'total_events': sum(len(self.tracks[ch]) for ch in imported_channels)
-        }
+                if any(ev[i][0] > ev[i + 1][0] for i in range(len(ev) - 1)):
+                    problems.append(f'traccia {ch}: eventi non ordinati')
+                valid = {int(c['id']) for c in self.clips[ch]}
+                if any(cid and cid not in valid for cid in ids):
+                    problems.append(f'traccia {ch}: ID clip pendente')
+        return problems

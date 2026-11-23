@@ -1,8 +1,9 @@
 """Verifica degli esempi normativi di docs/contracts.md (fase ui-contracts).
 
 - ogni file docs/schemas/*.json e' JSON valido e citato nel contratto;
-- gli esempi validi passano il validatore di riferimento (tests/contract_reference.py),
-  i casi non validi falliscono con il codice e il percorso attesi;
+- gli esempi validi passano il validatore REALE (home/matteo/matsynth_web/project_store.py,
+  portato da tests/contract_reference.py in `ui-persistence`), i casi non validi
+  falliscono con il codice e il percorso attesi;
 - la migrazione dei preset legacy (fixture reali di tests/fixtures/presets) produce
   esattamente l'esempio docs/schemas/scene_from_legacy_decay.json;
 - le buste di risposta di api_examples.json rispettano sez. 2 e la tabella dei codici
@@ -22,8 +23,8 @@ import unittest
 
 import mido
 
-import contract_reference as cr
 from helpers import FIXTURES_DIR, REPO_ROOT, make_daw
+import project_store as cr     # validatore reale (sez. 11.4: stessi casi del riferimento)
 
 DOCS = os.path.join(REPO_ROOT, 'docs')
 SCHEMAS = os.path.join(DOCS, 'schemas')

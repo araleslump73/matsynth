@@ -262,7 +262,8 @@ class _neutral_router:
 
 
 def redirect_app_paths(app_module, tmp_dir):
-    """Punta preset/midi/state di app.py in tmp_dir e registra i comandi
+    """Punta preset/midi/state/progetti/libreria/SF2 di app.py in tmp_dir,
+    azzera gli stati scena/progetto/SoundFont e registra i comandi
     FluidSynth. Ritorna la lista `commands` (stringhe passate a send_fluid)."""
     presets = os.path.join(tmp_dir, 'presets') + os.sep
     midis = os.path.join(tmp_dir, 'midi') + os.sep
@@ -272,6 +273,26 @@ def redirect_app_paths(app_module, tmp_dir):
     app_module.MIDI_DIR = midis
     app_module.STATE_FILE = os.path.join(tmp_dir, 'last_state.json')
     app_module.DEVICES_FILE = os.path.join(tmp_dir, 'midi_devices.json')
+    # ui-persistence: progetti, libreria scene, cartella SoundFont.
+    projects = os.path.join(tmp_dir, 'projects') + os.sep
+    sf2 = os.path.join(tmp_dir, 'sf2') + os.sep
+    os.makedirs(projects, exist_ok=True)
+    os.makedirs(sf2, exist_ok=True)
+    app_module.PROJECTS_DIR = projects
+    app_module.LIBRARY_FILE = os.path.join(tmp_dir, 'library.json')
+    app_module.SF2_DIR = sf2
+    # Stati in memoria di ui-persistence condivisi tra classi di test (app in cache).
+    for name, args in (('scene_state', (None, None, False)),
+                       ('project_state', (None, 'Senza titolo', False))):
+        st = getattr(app_module, name, None)
+        if st is not None:
+            st.set(*args)
+    sf = getattr(app_module, 'sf_state', None)
+    if sf is not None:
+        sf.finish('idle')
+    cache = getattr(app_module, '_project_meta_cache', None)
+    if cache is not None:
+        cache.clear()
     router = getattr(app_module, 'router', None)
     if router is not None:
         router.devices_file = app_module.DEVICES_FILE

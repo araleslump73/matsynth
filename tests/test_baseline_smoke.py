@@ -237,11 +237,17 @@ class SmfRoundTripTests(unittest.TestCase):
         head = [m.type for m in mid.tracks[1] if not m.is_meta][:3]
         self.assertEqual(head, ['control_change', 'control_change', 'program_change'])
 
-    def test_import_does_not_create_clips(self):
-        # Comportamento ATTUALE: l'import non crea clip (solo la registrazione lo fa).
+    def test_import_creates_one_clip_per_imported_track(self):
+        # ui-persistence (A7, sez. 7.2): un clip per traccia importata,
+        # [primo beat, ultimo beat + 0.125), proprietario di tutti gli eventi.
         daw, _, _ = make_daw()
         daw.import_midi(_fixture_bytes('bank_program_cc.mid'))
-        self.assertEqual(daw.get_clips(0), [])
+        clips = daw.get_clips(0)
+        self.assertEqual(len(clips), 1)
+        self.assertEqual(clips[0]['start_beat'], daw.tracks[0][0][0])
+        self.assertEqual(clips[0]['end_beat'], daw.tracks[0][-1][0] + 0.125)
+        self.assertEqual(set(daw.event_clips[0]), {clips[0]['id']})
+        self.assertEqual([c for ch in range(1, 16) for c in daw.get_clips(ch)], [])
 
     def test_import_refused_while_playing_or_recording(self):
         daw, _, _ = make_daw()
@@ -272,24 +278,14 @@ class SmfRoundTripTests(unittest.TestCase):
         self.assertEqual((msgs[1].control, msgs[1].value), (32, 2))
         self.assertEqual((msgs[2].type, msgs[2].program), ('program_change', 7))
 
-    # --- Anomalie ATTUALI in import (da non correggere in questa fase) ---
+    # --- Import bank/program (A1, corretto in ui-persistence) ---
+    # Rimosso test_import_bank_lsb_is_dropped_and_last_program_change_wins (11.4).
 
-    def test_import_bank_lsb_is_dropped_and_last_program_change_wins(self):
-        # Fixture: CC0=1, CC32=2, PC 7 a beat 0; PC 12 a beat 4.
-        # ATTUALE: bank = solo MSB (1), LSB ignorato; il programma finale e' 12
-        # (l'ultimo PC sovrascrive); nessun Program Change resta nelle tracce.
-        daw, _, _ = make_daw()
-        info = daw.import_midi(_fixture_bytes('bank_program_cc.mid'))
-        self.assertEqual(info['channel_programs'], {0: {'bank': 1, 'program': 12}})
-        self.assertFalse([b for _, b in daw.tracks[0] if b[0] & 0xF0 == 0xC0])
-
-    @unittest.expectedFailure
     def test_DESIRED_import_keeps_bank_msb1_lsb2_program7(self):
         daw, _, _ = make_daw()
         info = daw.import_midi(_fixture_bytes('bank_program_cc.mid'))
         self.assertEqual(info['channel_programs'][0], {'bank': (1 << 7) | 2, 'program': 7})
 
-    @unittest.expectedFailure
     def test_DESIRED_program_change_at_nonzero_beat_is_kept_at_that_beat(self):
         daw, _, _ = make_daw()
         daw.import_midi(_fixture_bytes('bank_program_cc.mid'))
@@ -360,14 +356,8 @@ class LegacyPresetTests(unittest.TestCase):
         cmds = self._apply('legacy_pan.json')
         self.assertFalse([c for c in cmds if c.startswith(('load', 'unload'))])
 
-    def test_apply_pan_is_ignored_today(self):
-        # ATTUALE: api_presets_apply non legge 'pan' (e api_capture_current_config
-        # non lo produce): il CC10 del preset non viene mai inviato.
-        cmds = self._apply('legacy_pan.json')
-        self.assertIn('cc 0 7 110', cmds)
-        self.assertFalse([c for c in cmds if c.startswith('cc 0 10 ') or c.startswith('cc 1 10 ')])
+    # Rimosso test_apply_pan_is_ignored_today (A2 corretto in ui-persistence, 11.4).
 
-    @unittest.expectedFailure
     def test_DESIRED_apply_pan_sends_cc10(self):
         cmds = self._apply('legacy_pan.json')
         self.assertIn('cc 0 10 20', cmds)
@@ -378,12 +368,16 @@ class LegacyPresetTests(unittest.TestCase):
         self.assertEqual(cmds, ['set synth.gain 1.0', 'set synth.reverb.level 0.4',
                                 'set synth.chorus.level 0.4'])
 
-    def test_apply_persists_globals_but_not_channels_in_state_file(self):
+    def test_apply_persists_globals_and_applied_channels_in_state_file(self):
+        # ui-persistence (A2, 11.4): lo stato effettivo dei canali applicati e'
+        # persistito in `parts` + `channels` nella stessa scrittura dei globali.
         self._apply('legacy_decay.json')
         with open(self.app.STATE_FILE) as f:
             st = json.load(f)
         self.assertEqual((st['gain'], st['reverb.level'], st['chorus.level']), (0.8, 0.5, 0.1))
-        self.assertNotIn('channels', st)    # i parametri canale applicati non vengono persistiti
+        self.assertEqual({k: (v['bank'], v['program'], v['decay']) for k, v in st['channels'].items()},
+                         {'0': (0, 4, 90), '3': (128, 0, 12), '9': (1, 7, 127)})
+        self.assertEqual((st['parts'][3]['sound']['bank'], st['parts'][3]['cc']['75']), (128, 12))
 
     def test_apply_missing_preset_is_400(self):
         r = self.client.post('/api/presets/apply', json={})
@@ -412,12 +406,13 @@ class LegacyPresetTests(unittest.TestCase):
         self.assertEqual(d['status'], 'ok')
 
     def test_midi_upload_applies_bank_msb_only_to_synth(self):
-        # Route-level della stessa anomalia dell'import (bank LSB perso).
+        # ui-persistence (A1, 7.3, 11.4): PC iniziale 7 con bank neutro 130 ->
+        # parte interna: bank FluidSynth = MSB (convenzione GS, D5).
         import io as _io
         data = {'file': (_io.BytesIO(_fixture_bytes('bank_program_cc.mid')), 'bank.mid')}
         r = self.client.post('/api/daw/midi/upload', data=data, content_type='multipart/form-data')
         self.assertEqual(r.get_json()['status'], 'ok')
-        self.assertIn('select 0 1 1 12', self.commands)
+        self.assertIn('select 0 1 1 7', self.commands)
         self.assertTrue(os.path.exists(os.path.join(self.app.MIDI_DIR, 'bank.mid')))
 
 
