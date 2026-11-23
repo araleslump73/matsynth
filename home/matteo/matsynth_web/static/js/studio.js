@@ -770,7 +770,18 @@
             case 'zoom-in':
             case 'zoom-out': return setZoom(model.zoomStep(ui.ppb, cmd === 'zoom-in' ? 1 : -1));
             case 'legacy': return setLegacy(true);
+            case 'editor': return openEditor();
         }
+    }
+
+    // Editor note/eventi (midi_editor.js) sulla traccia/clip della selezione; senza selezione la traccia 1.
+    function openEditor() {
+        if (!MS.editor) return;
+        var s = sel();
+        var track = s.kind === 'none' ? 0 : s.track;
+        var clipId = s.kind === 'clip' && s.clip_ids && s.clip_ids.length ? s.clip_ids[0] : null;
+        var c = clipId !== null ? model.findClip(daw(), track, clipId) : null;
+        MS.editor.open({ track: track, clipId: clipId, startBeat: c ? c.start_beat : null });
     }
 
     function setZoom(ppb) {

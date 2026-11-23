@@ -1,4 +1,142 @@
-{# Segnaposto per ui-editor: piano roll ed eventi a schermo intero. Oggi il piano roll e gli eventi sono
-   quelli di studio_legacy.html (pannello flottante e modale Event Viewer). #}
-<p class="ms-note">Editor MIDI: in arrivo. Per ora usa il Piano Roll dal menu View di Studio.</p>
-<button type="button" class="ms-btn ms-btn-secondary" data-view-target="studio">Torna a Studio</button>
+{# Editor note/eventi (fase ui-editor): piano roll su canvas + lista eventi virtualizzata, aperto da Studio.
+   Pilotato da static/js/midi_editor.js (logica pura in editor_model.js). Riusa le classi st-btn/st-bar di
+   studio.css. Nessun handler inline: un solo listener delegato per area. #}
+<div id="ed-root" class="ed-root">
+    <div class="st-bar ed-head" role="toolbar" aria-label="Editor">
+        <div class="st-group">
+            <button type="button" class="st-btn" data-ed-cmd="back" aria-label="Torna a Studio"><i class="fas fa-arrow-left" aria-hidden="true"></i><span class="st-btn-label st-always">Studio</span></button>
+            <label class="st-field"><span class="ed-hide-narrow">Traccia</span> <select id="ed-track" aria-label="Traccia"></select></label>
+            <span class="ed-title" id="ed-title"></span>
+        </div>
+        <div class="st-group" role="tablist" aria-label="Editor">
+            <button type="button" class="st-btn st-toggle" role="tab" data-ed-tab="notes" aria-pressed="true" aria-selected="true"><i class="fas fa-music" aria-hidden="true"></i><span class="st-btn-label st-always">Note</span></button>
+            <button type="button" class="st-btn st-toggle" role="tab" data-ed-tab="events" aria-pressed="false" aria-selected="false"><i class="fas fa-list" aria-hidden="true"></i><span class="st-btn-label st-always">Eventi</span></button>
+        </div>
+        <div class="st-group st-group-end">
+            <button type="button" class="st-btn st-btn-play" data-ed-cmd="play" id="ed-play" aria-label="Play"><i class="fas fa-play" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn" data-ed-cmd="stop" aria-label="Stop"><i class="fas fa-stop" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn" data-ed-cmd="undo" id="ed-undo" aria-label="Annulla"><i class="fas fa-undo" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn" data-ed-cmd="redo" id="ed-redo" aria-label="Ripeti"><i class="fas fa-redo" aria-hidden="true"></i></button>
+        </div>
+    </div>
+
+    <div class="ed-pane" id="ed-notes-pane">
+        <div class="st-bar ed-tools" role="toolbar" aria-label="Strumenti note">
+            <div class="st-group" role="radiogroup" aria-label="Strumento">
+                <button type="button" class="st-btn st-toggle" data-ed-tool="select" aria-pressed="true" title="Seleziona, sposta e ridimensiona"><i class="fas fa-mouse-pointer" aria-hidden="true"></i><span class="st-btn-label">Seleziona</span></button>
+                <button type="button" class="st-btn st-toggle" data-ed-tool="draw" aria-pressed="false" title="Disegna note"><i class="fas fa-pencil-alt" aria-hidden="true"></i><span class="st-btn-label">Disegna</span></button>
+                <button type="button" class="st-btn st-toggle" data-ed-tool="erase" aria-pressed="false" title="Cancella le note toccate"><i class="fas fa-eraser" aria-hidden="true"></i><span class="st-btn-label">Cancella</span></button>
+                <button type="button" class="st-btn st-toggle" data-ed-tool="pan" aria-pressed="false" title="Scorri con il dito"><i class="fas fa-hand-paper" aria-hidden="true"></i><span class="st-btn-label">Scorri</span></button>
+                <button type="button" class="st-btn st-toggle" data-ed-cmd="multi" id="ed-multi" aria-pressed="false" title="Selezione multipla: i tocchi aggiungono o tolgono note"><i class="fas fa-layer-group" aria-hidden="true"></i><span class="st-btn-label">Multipla</span></button>
+            </div>
+            <div class="st-group">
+                <label class="st-field">Snap <select id="ed-snap"></select></label>
+                <label class="st-field">Lung. <select id="ed-len" title="Lunghezza delle note disegnate con un tocco"></select></label>
+                <label class="st-field">Vel <input type="number" id="ed-vel" min="1" max="127" step="1" value="100" inputmode="numeric" title="Velocity delle note nuove e di Applica velocity"></label>
+            </div>
+            <div class="st-group">
+                <button type="button" class="st-btn" data-ed-cmd="zoom-x-out" aria-label="Riduci zoom orizzontale"><i class="fas fa-search-minus" aria-hidden="true"></i><span class="ed-axis">↔</span></button>
+                <button type="button" class="st-btn" data-ed-cmd="zoom-x-in" aria-label="Aumenta zoom orizzontale"><i class="fas fa-search-plus" aria-hidden="true"></i><span class="ed-axis">↔</span></button>
+                <button type="button" class="st-btn" data-ed-cmd="zoom-y-out" aria-label="Riduci zoom verticale"><i class="fas fa-search-minus" aria-hidden="true"></i><span class="ed-axis">↕</span></button>
+                <button type="button" class="st-btn" data-ed-cmd="zoom-y-in" aria-label="Aumenta zoom verticale"><i class="fas fa-search-plus" aria-hidden="true"></i><span class="ed-axis">↕</span></button>
+                <button type="button" class="st-btn" data-ed-cmd="fit" title="Mostra il clip o tutte le note"><i class="fas fa-expand" aria-hidden="true"></i><span class="st-btn-label">Adatta</span></button>
+                <button type="button" class="st-btn st-toggle" data-ed-cmd="audition" id="ed-audition" aria-pressed="true" title="Ascolta la nota toccata o disegnata"><i class="fas fa-volume-up" aria-hidden="true"></i><span class="st-btn-label">Ascolta</span></button>
+            </div>
+        </div>
+        <div class="ed-body">
+            <div class="ed-ruler-row">
+                <div class="ed-corner"></div>
+                <div class="ed-ruler" id="ed-ruler" title="Tocca per scegliere il punto di incolla">
+                    <canvas id="ed-ruler-canvas" aria-hidden="true"></canvas>
+                    <div class="ed-playhead ed-ruler-playhead" id="ed-ruler-playhead"></div>
+                </div>
+            </div>
+            <div class="ed-grid-row">
+                <div class="ed-keys" id="ed-keys" title="Tocca un tasto per ascoltare la nota"><canvas id="ed-keys-canvas" aria-hidden="true"></canvas></div>
+                <div class="ed-grid" id="ed-grid">
+                    <canvas class="ed-canvas" id="ed-canvas" aria-hidden="true"></canvas>
+                    <div class="ed-playhead" id="ed-playhead"></div>
+                    <div class="ed-scroll" id="ed-scroll" role="application" aria-label="Piano roll: tocca una nota per selezionarla, trascinala per spostarla, il bordo destro per allungarla">
+                        <div class="ed-spacer" id="ed-spacer"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="ed-vel-row">
+                <div class="ed-vel-label">Vel</div>
+                <div class="ed-vel" id="ed-vel-lane" title="Trascina in verticale per cambiare la velocity"><canvas id="ed-vel-canvas" aria-hidden="true"></canvas></div>
+            </div>
+        </div>
+        <div class="st-context ed-context" role="toolbar" aria-label="Operazioni sulle note selezionate">
+            <div class="st-context-info">
+                <span id="ed-sel-text" class="st-sel-text">Nessuna nota selezionata</span>
+                <span id="ed-reason" class="st-reason" role="status" aria-live="polite"></span>
+            </div>
+            <div class="st-context-cmds">
+                <button type="button" class="st-btn" data-ed-op="select_all"><i class="fas fa-check-double" aria-hidden="true"></i><span class="st-btn-label">Tutte</span></button>
+                <button type="button" class="st-btn" data-ed-op="select_none"><i class="fas fa-times" aria-hidden="true"></i><span class="st-btn-label">Nessuna</span></button>
+                <button type="button" class="st-btn" data-ed-op="copy"><i class="fas fa-copy" aria-hidden="true"></i><span class="st-btn-label">Copia</span></button>
+                <button type="button" class="st-btn" data-ed-op="cut"><i class="fas fa-cut" aria-hidden="true"></i><span class="st-btn-label">Taglia</span></button>
+                <button type="button" class="st-btn" data-ed-op="paste"><i class="fas fa-paste" aria-hidden="true"></i><span class="st-btn-label">Incolla</span></button>
+                <button type="button" class="st-btn" data-ed-op="transpose" data-semitones="-12" aria-label="Trasponi -1 ottava"><span class="st-btn-label st-always">−8va</span></button>
+                <button type="button" class="st-btn" data-ed-op="transpose" data-semitones="-1" aria-label="Trasponi -1 semitono"><span class="st-btn-label st-always">−1</span></button>
+                <button type="button" class="st-btn" data-ed-op="transpose" data-semitones="1" aria-label="Trasponi +1 semitono"><span class="st-btn-label st-always">+1</span></button>
+                <button type="button" class="st-btn" data-ed-op="transpose" data-semitones="12" aria-label="Trasponi +1 ottava"><span class="st-btn-label st-always">+8va</span></button>
+                <button type="button" class="st-btn" data-ed-op="quantize_open"><i class="fas fa-th" aria-hidden="true"></i><span class="st-btn-label">Quantizza</span></button>
+                <button type="button" class="st-btn" data-ed-op="velocity"><i class="fas fa-signal" aria-hidden="true"></i><span class="st-btn-label">Applica velocity</span></button>
+                <button type="button" class="st-btn st-btn-danger" data-ed-op="delete"><i class="fas fa-trash-alt" aria-hidden="true"></i><span class="st-btn-label">Elimina</span></button>
+            </div>
+        </div>
+        <div class="ed-pop" id="ed-quant" role="dialog" aria-label="Quantizza le note selezionate" hidden>
+            <label class="st-field">Griglia <select id="ed-q-grid"></select></label>
+            <label class="st-field">Forza <input type="range" id="ed-q-strength" min="0" max="100" step="5" value="100"><output id="ed-q-strength-out">100%</output></label>
+            <label class="st-field">Swing <input type="range" id="ed-q-swing" min="0" max="100" step="5" value="50"><output id="ed-q-swing-out">50%</output></label>
+            <div class="st-group">
+                <button type="button" class="st-btn" data-ed-op="quantize"><span class="st-btn-label st-always">Quantizza</span></button>
+                <button type="button" class="st-btn" data-ed-op="quantize_close"><span class="st-btn-label st-always">Annulla</span></button>
+            </div>
+            <p class="ms-note">Sposta l'inizio delle note selezionate (o di tutte, se nessuna e' selezionata) e ne conserva la durata.</p>
+        </div>
+    </div>
+
+    <div class="ed-pane" id="ed-events-pane" hidden>
+        <div class="st-bar ed-tools" role="toolbar" aria-label="Filtri eventi">
+            <div class="st-group">
+                <label class="st-field">Mostra
+                    <select id="ed-ev-filter">
+                        <option value="all">Tutti (non nota)</option>
+                        <option value="cc">Control Change</option>
+                        <option value="pc">Program Change</option>
+                        <option value="pb">Pitch bend</option>
+                        <option value="at">Aftertouch</option>
+                        <option value="note">Note on/off</option>
+                    </select>
+                </label>
+                <label class="st-check"><input type="checkbox" id="ed-ev-clip-only"> Solo il clip aperto</label>
+            </div>
+            <div class="st-group">
+                <label class="st-field">Sposta di <input type="number" id="ed-ev-shift" step="0.25" value="0" inputmode="decimal" aria-label="Sposta di (beat)"> beat</label>
+                <label class="st-field">Valore
+                    <select id="ed-ev-mode" aria-label="Modo valore"><option value="set">=</option><option value="add">+</option></select>
+                    <input type="number" id="ed-ev-value" step="1" inputmode="numeric" aria-label="Valore">
+                </label>
+                <button type="button" class="st-btn" data-ed-ev="apply"><i class="fas fa-check" aria-hidden="true"></i><span class="st-btn-label st-always">Applica</span></button>
+            </div>
+        </div>
+        <div class="ed-ev-head" role="row">
+            <label class="ed-ev-check" aria-label="Seleziona tutti"><input type="checkbox" id="ed-ev-all"></label>
+            <span>Posizione</span><span>Beat</span><span>Tipo</span><span>Num</span><span>Valore</span><span>Clip</span>
+        </div>
+        <div class="ed-ev-list" id="ed-ev-list" role="grid" aria-label="Eventi della traccia">
+            <div class="ed-ev-spacer" id="ed-ev-spacer"></div>
+        </div>
+        <div class="st-context ed-context" role="toolbar" aria-label="Operazioni sugli eventi selezionati">
+            <div class="st-context-info">
+                <span id="ed-ev-sel-text" class="st-sel-text">Nessun evento selezionato</span>
+                <span id="ed-ev-reason" class="st-reason" role="status" aria-live="polite"></span>
+            </div>
+            <div class="st-context-cmds">
+                <button type="button" class="st-btn st-btn-danger" data-ed-ev="delete"><i class="fas fa-trash-alt" aria-hidden="true"></i><span class="st-btn-label st-always">Elimina selezionati</span></button>
+            </div>
+        </div>
+    </div>
+</div>

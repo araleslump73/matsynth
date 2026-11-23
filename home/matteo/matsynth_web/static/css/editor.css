@@ -1,1 +1,75 @@
-/* MatSynth - editor.css: segnaposto fase ui-shell (vuoto). Lo riempie la fase che possiede la vista. */
+/* MatSynth - editor.css (fase ui-editor): editor note (piano roll su canvas) ed editor eventi (lista).
+ * Prefisso ed-; pulsanti, barre e campi riusano st-btn/st-bar/st-field di studio.css.
+ * Il canvas e' grande quanto la parte visibile e sta SOTTO un contenitore di scorrimento trasparente
+ * (scrollbar native, eventi pointer sul contenitore). Niente animazioni. Target tocco >= 44 px. */
+
+.ed-root {
+    --ed-keys: 56px;
+    flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    color: var(--ms-text); background: var(--ms-bg);
+}
+.ed-pane { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; position: relative; }
+.ed-pane[hidden], .ed-pop[hidden] { display: none !important; }
+.ed-title { font-size: 0.85rem; color: var(--ms-text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 32ch; }
+.ed-axis { font-size: 0.75rem; margin-left: 2px; }
+.ed-tools .st-field input[type="number"] { width: 72px; }
+
+.ed-body { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.ed-ruler-row, .ed-grid-row, .ed-vel-row { display: flex; min-width: 0; }
+.ed-ruler-row { flex: 0 0 28px; border-bottom: 1px solid var(--ms-border); background: #0f0f18; }
+.ed-corner, .ed-vel-label { flex: 0 0 var(--ed-keys); border-right: 1px solid var(--ms-border); }
+.ed-vel-label { display: flex; align-items: center; justify-content: center; font-size: 0.62rem; color: var(--ms-text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.ed-ruler { position: relative; flex: 1 1 auto; overflow: hidden; cursor: pointer; touch-action: manipulation; }
+.ed-grid-row { flex: 1 1 0; min-height: 120px; }
+.ed-keys { position: relative; flex: 0 0 var(--ed-keys); overflow: hidden; border-right: 1px solid var(--ms-border); touch-action: none; cursor: pointer; }
+.ed-grid { position: relative; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+.ed-canvas, .ed-ruler canvas, .ed-keys canvas, .ed-vel canvas { position: absolute; left: 0; top: 0; display: block; pointer-events: none; }
+.ed-scroll { position: absolute; inset: 0; overflow: auto; touch-action: none; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.ed-root[data-tool="pan"] .ed-scroll { touch-action: pan-x pan-y; cursor: grab; }
+.ed-root[data-tool="draw"] .ed-scroll { cursor: crosshair; }
+.ed-root[data-tool="erase"] .ed-scroll { cursor: not-allowed; }
+.ed-scroll.is-move { cursor: move; }
+.ed-scroll.is-resize { cursor: ew-resize; }
+.ed-spacer { width: 1px; height: 1px; }
+.ed-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 2px; background: var(--ms-ok); pointer-events: none; z-index: 2; will-change: transform; }
+.ed-vel-row { flex: 0 0 64px; border-top: 1px solid var(--ms-border); background: #0d0d14; }
+.ed-vel { position: relative; flex: 1 1 auto; overflow: hidden; touch-action: none; cursor: ns-resize; }
+@media (max-height: 700px) { .ed-vel-row { flex-basis: 48px; } }
+
+.ed-context { flex: 0 0 auto; }
+.ed-pop {
+    position: absolute; right: 10px; bottom: 64px; z-index: 5; display: flex; flex-direction: column; gap: 8px;
+    padding: 12px; max-width: min(360px, calc(100% - 20px));
+    border: 1px solid var(--ms-border); border-radius: var(--ms-radius); background: var(--ms-surface);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.ed-pop .st-field { justify-content: space-between; }
+.ed-pop input[type="range"] { flex: 1 1 auto; min-height: var(--ms-touch); accent-color: var(--ms-accent); }
+.ed-pop output { min-width: 3.5em; text-align: right; }
+.ed-pop .ms-note { margin: 0; font-size: 0.75rem; }
+
+/* ── Lista eventi (virtualizzata: solo le righe visibili esistono nel DOM) ── */
+.ed-ev-head, .ed-ev-row {
+    display: grid; grid-template-columns: 48px minmax(64px, 1fr) 84px minmax(90px, 1.2fr) 70px 96px 52px;
+    align-items: center; gap: 6px; padding: 0 10px;
+}
+.ed-ev-head { flex: 0 0 32px; font-size: 0.72rem; color: var(--ms-text-dim); text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--ms-border); background: var(--ms-surface); }
+.ed-ev-list { position: relative; flex: 1 1 0; min-height: 120px; overflow: auto; -webkit-overflow-scrolling: touch; }
+.ed-ev-spacer { width: 1px; }
+.ed-ev-row { position: absolute; left: 0; right: 0; height: 44px; border-bottom: 1px solid #1c1c2a; font-size: 0.85rem; }
+.ed-ev-row.is-sel { background: rgba(0, 212, 255, 0.12); }
+.ed-ev-row.is-note { color: var(--ms-text-dim); }
+.ed-ev-row input[type="number"] {
+    width: 100%; min-height: 36px; padding: 0 6px; border-radius: 6px;
+    border: 1px solid var(--ms-border); background: var(--ms-surface-2); color: var(--ms-text); font-size: 0.9rem;
+}
+.ed-ev-row input[disabled] { opacity: 0.5; }
+.ed-ev-check { display: flex; align-items: center; justify-content: center; min-height: 44px; margin: 0; cursor: pointer; }
+.ed-ev-check input { width: 22px; height: 22px; }
+.ed-ev-empty { padding: 16px; color: var(--ms-text-dim); }
+@media (max-width: 600px) {
+    .ed-ev-head, .ed-ev-row { grid-template-columns: 44px 1fr 64px 1fr 56px 76px; padding: 0 4px; gap: 4px; }
+    .ed-ev-head span:last-child, .ed-ev-row .ed-ev-clip { display: none; }
+    .ed-title { display: none; }
+    .ed-hide-narrow, .ed-head [data-ed-cmd="back"] .st-btn-label, .ed-head [data-ed-tab] .st-btn-label { display: none; }
+}
