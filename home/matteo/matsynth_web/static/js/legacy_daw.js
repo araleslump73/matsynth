@@ -490,170 +490,9 @@ async function commitClipResize() {
     clipResize = null;
 }
 
-function getLastClip(channel) {
-    if (!dawState || !dawState.clips) return null;
-    const list = dawState.clips[channel] || [];
-    if (!list.length) return null;
-    return list[list.length - 1];
-}
-
-async function dawMoveLastClip(deltaBeat) {
-    const ch = activeControlChannel;
-    const clip = getLastClip(ch);
-    if (!clip) {
-        showStatus('No clip on active track', 'warning');
-        return;
-    }
-    if (!dawState || dawState.is_playing || dawState.is_recording) {
-        showStatus('Stop playback/recording before moving clip', 'warning');
-        return;
-    }
-    try {
-        const res = await fetch('/api/daw/clip/move', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                channel: ch,
-                clip_id: clip.id,
-                target_start_beat: Math.max(0, (clip.start_beat || 0) + deltaBeat)
-            })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-            showStatus(`Clip moved ${deltaBeat > 0 ? 'right' : 'left'} by ${Math.abs(deltaBeat)} beat`, 'success');
-            await refreshDensityMap(true);
-            await dawLoadInitialState();
-        } else {
-            showStatus(data.message || 'Clip move failed', 'danger');
-        }
-    } catch (e) {
-        console.error('Move clip error:', e);
-    }
-}
-
-async function dawDeleteLastClip() {
-    const ch = activeControlChannel;
-    const clip = getLastClip(ch);
-    if (!clip) {
-        showStatus('No clip on active track', 'warning');
-        return;
-    }
-    if (!confirm(`Delete last clip on CH ${ch + 1}?`)) return;
-    try {
-        const res = await fetch('/api/daw/clip/delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ channel: ch, clip_id: clip.id })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-            showStatus('Clip deleted', 'success');
-            await refreshDensityMap(true);
-            await dawLoadInitialState();
-        } else {
-            showStatus(data.message || 'Clip delete failed', 'danger');
-        }
-    } catch (e) {
-        console.error('Delete clip error:', e);
-    }
-}
-
-async function dawTransposeLastClip(semitones) {
-    const ch = activeControlChannel;
-    const clip = getLastClip(ch);
-    if (!clip) {
-        showStatus('No clip on active track', 'warning');
-        return;
-    }
-    if (!dawState || dawState.is_playing || dawState.is_recording) {
-        showStatus('Stop playback/recording before transpose', 'warning');
-        return;
-    }
-    try {
-        const res = await fetch('/api/daw/clip/transpose', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ channel: ch, clip_id: clip.id, semitones })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-            showStatus(`Clip transpose ${semitones > 0 ? '+' : ''}${semitones} · ${data.modified} events`, 'success');
-            await refreshDensityMap(true);
-        } else {
-            showStatus(data.message || 'Clip transpose failed', 'danger');
-        }
-    } catch (e) {
-        console.error('Transpose clip error:', e);
-    }
-}
-
-async function dawCutClipAtPlayhead() {
-    const ch = activeControlChannel;
-    if (!dawState || dawState.is_playing || dawState.is_recording) {
-        showStatus('Stop playback/recording first', 'warning');
-        return;
-    }
-    const clips = (dawState.clips && dawState.clips[ch]) || [];
-    if (!clips.length) {
-        showStatus('No clips on active track', 'warning');
-        return;
-    }
-    // Find the clip that contains the playhead
-    const playBeat = dawState.current_beat || 0;
-    const clip = clips.find(c => playBeat > c.start_beat + 0.01 && playBeat < c.end_beat - 0.01);
-    if (!clip) {
-        showStatus('Playhead is not inside any clip', 'warning');
-        return;
-    }
-    try {
-        const res = await fetch('/api/daw/clip/split', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ channel: ch, clip_id: clip.id, split_beat: playBeat })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-            showStatus(`Clip split at beat ${playBeat.toFixed(1)}`, 'success');
-            await refreshDensityMap(true);
-            await dawLoadInitialState();
-        } else {
-            showStatus(data.message || 'Clip split failed', 'danger');
-        }
-    } catch (e) {
-        console.error('Cut clip error:', e);
-    }
-}
-
-async function dawMergeAllClips() {
-    const ch = activeControlChannel;
-    if (!dawState || dawState.is_playing || dawState.is_recording) {
-        showStatus('Stop playback/recording first', 'warning');
-        return;
-    }
-    const clips = (dawState.clips && dawState.clips[ch]) || [];
-    if (clips.length < 2) {
-        showStatus('Need at least 2 clips to merge', 'warning');
-        return;
-    }
-    const clipIds = clips.map(c => c.id);
-    try {
-        const res = await fetch('/api/daw/clip/merge', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ channel: ch, clip_ids: clipIds })
-        });
-        const data = await res.json();
-        if (data.status === 'ok') {
-            showStatus(`${clips.length} clips merged`, 'success');
-            await refreshDensityMap(true);
-            await dawLoadInitialState();
-        } else {
-            showStatus(data.message || 'Clip merge failed', 'danger');
-        }
-    } catch (e) {
-        console.error('Merge clips error:', e);
-    }
-}
+// ui-studio: rimosse le operazioni sull'"ultimo clip" (getLastClip, Move/Transpose/Delete Last Clip,
+// Cut Clip at Playhead con dawState.current_beat mai valorizzato, A8; Merge All Clips). Le operazioni sui
+// clip si fanno ora dalla vista Studio nuova, su ID clip selezionati esplicitamente (contracts 6.8).
 
 // Interactive piano roll editor state
 let noteEditor = {
@@ -2291,6 +2130,9 @@ function ensureRenderLoop() {
             // consumare CPU sul Pi; shell.showView() emette 'resize' al rientro e ensureRenderLoop() riparte.
             const studioView = document.getElementById('view-studio');
             if (studioView && studioView.hidden) { trackView.rafId = null; return; }
+            // ui-studio: idem quando in Studio e' attiva la vista nuova (vista classica nascosta).
+            const legacyBox = document.getElementById('studio-legacy');
+            if (legacyBox && legacyBox.hidden) { trackView.rafId = null; return; }
             renderAllTracks();
             trackView.rafId = requestAnimationFrame(loop);
         };

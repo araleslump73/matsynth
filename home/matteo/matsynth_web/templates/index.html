@@ -66,8 +66,11 @@
             {% include 'partials/live.html' %}
         </section>
         <section id="view-studio" class="ms-view ms-view-studio" aria-label="Studio" hidden>
-            {% include 'partials/studio_legacy.html' %}
             {% include 'partials/studio.html' %}
+            {# Vista classica (piano roll/editor eventi legacy): visibile solo se scelta da studio.js. #}
+            <div id="studio-legacy" class="st-legacy">
+            {% include 'partials/studio_legacy.html' %}
+            </div>
         </section>
         <section id="view-editor" class="ms-view ms-view-editor" aria-label="Editor MIDI" hidden>
             {% include 'partials/editor.html' %}
@@ -102,6 +105,8 @@
     <script src="/static/js/library.js"></script>
     <script src="/static/js/shell.js"></script>
     <script src="/static/js/legacy_daw.js"></script>
+    <script src="/static/js/studio_model.js"></script>
+    <script src="/static/js/studio.js"></script>
     <script src="/static/vendor/bootstrap/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>

@@ -1,1 +1,163 @@
-/* MatSynth - studio.css: segnaposto fase ui-shell (vuoto). Lo riempie la fase che possiede la vista. */
+/* MatSynth - studio.css (fase ui-studio): vista Studio nuova (trasporto, tracce, timeline, inspector).
+ * Prefisso st- per non collidere con lo stile legacy .daw-* (vista classica) e con Bootstrap.
+ * Niente animazioni/transizioni: sul Pi e sui tablet economici costano reflow. Target tocco >= 44 px. */
+
+.st-root {
+    --st-head: 168px;
+    --st-row: 64px;
+    flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0;
+    color: var(--ms-text); background: var(--ms-bg);
+}
+.st-root[hidden], .st-legacy[hidden], .st-backbar[hidden] { display: none !important; }
+.st-legacy { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.st-backbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 10px; border-bottom: 1px solid var(--ms-border); }
+.st-backbar .ms-note { margin: 0; }
+
+/* ── Barre ───────────────────────────────────────────────────────── */
+/* Barre su una riga con scorrimento orizzontale: andando a capo rubavano righe alla timeline. */
+.st-bar {
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 6px 12px; flex: 0 0 auto;
+    padding: 6px 10px; border-bottom: 1px solid var(--ms-border); background: var(--ms-surface);
+    overflow-x: auto; overflow-y: hidden; -webkit-overflow-scrolling: touch; scrollbar-width: thin;
+}
+.st-group { display: flex; flex-wrap: nowrap; align-items: center; gap: 6px; flex: 0 0 auto; }
+.st-group-end { margin-left: auto; }
+.st-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    min-width: var(--ms-touch); min-height: var(--ms-touch); padding: 0 10px;
+    border-radius: var(--ms-radius); border: 1px solid var(--ms-border);
+    background: var(--ms-surface-2); color: var(--ms-text);
+    font-size: 0.85rem; font-weight: 600; cursor: pointer; touch-action: manipulation; white-space: nowrap;
+}
+.st-btn:hover { background: #20203a; }
+.st-btn:disabled, .st-btn[aria-disabled="true"] { opacity: 0.42; cursor: not-allowed; }
+.st-btn.is-busy { opacity: 0.6; }
+.st-btn[aria-pressed="true"] { border-color: var(--ms-accent); background: rgba(0, 212, 255, 0.16); box-shadow: inset 0 -3px 0 var(--ms-accent); }
+.st-btn-play.is-on { border-color: var(--ms-ok); color: var(--ms-ok); }
+.st-btn-rec i { color: var(--ms-danger); }
+.st-btn-rec.is-on { background: var(--ms-danger-bg); border-color: var(--ms-danger); color: #fff; }
+.st-btn-rec.is-on i { color: #fff; }
+.st-btn-danger { color: #ff8a80; }
+.st-btn-label { display: none; }
+.st-btn-label.st-always { display: inline; }
+@media (min-width: 1200px) { .st-btn-label { display: inline; } }
+.st-check-short { display: none; }
+@media (max-width: 1199px) { .st-check-text { display: none; } .st-check-short { display: inline; } }
+.st-transport .st-btn-play, .st-transport .st-btn-rec, .st-transport #st-stop { min-width: 56px; }
+.st-transport .st-btn-label { display: inline; }
+@media (max-width: 600px) { .st-transport .st-btn-label { display: none; } }
+
+.st-pos { display: flex; flex-direction: column; align-items: flex-end; min-width: 84px; font-variant-numeric: tabular-nums; }
+.st-bbt { font-size: 1.25rem; font-weight: 800; letter-spacing: 0.5px; }
+.st-time { font-size: 0.75rem; color: var(--ms-text-dim); }
+.st-field { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; color: var(--ms-text-dim); font-weight: 600; margin: 0; }
+.st-field input, .st-field select {
+    min-height: var(--ms-touch); padding: 0 8px; border-radius: var(--ms-radius);
+    border: 1px solid var(--ms-border); background: var(--ms-surface-2); color: var(--ms-text); font-size: 0.95rem;
+}
+.st-field-bpm input { width: 76px; }
+.st-check { display: inline-flex; align-items: center; gap: 8px; min-height: var(--ms-touch); font-size: 0.8rem; color: var(--ms-text-dim); margin: 0; cursor: pointer; }
+.st-check input { width: 22px; height: 22px; }
+
+/* ── Corpo: timeline + inspector ─────────────────────────────────── */
+.st-body { flex: 1 1 auto; display: flex; min-height: 0; min-width: 0; }
+.st-main { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.st-inspector {
+    flex: 0 0 320px; display: flex; flex-direction: column; min-height: 0;
+    border-left: 1px solid var(--ms-border); background: var(--ms-surface);
+}
+/* Tablet stretto in orizzontale: inspector laterale piu' stretto (l'altezza e' poca, la timeline la usa tutta). */
+@media (max-width: 1023px) { .st-inspector { flex-basis: 260px; } }
+/* Tablet in verticale e telefono: inspector come pannello inferiore (piano sez. 4). */
+@media (max-width: 700px), (max-width: 1023px) and (orientation: portrait) {
+    .st-body { flex-direction: column; }
+    .st-inspector { flex: 0 0 auto; max-height: 30vh; border-left: 0; border-top: 1px solid var(--ms-border); }
+    .st-main { flex: 1 1 0; min-height: 220px; }
+}
+
+.st-ruler-wrap { display: flex; flex: 0 0 auto; height: 32px; border-bottom: 1px solid var(--ms-border); background: #0f0f18; }
+.st-ruler-head { flex: 0 0 var(--st-head); display: flex; align-items: center; padding: 0 10px; font-size: 0.72rem; color: var(--ms-text-dim); text-transform: uppercase; letter-spacing: 0.8px; border-right: 1px solid var(--ms-border); }
+.st-ruler { position: relative; flex: 1 1 auto; overflow: hidden; cursor: pointer; touch-action: manipulation; }
+.st-ruler canvas { display: block; height: 32px; }
+.st-ruler-playhead, .st-playhead, .st-cursor { position: absolute; top: 0; left: 0; width: 2px; pointer-events: none; will-change: transform; }
+.st-ruler-playhead { height: 32px; background: var(--ms-danger); }
+
+.st-scroll { position: relative; flex: 1 1 auto; overflow: auto; min-height: 0; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.st-content { position: relative; min-height: 100%; }
+.st-density { position: absolute; top: 0; pointer-events: none; z-index: 0; }
+.st-playhead { height: 100%; background: var(--ms-danger); z-index: 4; }
+.st-cursor { height: 100%; border-left: 2px dashed var(--ms-warn); width: 0; z-index: 3; }
+.st-cursor[hidden] { display: none; }
+
+.st-row { display: flex; height: var(--st-row); border-bottom: 1px solid #1d1d2c; }
+.st-head {
+    position: sticky; left: 0; z-index: 5;
+    flex: 0 0 var(--st-head); display: flex; align-items: center; gap: 4px; padding: 0 4px 0 0;
+    background: var(--ms-surface); border-right: 1px solid var(--ms-border);
+}
+.st-row.is-selected .st-head { background: #1b1b2e; box-shadow: inset 3px 0 0 var(--ms-accent); }
+.st-head-color { flex: 0 0 5px; align-self: stretch; }
+.st-head-name {
+    flex: 1 1 auto; min-width: 0; min-height: var(--ms-touch); display: flex; align-items: center; gap: 6px;
+    background: transparent; border: 0; color: var(--ms-text); text-align: left; padding: 0 4px; cursor: pointer; touch-action: manipulation;
+}
+.st-head-num { font-size: 0.7rem; color: var(--ms-text-dim); font-variant-numeric: tabular-nums; min-width: 1.4em; }
+.st-head-label { font-size: 0.82rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-head-btns { display: grid; grid-template-columns: repeat(3, 30px); gap: 2px; }
+.st-mini {
+    width: 30px; height: 44px; padding: 0; border-radius: 6px;
+    border: 1px solid var(--ms-border); background: var(--ms-surface-2); color: var(--ms-text-dim);
+    font-size: 0.75rem; font-weight: 800; cursor: pointer; touch-action: manipulation;
+}
+.st-arm[aria-pressed="true"] { background: var(--ms-danger-bg); border-color: var(--ms-danger); color: #fff; }
+.st-mute[aria-pressed="true"] { background: #7a5c00; border-color: var(--ms-warn); color: #fff; }
+.st-solo[aria-pressed="true"] { background: #00605a; border-color: #44ffcc; color: #fff; }
+
+.st-lane { position: relative; flex: 0 0 auto; height: 100%; z-index: 1; touch-action: pan-x pan-y; }
+.st-root[data-tool="select"] .st-lane { touch-action: pan-y; }
+.st-range { position: absolute; top: 0; bottom: 0; background: rgba(0, 212, 255, 0.18); border: 1px solid var(--ms-accent); pointer-events: none; z-index: 2; }
+.st-range[hidden] { display: none; }
+
+.st-clip {
+    position: absolute; z-index: 2; box-sizing: border-box; overflow: hidden;
+    border: 2px solid; border-radius: 6px; background: rgba(20, 20, 36, 0.55);
+    cursor: pointer; touch-action: pan-y; user-select: none; -webkit-user-select: none;
+}
+.st-clip::before { content: ""; position: absolute; inset: 0; background: var(--st-clip-color); opacity: 0.14; pointer-events: none; }
+.st-clip-name { position: relative; display: block; padding: 2px 6px; font-size: 0.72rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+.st-clip.is-selected { z-index: 3; background: rgba(0, 212, 255, 0.22); box-shadow: 0 0 0 2px #fff inset; touch-action: none; cursor: grab; }
+.st-clip.is-dragging { opacity: 0.85; cursor: grabbing; }
+.st-clip-handle { position: absolute; top: 0; right: 0; bottom: 0; width: 18px; display: none; cursor: ew-resize; }
+.st-clip.is-selected .st-clip-handle { display: block; background: repeating-linear-gradient(90deg, rgba(255,255,255,0.5) 0 2px, transparent 2px 5px); }
+.st-root[data-tool="pan"] .st-clip { touch-action: pan-x pan-y; cursor: pointer; }
+
+/* ── Barra contestuale ───────────────────────────────────────────── */
+.st-context { flex: 0 0 auto; border-top: 1px solid var(--ms-border); background: var(--ms-surface); padding: 6px 10px; }
+.st-context-info { display: flex; flex-wrap: nowrap; gap: 14px; align-items: baseline; margin-bottom: 4px; font-size: 0.8rem; white-space: nowrap; overflow: hidden; }
+.st-context-info > * { overflow: hidden; text-overflow: ellipsis; }
+.st-sel-text { font-weight: 700; }
+.st-cursor-text { color: var(--ms-text-dim); font-variant-numeric: tabular-nums; }
+.st-reason { color: var(--ms-warn); }
+.st-context-cmds { display: flex; flex-wrap: nowrap; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+.st-context-cmds .st-btn { flex: 0 0 auto; }
+
+/* ── Inspector ───────────────────────────────────────────────────── */
+.st-tabs { display: flex; border-bottom: 1px solid var(--ms-border); }
+.st-tab {
+    flex: 1 1 0; min-height: var(--ms-touch); background: transparent; border: 0; border-bottom: 3px solid transparent;
+    color: var(--ms-text-dim); font-weight: 600; font-size: 0.85rem; cursor: pointer; touch-action: manipulation;
+}
+.st-tab[aria-selected="true"] { color: #fff; border-bottom-color: var(--ms-accent); }
+.st-pane { flex: 1 1 auto; overflow-y: auto; padding: 10px 12px 16px; -webkit-overflow-scrolling: touch; }
+.st-pane[hidden] { display: none; }
+.st-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 0.85rem; margin-bottom: 6px; }
+.st-kv span:first-child { color: var(--ms-text-dim); }
+.st-pane .ms-card-title { margin-top: 14px; }
+.st-swatches { display: grid; grid-template-columns: repeat(8, 1fr); gap: 4px; }
+.st-swatch { min-height: 36px; border-radius: 6px; border: 2px solid transparent; cursor: pointer; touch-action: manipulation; }
+.st-swatch[aria-pressed="true"] { border-color: #fff; box-shadow: 0 0 0 2px #000 inset; }
+
+.st-mix-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(80px, 1.4fr) 2.4em 30px 30px; align-items: center; gap: 6px; min-height: 48px; border-bottom: 1px solid #1d1d2c; }
+.st-mix-name { min-height: var(--ms-touch); background: transparent; border: 0; color: var(--ms-text); text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; padding: 0; }
+.st-mix-vol { width: 100%; min-height: 32px; }
+.st-mix-val { font-size: 0.78rem; text-align: right; font-variant-numeric: tabular-nums; color: var(--ms-text-dim); }

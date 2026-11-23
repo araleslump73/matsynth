@@ -1,2 +1,141 @@
-{# Segnaposto per ui-studio: timeline/tracce/trasporto/inspector nuovi. Oggi Studio e' interamente
-   studio_legacy.html (markup DAW attuale). #}
+{# Studio (fase ui-studio): trasporto unico, tracce con arm/mute/solo, timeline con clip, barra contestuale,
+   inspector Clip | Traccia | Suono | Mixer. Pilotato da static/js/studio.js (logica pura in studio_model.js).
+   La vista classica (studio_legacy.html, con il piano roll) resta disponibile dal pulsante "Vista classica"
+   finche' ui-editor non la sostituisce. Nessun handler inline: un solo listener delegato per area. #}
+<div id="st-root" class="st-root" hidden>
+    <div class="st-bar st-transport" role="toolbar" aria-label="Trasporto">
+        <div class="st-group">
+            <button type="button" class="st-btn" data-st-cmd="rewind" title="Torna all'inizio" aria-label="Torna all'inizio"><i class="fas fa-step-backward" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn st-btn-play" data-st-cmd="play" id="st-play" aria-label="Play"><i class="fas fa-play" aria-hidden="true"></i><span class="st-btn-label">Play</span></button>
+            <button type="button" class="st-btn st-btn-rec" data-st-cmd="record" id="st-record" aria-label="Record"><i class="fas fa-circle" aria-hidden="true"></i><span class="st-btn-label">Rec</span></button>
+            <button type="button" class="st-btn" data-st-cmd="stop" id="st-stop" aria-label="Stop"><i class="fas fa-stop" aria-hidden="true"></i><span class="st-btn-label">Stop</span></button>
+        </div>
+        <div class="st-pos" aria-live="off">
+            <span id="st-bbt" class="st-bbt">1.1.1</span>
+            <span id="st-time" class="st-time">00:00.0</span>
+        </div>
+        <div class="st-group st-group-wrap">
+            <label class="st-field st-field-bpm">BPM <input type="number" id="st-bpm" min="20" max="300" step="1" inputmode="numeric" value="120"></label>
+            <label class="st-field">Metro
+                <select id="st-meter"><option value="4">4/4</option><option value="3">3/4</option></select>
+            </label>
+            <button type="button" class="st-btn st-toggle" data-st-cmd="metronome" id="st-click" aria-pressed="false"><i class="fas fa-drum" aria-hidden="true"></i><span class="st-btn-label">Click</span></button>
+            <button type="button" class="st-btn st-toggle" data-st-cmd="loop" id="st-loop" aria-pressed="false"><i class="fas fa-retweet" aria-hidden="true"></i><span class="st-btn-label">Loop</span></button>
+            <label class="st-check" title="Dopo lo Stop di una registrazione la posizione torna al punto di inizio del Record">
+                <input type="checkbox" id="st-return-start" checked aria-label="Torna all'inizio dopo Rec"> <span class="st-check-text">Torna all'inizio dopo Rec</span><span class="st-check-short" aria-hidden="true">Ritorno</span>
+            </label>
+        </div>
+        <div class="st-group">
+            <button type="button" class="st-btn" data-st-cmd="undo" id="st-undo" aria-label="Annulla"><i class="fas fa-undo" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn" data-st-cmd="redo" id="st-redo" aria-label="Ripeti"><i class="fas fa-redo" aria-hidden="true"></i></button>
+        </div>
+    </div>
+
+    <div class="st-bar st-viewbar" role="toolbar" aria-label="Vista timeline">
+        <div class="st-group" role="radiogroup" aria-label="Strumento">
+            <button type="button" class="st-btn st-toggle" data-st-tool="select" aria-pressed="true"><i class="fas fa-mouse-pointer" aria-hidden="true"></i><span class="st-btn-label">Seleziona</span></button>
+            <button type="button" class="st-btn st-toggle" data-st-tool="pan" aria-pressed="false"><i class="fas fa-hand-paper" aria-hidden="true"></i><span class="st-btn-label">Scorri</span></button>
+            <button type="button" class="st-btn st-toggle" data-st-cmd="multi" id="st-multi" aria-pressed="false" title="Tocca piu' clip per selezionarli insieme (per Unisci)"><i class="fas fa-layer-group" aria-hidden="true"></i><span class="st-btn-label">Multi</span></button>
+        </div>
+        <div class="st-group">
+            <label class="st-field">Snap <select id="st-snap"></select></label>
+            <button type="button" class="st-btn" data-st-cmd="zoom-out" aria-label="Riduci zoom"><i class="fas fa-search-minus" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn" data-st-cmd="zoom-in" aria-label="Aumenta zoom"><i class="fas fa-search-plus" aria-hidden="true"></i></button>
+            <button type="button" class="st-btn st-toggle" data-st-cmd="follow" id="st-follow" aria-pressed="true" title="Segui la posizione durante la riproduzione"><i class="fas fa-crosshairs" aria-hidden="true"></i><span class="st-btn-label">Segui</span></button>
+        </div>
+        <div class="st-group st-group-end">
+            <button type="button" class="st-btn" data-open-panel="library" data-section="progetti"><i class="fas fa-folder-open" aria-hidden="true"></i><span class="st-btn-label">Progetti/MIDI</span></button>
+            <button type="button" class="st-btn" data-st-cmd="legacy" title="Vista classica: piano roll ed editor eventi (in attesa del nuovo editor)"><i class="fas fa-columns" aria-hidden="true"></i><span class="st-btn-label">Vista classica</span></button>
+        </div>
+    </div>
+
+    <div class="st-body">
+        <div class="st-main">
+            <div class="st-ruler-wrap">
+                <div class="st-ruler-head" id="st-ruler-head">Tracce</div>
+                <div class="st-ruler" id="st-ruler" title="Tocca per spostare la posizione">
+                    <canvas id="st-ruler-canvas" height="32"></canvas>
+                    <div class="st-ruler-playhead" id="st-ruler-playhead"></div>
+                </div>
+            </div>
+            <div class="st-scroll" id="st-scroll">
+                <div class="st-content" id="st-content">
+                    <canvas class="st-density" id="st-density" aria-hidden="true"></canvas>
+                    <div id="st-rows"></div>
+                    <div class="st-cursor" id="st-cursor" hidden></div>
+                    <div class="st-playhead" id="st-playhead"></div>
+                </div>
+            </div>
+            <div class="st-context" role="toolbar" aria-label="Operazioni sulla selezione">
+                <div class="st-context-info">
+                    <span id="st-sel-text" class="st-sel-text">Nessuna selezione</span>
+                    <span id="st-cursor-text" class="st-cursor-text"></span>
+                    <span id="st-reason" class="st-reason" role="status" aria-live="polite"></span>
+                </div>
+                <div class="st-context-cmds">
+                    <button type="button" class="st-btn" data-st-op="copy"><i class="fas fa-copy" aria-hidden="true"></i><span class="st-btn-label">Copia</span></button>
+                    <button type="button" class="st-btn" data-st-op="cut"><i class="fas fa-cut" aria-hidden="true"></i><span class="st-btn-label">Taglia</span></button>
+                    <button type="button" class="st-btn" data-st-op="paste"><i class="fas fa-paste" aria-hidden="true"></i><span class="st-btn-label">Incolla</span></button>
+                    <button type="button" class="st-btn" data-st-op="duplicate"><i class="fas fa-clone" aria-hidden="true"></i><span class="st-btn-label">Duplica</span></button>
+                    <button type="button" class="st-btn" data-st-op="split"><i class="fas fa-grip-lines-vertical" aria-hidden="true"></i><span class="st-btn-label">Dividi</span></button>
+                    <button type="button" class="st-btn" data-st-op="merge"><i class="fas fa-object-group" aria-hidden="true"></i><span class="st-btn-label">Unisci</span></button>
+                    <button type="button" class="st-btn" data-st-op="transpose" data-semitones="-1" aria-label="Trasponi -1 semitono"><span class="st-btn-label st-always">−1</span></button>
+                    <button type="button" class="st-btn" data-st-op="transpose" data-semitones="1" aria-label="Trasponi +1 semitono"><span class="st-btn-label st-always">+1</span></button>
+                    <button type="button" class="st-btn" data-st-op="transpose" data-semitones="-12" aria-label="Trasponi -1 ottava"><span class="st-btn-label st-always">−8va</span></button>
+                    <button type="button" class="st-btn" data-st-op="transpose" data-semitones="12" aria-label="Trasponi +1 ottava"><span class="st-btn-label st-always">+8va</span></button>
+                    <button type="button" class="st-btn" data-st-op="create"><i class="fas fa-plus-square" aria-hidden="true"></i><span class="st-btn-label">Crea clip</span></button>
+                    <button type="button" class="st-btn" data-st-op="loop_from_sel"><i class="fas fa-retweet" aria-hidden="true"></i><span class="st-btn-label">Loop qui</span></button>
+                    <button type="button" class="st-btn st-btn-danger" data-st-op="clear_range"><i class="fas fa-eraser" aria-hidden="true"></i><span class="st-btn-label">Cancella intervallo</span></button>
+                    <button type="button" class="st-btn st-btn-danger" data-st-op="delete"><i class="fas fa-trash-alt" aria-hidden="true"></i><span class="st-btn-label">Elimina</span></button>
+                </div>
+            </div>
+        </div>
+
+        <aside class="st-inspector" aria-label="Inspector">
+            <div class="st-tabs" role="tablist">
+                <button type="button" class="st-tab" role="tab" data-st-tab="clip" aria-selected="true">Clip</button>
+                <button type="button" class="st-tab" role="tab" data-st-tab="track" aria-selected="false">Traccia</button>
+                <button type="button" class="st-tab" role="tab" data-st-tab="sound" aria-selected="false">Suono</button>
+                <button type="button" class="st-tab" role="tab" data-st-tab="mixer" aria-selected="false">Mixer</button>
+            </div>
+            <div class="st-pane" data-st-pane="clip">
+                <p class="ms-note" id="st-clip-empty">Tocca un clip per selezionarlo. Trascina un clip selezionato per spostarlo, la maniglia a destra per cambiarne la fine.</p>
+                <div id="st-clip-form" hidden>
+                    <div class="st-kv"><span>Nome</span><strong id="st-clip-name"></strong></div>
+                    <div class="st-kv"><span>ID</span><span id="st-clip-id"></span></div>
+                    <div class="st-kv"><span>Posizione</span><span id="st-clip-span"></span></div>
+                    <label class="ms-field"><span>Inizio (beat)</span><input type="number" class="ms-select" id="st-clip-start" min="0" step="0.25" inputmode="decimal"></label>
+                    <label class="ms-field"><span>Fine (beat)</span><input type="number" class="ms-select" id="st-clip-end" min="0" step="0.25" inputmode="decimal"></label>
+                    <div class="ms-actions">
+                        <button type="button" class="ms-btn ms-btn-secondary" data-st-op="move">Sposta</button>
+                        <button type="button" class="ms-btn ms-btn-secondary" data-st-op="resize">Ridimensiona</button>
+                    </div>
+                </div>
+            </div>
+            <div class="st-pane" data-st-pane="track" hidden>
+                <p class="ms-note" id="st-track-empty">Seleziona una traccia (tocca il suo nome o la sua corsia).</p>
+                <div id="st-track-form" hidden>
+                    <label class="ms-field"><span>Nome traccia</span><input type="text" class="ms-select" id="st-track-name" maxlength="32"></label>
+                    <div class="ms-field"><span>Colore</span><div class="st-swatches" id="st-swatches"></div></div>
+                    <div class="ms-actions"><button type="button" class="ms-btn ms-btn-secondary" data-st-op="rename">Rinomina</button></div>
+                    <h3 class="ms-card-title">Duplica traccia</h3>
+                    <label class="ms-field"><span>Destinazione</span><select class="ms-select" id="st-dup-dest"></select></label>
+                    <label class="st-check"><input type="checkbox" id="st-dup-config"> Copia anche la configurazione della parte (suono, CC, destinazione)</label>
+                    <div class="ms-actions"><button type="button" class="ms-btn ms-btn-secondary" data-st-op="duplicate_track">Duplica traccia</button></div>
+                    <h3 class="ms-card-title">Svuota</h3>
+                    <div class="ms-actions">
+                        <button type="button" class="ms-btn ms-btn-secondary st-btn-danger" data-st-op="clear_track">Svuota traccia</button>
+                        <button type="button" class="ms-btn ms-btn-secondary st-btn-danger" data-st-op="clear_all">Svuota tutto</button>
+                    </div>
+                </div>
+            </div>
+            <div class="st-pane" data-st-pane="sound" hidden>
+                <p class="ms-note" id="st-sound-empty">Seleziona una traccia per vederne il suono.</p>
+                <div id="st-sound-host"></div>
+            </div>
+            <div class="st-pane" data-st-pane="mixer" hidden>
+                <div id="st-mixer"></div>
+            </div>
+        </aside>
+    </div>
+</div>

@@ -209,6 +209,7 @@ body.ms-panel-open { overflow: hidden; }
     padding: 12px 16px; border-radius: var(--ms-radius);
     background: #1e2233; border: 1px solid var(--ms-border); color: #fff; font-size: 0.9rem; font-weight: 600;
     box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+    pointer-events: none;   /* solo testo: non deve coprire i comandi sottostanti */
 }
 .ms-toast[hidden] { display: none; }
 .ms-toast[data-kind="error"] { border-color: var(--ms-danger); background: #3a1417; }
