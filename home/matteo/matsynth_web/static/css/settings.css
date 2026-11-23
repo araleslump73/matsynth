@@ -1,1 +1,78 @@
-/* MatSynth - settings.css: segnaposto fase ui-shell (vuoto). Lo riempie la fase che possiede la vista. */
+/* MatSynth - settings.css (fase ui-offline-settings)
+ * Stile del pannello Impostazioni. Token e controlli base (.ms-btn, .ms-select, .ms-card, .ms-note) arrivano da css/style.css.
+ * Nomi prefissati st- . Nessuna animazione: sul Pi/tablet economico ogni transizione di layout e' un reflow. */
+
+.st-body { min-width: 0; }
+.st-card { min-width: 0; }
+.st-card .ms-card-title { margin-bottom: 10px; }
+
+/* Anti-overflow orizzontale a 360 px: nomi porta e indirizzi lunghi vanno a capo. */
+.st-body, .st-card, .st-line, .st-val, .st-list li, .st-link, .st-device-title, .st-confirm p, .st-status, .st-mode-btn span {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+.st-line { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 0 0 8px; font-size: 0.95rem; }
+.st-key { color: var(--ms-text-dim); font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; min-width: 6.5em; }
+.st-val { color: var(--ms-text); font-weight: 600; min-width: 0; }
+.st-link { color: var(--ms-accent); min-height: var(--ms-touch); display: inline-flex; align-items: center; }
+.st-sub { font-size: 0.85rem; margin: 10px 0 6px; color: var(--ms-text); }
+
+.st-badge {
+    display: inline-flex; align-items: center; min-height: 24px; padding: 1px 9px; border-radius: 12px;
+    border: 1px solid var(--ms-border); background: var(--ms-surface-2);
+    font-size: 0.74rem; font-weight: 700; color: var(--ms-text);
+}
+.st-badge[data-tone="ok"] { border-color: rgba(0, 230, 118, 0.55); color: var(--ms-ok); }
+.st-badge[data-tone="warn"] { border-color: rgba(255, 193, 7, 0.6); color: var(--ms-warn); }
+.st-badge[data-tone="error"] { border-color: var(--ms-danger); color: #fff; background: var(--ms-danger-bg); }
+.st-badge[data-tone="dim"] { color: var(--ms-text-dim); }
+
+.st-list { list-style: none; margin: 0 0 6px; padding: 0; }
+.st-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.06); }
+
+/* Esito dell'azione: testo + marcatore, non solo colore. */
+.st-status { min-height: 1.3em; margin: 8px 0 0; font-size: 0.85rem; color: var(--ms-text-dim); }
+.st-status[data-kind="busy"]::before { content: "\2026  "; }
+.st-status[data-kind="ok"] { color: var(--ms-ok); }
+.st-status[data-kind="ok"]::before { content: "\2713  "; }
+.st-status[data-kind="warn"] { color: var(--ms-warn); }
+.st-status[data-kind="warn"]::before { content: "!  "; }
+.st-status[data-kind="error"] { color: var(--ms-danger); font-weight: 600; }
+.st-status[data-kind="error"]::before { content: "\2717  "; }
+.st-warn { color: var(--ms-warn); font-size: 0.85rem; margin: 6px 0 0; }
+
+.st-check { display: flex; align-items: center; gap: 10px; min-height: var(--ms-touch); font-size: 0.85rem; color: var(--ms-text-dim); cursor: pointer; }
+.st-check input { width: 22px; height: 22px; flex: 0 0 auto; accent-color: var(--ms-accent); }
+
+.st-primary { background: rgba(0, 212, 255, 0.18); border-color: var(--ms-accent); color: #fff; }
+.st-primary:hover { background: rgba(0, 212, 255, 0.3); color: #fff; }
+.st-danger { background: var(--ms-danger-bg); border-color: #ff8a80; color: #fff; }
+.st-danger:hover { background: #d32f2f; color: #fff; }
+.st-body .ms-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.st-body input.ms-select { font-size: 1rem; }
+
+.st-confirm {
+    margin: 10px 0 0; padding: 12px; border: 2px solid var(--ms-warn); border-radius: var(--ms-radius);
+    background: rgba(255, 193, 7, 0.08);
+}
+.st-confirm p { margin: 6px 0 0; font-size: 0.88rem; line-height: 1.4; }
+
+.st-device { margin: 10px 0; padding: 10px; border: 1px solid var(--ms-border); border-radius: var(--ms-radius); background: var(--ms-surface-2); }
+.st-device-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0 0 8px; font-size: 1rem; }
+.st-device-title code { font-size: 0.78rem; color: var(--ms-text-dim); }
+.st-dir { margin: 8px 0 12px; padding-top: 8px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+
+.st-mode-choices { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.st-mode-btn {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left;
+    min-height: var(--ms-touch); padding: 10px 12px; width: 100%;
+    background: var(--ms-surface-2); color: var(--ms-text); border: 1px solid var(--ms-border); border-radius: var(--ms-radius);
+    cursor: pointer; touch-action: manipulation;
+}
+.st-mode-btn span { font-size: 0.82rem; color: var(--ms-text-dim); line-height: 1.4; }
+.st-mode-btn[aria-pressed="true"] { border-color: var(--ms-accent); box-shadow: inset 0 -3px 0 var(--ms-accent); }
+
+/* Barra schede: 5 voci vanno a capo su 360 px (flex-wrap gia' in .ms-tabs). */
+#st-tabs .ms-tab { flex: 1 1 auto; padding: 0 8px; font-size: 0.85rem; }
+

@@ -1,15 +1,12 @@
-{# Segnaposto per ui-offline-settings (possiede questo file, settings.js e settings.css).
-   Il foglio qui sotto e' la struttura del pannello; le route /settings e /presets restano invariate. #}
+{# Pannello Impostazioni (ui-offline-settings): contenuto disegnato da static/js/settings.js alla prima apertura.
+   Le route /settings e /presets restano: rimandano a questo pannello (templates/settings.html, presets.html).
+   `defer`: lo script gira dopo shell.js (che e' sincrono in fondo al body) e dopo il parsing, quindi i nodi qui sotto esistono. #}
 <div class="ms-panel-sheet">
     <header class="ms-panel-head">
         <h2 id="ms-panel-settings-title">Impostazioni</h2>
         <button type="button" class="ms-icon-btn" data-close-panel aria-label="Chiudi le Impostazioni"><i class="fas fa-times" aria-hidden="true"></i></button>
     </header>
-    <div class="ms-panel-body">
-        <p class="ms-note">Hardware audio/MIDI, rete e riavvio si gestiscono oggi dalla pagina Impostazioni.</p>
-        <div class="ms-actions">
-            <a class="ms-btn ms-btn-secondary" href="/settings"><i class="fas fa-cog" aria-hidden="true"></i> Apri Impostazioni</a>
-            <a class="ms-btn ms-btn-secondary" href="/presets"><i class="fas fa-star" aria-hidden="true"></i> Apri Preset</a>
-        </div>
-    </div>
+    <div id="st-tabs" class="ms-tabs" role="tablist" aria-label="Sezioni delle Impostazioni"></div>
+    <div id="st-body" class="ms-panel-body st-body" role="tabpanel"></div>
 </div>
+<script src="/static/js/settings.js" defer></script>
