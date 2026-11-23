@@ -142,6 +142,13 @@ class MultiTrackDAW:
         # Clipboard for copy/paste (P2-3)
         self._clipboard = []        # list of (relative_beat, midi_bytes)
         self._clipboard_channel = 0  # source channel
+        # {kind: range|clip, length_beats, source_track, source_clip_id, name,
+        #  sustain_release}: un solo appunti in RAM, condiviso, mai salvato (6.4).
+        self._clipboard_meta = None
+        # D6: beat di inizio dell'ultimo Record (None fuori dal Record) e opzione
+        # "torna al punto di partenza" scelta all'avvio del Record.
+        self.record_start_beat = None
+        self._record_return_to_start = True
         
         # Porte MIDI: tutte tramite il router (unico lettore per input,
         # unica risoluzione delle destinazioni, tracciamento note).
@@ -439,13 +446,15 @@ class MultiTrackDAW:
                 print(f"[DAW] Errore in update loop: {e}")
                 time.sleep(0.5)
     
-    def start_recording(self, channel=None):
+    def start_recording(self, channel=None, return_to_start=True):
         """
         Avvia la registrazione su canali armati
-        
+
         Args:
             channel: Canale MIDI (0-15) da registrare, o None per tutti i canali armati
-            
+            return_to_start: D6 (decisione utente): dopo lo Stop di QUESTO Record
+                la posizione torna al punto di partenza (default True).
+
         Returns:
             bool: True se registrazione avviata, False altrimenti
         """
@@ -486,27 +495,32 @@ class MultiTrackDAW:
         # Rilascio delle note rimaste aperte (solo canali toccati da MatSynth)
         self._send_all_notes_off()
 
-        # Capture recording-take boundaries to build clips when recording stops
-        self._recording_channels = list(recording_channels)
-        self._record_start_event_index = {ch: len(self.tracks[ch]) for ch in recording_channels}
-        
-        # Se ci sono altre tracce con dati (non in registrazione), avvia anche la riproduzione
-        has_other_tracks = any(self.has_data[ch] for ch in range(16) if ch not in recording_channels)
-        
         for ch in range(16):
             self.active_notes[ch] = 0
 
-        self.is_recording = True
-        self.stop_event.clear()
-        
         # NON resettare timeline position - registra dalla posizione corrente
         # (solo REWIND resetta a 0.0)
         initial_position = self.timeline_position
-        self._record_take_start_beat = max(0.0, initial_position / self.beat_duration)
 
-        # Gli eventi arrivano dalla callback del router (_on_router_input);
-        # il thread di Record fa solo avanzare la timeline.
-        with self._rec_lock:
+        # Indici di partenza del take e is_recording nello STESSO lock delle
+        # mutazioni (review L3): una modifica indicizzata o ne finisce prima
+        # (indici giusti) o vede is_recording e viene rifiutata.
+        with self._edit_lock:
+            if self.is_recording or self.is_playing:
+                return self._fail('TRANSPORT_ACTIVE', "Trasporto gia' attivo",
+                                  {'is_playing': self.is_playing, 'is_recording': self.is_recording})
+            self._recording_channels = list(recording_channels)
+            self._record_start_event_index = {ch: len(self.tracks[ch]) for ch in recording_channels}
+            # Se ci sono altre tracce con dati (non in registrazione), avvia anche la riproduzione
+            has_other_tracks = any(self.has_data[ch] for ch in range(16) if ch not in recording_channels)
+            self.is_recording = True
+            self.stop_event.clear()
+            self._record_take_start_beat = max(0.0, initial_position / self.beat_duration)
+            # D6: punto di partenza in BEAT (resta giusto anche se il BPM cambia).
+            self.record_start_beat = self._record_take_start_beat
+            self._record_return_to_start = bool(return_to_start)
+            # Gli eventi arrivano dalla callback del router (_on_router_input);
+            # il thread di Record fa solo avanzare la timeline.
             self._rec_start_time = time.time()
             self._rec_initial_pos = initial_position
             self._rec_tracks = frozenset(recording_channels)
@@ -549,9 +563,19 @@ class MultiTrackDAW:
 
         for ch in range(16):
             self.active_notes[ch] = 0
-        
+
         if self.record_thread:
             self.record_thread.join(timeout=1.0)
+        # Il playback delle altre tracce avviato dal Record condivide stop_event
+        # e quindi termina anche lui: lo si attende QUI (fuori dal lock) perche'
+        # finche' gira riscrive timeline_position e annullerebbe il ritorno D6.
+        pb = self.playback_thread
+        if pb is not None and pb.is_alive() and pb is not threading.current_thread():
+            pb.join(timeout=1.0)
+        if self.is_playing:
+            self.is_playing = False
+            self._send_all_notes_off()
+        self._stop_metronome()          # trasporto fermo: niente click residuo
 
         with self._edit():
             for ch in self._recording_channels:
@@ -561,6 +585,12 @@ class MultiTrackDAW:
             if self._finalize_recording_clips():
                 self.revision += 1          # una volta sola allo stop (sez. 6.6)
                 self._content_changed()
+            # D6 (A24): ritorno al punto di partenza del Record, deciso dal
+            # backend (il client non calcola piu' nulla). Solo posizione: dati
+            # e clip invariati. Un solo daw_state_update (all'uscita dal lock).
+            if self._record_return_to_start and self.record_start_beat is not None:
+                self.timeline_position = self.record_start_beat * self.beat_duration
+            self.record_start_beat = None
             print("[DAW] Registrazione fermata")
             self._emit_state_change()  # Notifica via WebSocket
         return True
@@ -623,6 +653,13 @@ class MultiTrackDAW:
             start_beat = min(b for b, _ in new_events)
             end_beat = max(b for b, _ in new_events) + project_store.CLIP_TAIL_BEATS
 
+            if self._next_clip_id > project_store.MAX_CLIP_ID:
+                # Review L2: limite ID raggiunto -> take libero (ID 0), niente
+                # eccezione a meta' dello stop; i dati restano e suonano.
+                print(f"[DAW] Limite ID clip raggiunto: take libero su traccia {ch}")
+                self._set_sorted(ch, self.tracks[ch], ids)
+                self._density_dirty = True
+                continue
             clip_id = self._alloc_clip_id()
             for i in range(start_idx, len(ids)):
                 ids[i] = clip_id
@@ -839,9 +876,21 @@ class MultiTrackDAW:
         if silenced and self.is_playing:
             self.router.release_tracks(silenced)
     
+    def _refuse_clear_in_record(self):
+        """Review M2: Svuota durante il Record romperebbe gli indici del take
+        (ownership dei clip). Consentito in Play (contratto 6.4)."""
+        if self.is_recording:
+            self._fail('RECORDING_ACTIVE', 'Ferma la registrazione prima di svuotare',
+                       {'is_recording': True})
+            return True
+        return False
+
     def clear_track(self, channel):
-        """Cancella tutti gli eventi di una traccia"""
+        """Cancella tutti gli eventi di una traccia. None (last_error) in Record."""
+        self.last_error = None
         with self._edit():
+            if self._refuse_clear_in_record():
+                return None
             self._push_undo()
             self._set_track(channel, [], array('H'))
             self.clips[channel] = []
@@ -850,36 +899,57 @@ class MultiTrackDAW:
             self._emit_state_change()
         return True
     
-    def clear_range(self, channel, start_beat, end_beat):
-        """Cancella note il cui note_on cade nell'intervallo [start_beat, end_beat).
-
-        Usa il note-pair-aware approach: se il note_on è nel range, sia note_on
-        che note_off vengono rimossi per mantenere l'integrità delle coppie.
-        (Semantica clip: ui-studio, A16. Qui solo l'invariante event_clips.)
-        """
-        if channel < 0 or channel > 15:
-            return False
+    def clear_range(self, channel, start_beat, end_beat, expected_revision=None):
+        """Cancella intervallo (sez. 6.4): stesso insieme di indici e stessa
+        regola clip di Taglia, senza appunti. Note con note-on in [start, end)
+        rimosse con il loro note-off (6.3); clip INTERAMENTE contenuti rimossi,
+        quelli parzialmente sovrapposti restano (A16). Vietato con Play/Record.
+        Ritorna {removed, clips_removed} oppure None (last_error)."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        rng = self._range_ok(start_beat, end_beat)
+        if rng is None:
+            return None
+        start, end = rng
         with self._edit():
-            indices_to_delete = self._get_note_pair_indices_in_range(channel, start_beat, end_beat)
-            if not indices_to_delete:
-                return True
-            self._push_undo()
-            before = len(self.tracks[channel])
-            self._drop_indices(channel, indices_to_delete)
-            self.clips[channel] = [
-                c for c in self.clips[channel]
-                if c['end_beat'] <= start_beat or c['start_beat'] >= end_beat
-            ]
+            if self._refuse_transport() or not self.check_revision(expected_revision):
+                return None
+            res = self._remove_range_locked(channel, start, end)
+            if res['removed'] or res['clips_removed']:
+                print(f"[DAW] clear_range ch={channel} [{start:.2f}, {end:.2f}) "
+                      f"rimossi {res['removed']} eventi, clip {res['clips_removed']}")
+        return res
+
+    def _remove_range_locked(self, channel, start, end, indices=None):
+        """Rimozione di Taglia/Cancella intervallo (sotto _edit, validazione
+        gia' fatta). Un livello di undo solo se qualcosa cambia."""
+        events = self.tracks[channel]
+        if indices is None:
+            indices = self._owned_by_id(events, self._ids(channel), start, end) if events else set()
+        contained = [int(c['id']) for c in self.clips[channel]
+                     if c['start_beat'] >= start and c['end_beat'] <= end]
+        if not indices and not contained:
+            return {'removed': 0, 'clips_removed': []}
+        self._push_undo()
+        if indices:
+            self._drop_indices(channel, indices)
+        if contained:
+            gone = set(contained)
+            self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) not in gone]
+            # Un note-off di un clip rimosso accoppiato (FIFO) a un note-on prima
+            # di `start` resta sulla traccia: diventa libero, mai un ID pendente.
             self._free_orphan_ids(channel)
-            removed = before - len(self.tracks[channel])
-            self._density_dirty = True
-            print(f"[DAW] clear_range ch={channel} [{start_beat:.2f}, {end_beat:.2f}) rimossi {removed} eventi")
-            self._emit_state_change()
-        return True
+        self._density_dirty = True
+        self._emit_state_change()
+        return {'removed': len(indices), 'clips_removed': sorted(contained)}
 
     def clear_all_tracks(self):
-        """Cancella tutte le tracce"""
+        """Cancella tutte le tracce. None (last_error) in Record."""
+        self.last_error = None
         with self._edit():
+            if self._refuse_clear_in_record():
+                return None
             self._push_undo()
             for ch in range(16):
                 self._set_track(ch, [], array('H'))
@@ -936,7 +1006,10 @@ class MultiTrackDAW:
             self.event_clips[ch] = ids
             self.clips[ch] = [dict(c) for c in snapshot.get('clips', {}).get(ch, [])]
             self.has_data[ch] = snapshot['has_data'].get(ch, False)
-        self._next_clip_id = int(snapshot.get('next_clip_id', self._next_clip_id))
+        # A19 (ui-studio): il contatore non decresce mai, altrimenti un ID gia'
+        # usato (e magari ancora negli appunti o in un client) verrebbe riassegnato.
+        self._next_clip_id = max(self._next_clip_id,
+                                 int(snapshot.get('next_clip_id', self._next_clip_id)))
         if 'track_names' in snapshot:
             self.track_names = snapshot['track_names'].copy()
         if 'track_colors' in snapshot:
@@ -974,70 +1047,329 @@ class MultiTrackDAW:
         return True
 
     # ──────────────────────────────────────────────────────────────────
-    # COPY / PASTE (P2-3)
+    # MONTAGGIO (ui-studio, sez. 6.3-6.5, D3/D4): appunti, taglia/incolla,
+    # operazioni clip per ID, duplica. Regole comuni:
+    #   - selezione sempre esplicita (traccia + intervallo o ID clip);
+    #   - controllo trasporto + revisione + validazione, POI allocazione ID,
+    #     POI un solo _push_undo, POI mutazione, tutto in un solo _edit();
+    #   - mai mutare in place la lista tracks[ch] (il playback la itera senza
+    #     lock): liste nuove + _set_track/_set_sorted;
+    #   - controlli sui byte grezzi (niente mido.Message per evento: CPU Pi);
+    #   - O(n) sugli eventi della SOLA traccia interessata.
+    # Fallimento = None con last_error {code, message, details, http}.
     # ──────────────────────────────────────────────────────────────────
 
-    def copy_selection(self, channel, start_beat, end_beat):
-        """
-        Copy events from a channel in [start_beat, end_beat) to clipboard.
-        Events stored with beat positions relative to start_beat.
-        Returns number of copied events.
-        """
-        if channel < 0 or channel > 15 or end_beat <= start_beat:
-            return 0
-        self._clipboard = [
-            (b - start_beat, msg)
-            for b, msg in self.tracks.get(channel, [])
-            if start_beat <= b < end_beat
-        ]
-        self._clipboard_channel = channel
-        return len(self._clipboard)
+    def _nope(self, code, message, details=None, http=None):
+        self._fail(code, message, details, http)
+        return None
 
-    def paste_at(self, channel, target_beat):
-        """
-        Paste clipboard events at target_beat on the given channel.
-        Returns number of pasted events.
-        (Semantica: ui-studio. Qui solo l'invariante event_clips: eventi liberi.)
-        """
-        if not self._clipboard or self.is_recording or self.is_playing:
-            return 0
-        if channel < 0 or channel > 15:
-            return 0
+    def _channel_ok(self, channel, field='channel'):
+        if isinstance(channel, bool) or not isinstance(channel, int) or not 0 <= channel <= 15:
+            self._fail('BAD_REQUEST', 'Traccia non valida (0-15)', {'field': field})
+            return False
+        return True
+
+    def _refuse_transport(self, http=None):
+        if self.is_playing or self.is_recording:
+            self._fail('TRANSPORT_ACTIVE', 'Ferma Play/Record prima di modificare',
+                       {'is_playing': self.is_playing, 'is_recording': self.is_recording}, http)
+            return True
+        return False
+
+    def _num_ok(self, value, field, lo=0.0, hi=None):
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            v = float('nan')
+        if isinstance(value, bool) or not math.isfinite(v) or v < lo or (hi is not None and v > hi):
+            limit = f'{lo}..{hi}' if hi is not None else f'>= {lo}'
+            self._fail('BAD_REQUEST', f'{field}: numero {limit} atteso', {'field': field})
+            return None
+        return v
+
+    def _range_ok(self, start_beat, end_beat):
+        start = self._num_ok(start_beat, 'start_beat', 0.0, project_store.MAX_BEAT)
+        if start is None:
+            return None
+        end = self._num_ok(end_beat, 'end_beat', 0.0)
+        if end is None:
+            return None
+        if end <= start:
+            self._fail('BAD_REQUEST', 'end_beat deve essere > start_beat', {'field': 'end_beat'})
+            return None
+        return start, end
+
+    def _get_clip(self, channel, clip_id):
+        try:
+            cid = int(clip_id)
+        except (TypeError, ValueError):
+            cid = -1
+        clip = next((c for c in self.clips[channel] if int(c['id']) == cid), None)
+        if clip is None:
+            self._fail('NOT_FOUND', 'Clip non trovato',
+                       {'kind': 'clip', 'channel': channel, 'clip_id': clip_id})
+        return clip
+
+    def _clip_indices(self, channel, cid):
+        """Indici (crescenti) degli eventi posseduti dal clip `cid` (D3)."""
+        return [i for i, c in enumerate(self._ids(channel)) if c == cid]
+
+    @staticmethod
+    def _clip_name(name, suffix=''):
+        return (str(name or 'Clip') + suffix)[:64]   # limite dello schema (5.1)
+
+    @staticmethod
+    def _payload(events, indices, origin, length):
+        """Appunti da un insieme di indici: [(beat relativo, bytes)] ordinati.
+        Sustain (6.3): se l'ultimo CC64 posseduto e' >= 64 si aggiunge un
+        CC64=0 a `length`, cosi' l'incolla non lascia il pedale premuto.
+        Le liste di byte sono condivise (immutabili per contratto, 5.2)."""
+        out = [(max(0.0, events[i][0] - origin), events[i][1]) for i in indices]
+        last = None
+        for i in indices:
+            d = events[i][1]
+            if (d[0] & 0xF0) == 0xB0 and len(d) > 2 and d[1] == 64:
+                last = d
+        released = last is not None and last[2] >= 64
+        if released:
+            out.append((float(length), [0xB0 | (last[0] & 0x0F), 64, 0]))
+            out.sort(key=lambda e: e[0])          # stabile: un solo evento fuori posto
+        return out, released
+
+    def _copy_locked(self, channel, start=None, end=None, clip=None):
+        """Insieme copiato + appunti (sotto lock). Ritorna (indici, payload, meta)."""
+        events = self.tracks[channel]
+        if clip is not None:
+            # In Record la coda (non ordinata) del take ha ID 0: gli eventi del
+            # clip stanno tutti nella parte gia' ordinata della traccia.
+            cid = int(clip['id'])
+            indices = self._clip_indices(channel, cid)
+            origin, length = float(clip['start_beat']), float(clip['end_beat']) - float(clip['start_beat'])
+            payload, released = self._payload(events, indices, origin, length)
+            meta = {'kind': 'clip', 'length_beats': length, 'source_track': channel,
+                    'source_clip_id': cid, 'name': clip.get('name') or 'Clip',
+                    'sustain_release': released}
+        else:
+            ids = self._ids(channel)
+            if self.is_recording and channel in self._rec_tracks:
+                # Coda del take non ancora ordinata: la copia (sempre consentita)
+                # lavora su una copia locale ordinata. Taglia e' vietata in
+                # Record, quindi questi indici non vengono mai usati per rimuovere.
+                events, ids = self._sorted_pair(events, ids)
+            indices = sorted(self._owned_by_id(events, ids, start, end)) if events else []
+            payload, released = self._payload(events, indices, start, end - start)
+            meta = {'kind': 'range', 'length_beats': end - start, 'source_track': channel,
+                    'source_clip_id': None, 'name': None, 'sustain_release': released}
+        return indices, payload, meta
+
+    def _set_clipboard(self, payload, meta):
+        self._clipboard = payload
+        self._clipboard_channel = meta['source_track']
+        self._clipboard_meta = meta
+
+    def clipboard_info(self):
+        """Stato pubblico degli appunti (uno solo, condiviso, mai salvato)."""
+        meta = getattr(self, '_clipboard_meta', None)
+        if meta is None or (meta['kind'] == 'range' and not self._clipboard):
+            return None
+        info = {k: meta[k] for k in ('kind', 'length_beats', 'source_track', 'name', 'sustain_release')}
+        info['events'] = len(self._clipboard)
+        return info
+
+    def copy_selection(self, channel, start_beat=None, end_beat=None, clip_id=None):
+        """Copia (sez. 6.4): intervallo {channel, start_beat, end_beat} oppure
+        clip {channel, clip_id}. Coppie complete + sustain (6.3). Non modifica
+        il progetto (ne' revisione ne' dirty), consentita anche in Play/Record.
+        Ritorna il numero di eventi copiati (senza il CC64=0 aggiunto) o None."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        rng = None
+        if clip_id is None:
+            rng = self._range_ok(start_beat, end_beat)
+            if rng is None:
+                return None
+        with self._edit_lock:
+            clip = None
+            if clip_id is not None:
+                clip = self._get_clip(channel, clip_id)
+                if clip is None:
+                    return None
+            indices, payload, meta = self._copy_locked(channel, *(rng or (None, None)), clip=clip)
+            self._set_clipboard(payload, meta)
+        self._emit_state_change()                 # altri client: stato appunti
+        return len(indices)
+
+    def cut(self, channel, start_beat=None, end_beat=None, clip_id=None, expected_revision=None):
+        """Taglia (sez. 6.4): copia + rimozione dello STESSO insieme di indici,
+        atomica, un solo undo. Intervallo: clip interamente contenuti rimossi,
+        parzialmente sovrapposti restano. Clip (estensione): copia del clip +
+        sua eliminazione. Il CC64=0 di rilascio va solo negli appunti.
+        Ritorna {copied, removed, clips_removed, clipboard} o None."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        rng = None
+        if clip_id is None:
+            rng = self._range_ok(start_beat, end_beat)
+            if rng is None:
+                return None
         with self._edit():
+            if self._refuse_transport() or not self.check_revision(expected_revision):
+                return None
+            clip = None
+            if clip_id is not None:
+                clip = self._get_clip(channel, clip_id)
+                if clip is None:
+                    return None
+            indices, payload, meta = self._copy_locked(channel, *(rng or (None, None)), clip=clip)
+            self._set_clipboard(payload, meta)
+            if clip is not None:
+                res = self._delete_clip_locked(channel, clip, indices)
+            else:
+                res = self._remove_range_locked(channel, rng[0], rng[1], set(indices))
+            res = {'copied': len(indices), 'removed': res['removed'],
+                   'clips_removed': res['clips_removed'], 'clipboard': self.clipboard_info()}
+            if not res['removed'] and not res['clips_removed']:
+                self._emit_state_change()         # solo appunti cambiati
+        return res
+
+    def _payload_ids(self, channel, payload, target):
+        """ID clip per un incolla da intervallo: regola di add_note (6.3), il
+        clip piu' recente che contiene il beat del note-on; il note-off prende
+        SEMPRE l'ID del suo note-on (coppia FIFO dentro gli appunti)."""
+        ids = [0] * len(payload)
+        partner = {}
+        for _n, _v, _ob, _fb, on_l, off_l in project_store.pair_notes(payload):
+            if off_l >= 0:
+                partner[off_l] = on_l
+        for l, (rel, d) in enumerate(payload):
+            if l in partner:
+                continue
+            ids[l] = self._clip_at(channel, target + rel)
+        for off_l, on_l in partner.items():
+            ids[off_l] = ids[on_l]
+        return ids
+
+    def _insert_locked(self, channel, payload, target, ids):
+        """Inserisce gli eventi degli appunti a `target` (nibble di canale
+        normalizzato sulla traccia di destinazione: nuova lista di byte SOLO
+        se diverso). Un sort su due sequenze gia' ordinate (timsort: ~O(n))."""
+        events = list(self.tracks[channel])
+        new_ids = array('H', self._ids(channel))
+        for (rel, d), cid in zip(payload, ids):
+            if (d[0] & 0x0F) != channel:
+                d = [(d[0] & 0xF0) | channel] + list(d[1:])
+            events.append((target + rel, d))
+            new_ids.append(cid)
+        self._set_sorted(channel, events, new_ids)
+        self._density_dirty = True
+
+    def _clip_span(self, payload, length, released):
+        """Ingombro di un incolla di clip: cornice (+ margine se c'e' il CC64=0
+        di rilascio, come la fine Record: la cornice deve contenerlo) e beat
+        massimo degli eventi (note-off oltre la cornice compresi)."""
+        frame = float(length) + (project_store.CLIP_TAIL_BEATS if released else 0.0)
+        last = max((rel for rel, _d in payload), default=0.0)
+        return frame, max(frame, last)
+
+    def paste_at(self, channel, target_beat, expected_revision=None):
+        """Incolla (sez. 6.4) a traccia + beat dichiarati. Appunti da intervallo:
+        eventi inseriti, nessun clip creato (ID clip con la regola di add_note).
+        Appunti da clip: clip nuovo (nuovo ID, stessa durata, nome + " (copia)")
+        proprietario di tutti gli eventi incollati; sovrapposizioni consentite.
+        Appunti vuoti -> EMPTY_CLIPBOARD (A27). Vietato con Play/Record.
+        Ritorna {pasted, new_clip_id} o None."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        target = self._num_ok(target_beat, 'beat', 0.0, project_store.MAX_BEAT)
+        if target is None:
+            return None
+        with self._edit():
+            if self._refuse_transport() or not self.check_revision(expected_revision):
+                return None
+            meta = getattr(self, '_clipboard_meta', None)
+            payload = list(self._clipboard)
+            is_clip = meta is not None and meta['kind'] == 'clip'
+            if not payload and not is_clip:
+                return self._nope('EMPTY_CLIPBOARD', 'Appunti vuoti: copia o taglia prima di incollare')
+            if is_clip:
+                frame, span = self._clip_span(payload, meta['length_beats'], meta['sustain_release'])
+            else:
+                frame, span = 0.0, max(rel for rel, _d in payload)
+            if target + span > project_store.MAX_BEAT:
+                return self._nope('BAD_REQUEST', f'Incolla oltre il beat {project_store.MAX_BEAT}',
+                                  {'field': 'beat'})
+            new_id = self._alloc_clip_id() if is_clip else None      # PRIMA dell'undo
             self._push_undo()
-            events = list(self.tracks[channel])
-            ids = array('H', self._ids(channel))
-            for rel_beat, msg_bytes in self._clipboard:
-                events.append((target_beat + rel_beat, msg_bytes))
-                ids.append(0)
-            self._set_sorted(channel, events, ids)
-            self._density_dirty = True
+            if is_clip:
+                ids = [new_id] * len(payload)
+                self.clips[channel].append({
+                    'id': new_id, 'start_beat': target, 'end_beat': target + frame,
+                    'name': self._clip_name(meta['name'], ' (copia)'), 'created_at': time.time()})
+            else:
+                ids = self._payload_ids(channel, payload, target)
+            self._insert_locked(channel, payload, target, ids)
             self._emit_state_change()
-        return len(self._clipboard)
+        return {'pasted': len(payload), 'new_clip_id': new_id}
 
-    def duplicate_track(self, src_channel, dest_channel):
-        """Copy MIDI events from src_channel to dest_channel. Only events are copied, not instrument/CC/color/name.
-        If dest_channel has existing events, they are replaced. Returns dest channel or -1.
-        I clip non vengono copiati (ui-studio, A17): gli eventi copiati sono liberi."""
-        if self.is_recording or self.is_playing:
-            return -1
-        if src_channel < 0 or src_channel > 15 or dest_channel < 0 or dest_channel > 15:
-            return -1
+    def duplicate_track(self, src_channel, dest_channel, include_config=None,
+                        confirm_overwrite=None, expected_revision=None):
+        """Duplica traccia (sez. 6.4, A17).
+
+        Variante legacy (include_config e confirm_overwrite ENTRAMBI assenti,
+        index.html attuale): copia solo gli eventi, liberi, e sostituisce la
+        destinazione senza conferma (comportamento storico, D13).
+        Variante nuova: copia eventi E clip (nuovi ID, eventi rimappati);
+        destinazione con eventi o clip -> DEST_NOT_EMPTY salvo
+        confirm_overwrite. `include_config` (copia della parte) e' applicato
+        dalla route (router), non qui. Ritorna {dest_channel, ...} o None."""
+        self.last_error = None
+        legacy = include_config is None and confirm_overwrite is None
+        if not self._channel_ok(src_channel) or not self._channel_ok(dest_channel, 'dest_channel'):
+            return None
         if src_channel == dest_channel:
-            return -1
+            return self._nope('BAD_REQUEST', 'Sorgente e destinazione coincidono', {'field': 'dest_channel'})
         with self._edit():
-            if not self.tracks[src_channel]:
-                return -1
+            # Override legacy 8.1: trasporto attivo -> 400 sulla variante storica.
+            if self._refuse_transport(http=400 if legacy else None):
+                return None
+            if not self.check_revision(expected_revision):
+                return None
+            src_events = self.tracks[src_channel]
+            src_clips = self.clips[src_channel]
+            if not src_events and (legacy or not src_clips):
+                return self._nope('BAD_REQUEST', 'Traccia sorgente vuota', {'field': 'channel'})
+            dest_has = bool(self.tracks[dest_channel]) or (not legacy and bool(self.clips[dest_channel]))
+            if dest_has and not legacy and not confirm_overwrite:
+                return self._nope('DEST_NOT_EMPTY', 'La traccia di destinazione contiene dati',
+                                  {'dest_channel': dest_channel, 'events': len(self.tracks[dest_channel]),
+                                   'clips': len(self.clips[dest_channel])})
+            mapping = {}
+            if not legacy:
+                for c in sorted(src_clips, key=lambda c: int(c['id'])):
+                    mapping[int(c['id'])] = self._alloc_clip_id()   # PRIMA dell'undo
             was_empty = not self.tracks[dest_channel]
             self._push_undo()
-            src = list(self.tracks[src_channel])
-            self._set_track(dest_channel, src, _ids_zero(len(src)))
-            # Only set name if dest was empty
+            src = list(src_events)
+            if legacy:
+                self._set_track(dest_channel, src, _ids_zero(len(src)))
+            else:
+                ids = array('H', [mapping.get(c, 0) for c in self._ids(src_channel)])
+                self._set_track(dest_channel, src, ids)
+                now = time.time()
+                self.clips[dest_channel] = [
+                    {'id': mapping[int(c['id'])], 'start_beat': c['start_beat'],
+                     'end_beat': c['end_beat'], 'name': c.get('name', ''), 'created_at': now}
+                    for c in sorted(src_clips, key=lambda c: int(c['id']))]
             if was_empty:
-                self.track_names[dest_channel] = 'Copy of ' + self.track_names.get(src_channel, f'Track {src_channel+1}')
+                self.track_names[dest_channel] = ('Copy of ' + self.track_names.get(
+                    src_channel, f'Track {src_channel + 1}'))[:32]
             self._density_dirty = True
             self._emit_state_change()
-        return dest_channel
+        return {'dest_channel': dest_channel, 'events': len(src), 'replaced': dest_has,
+                'clip_map': {str(k): v for k, v in mapping.items()}, 'legacy': legacy}
 
     def rename_track(self, channel, name):
         """Rename a track. Name is trimmed to 32 chars. Un livello di undo (A14)."""
@@ -1166,7 +1498,51 @@ class MultiTrackDAW:
         events = self.tracks.get(channel, [])
         if not events:
             return set()
-        return project_store.owned_indices(events, start_beat, end_beat)
+        return self._owned_by_id(events, self._ids(channel), start_beat, end_beat)
+
+    @staticmethod
+    def _group_partners(events, ids):
+        """{indice note-on: indice note-off} con FIFO per altezza DENTRO ogni ID
+        clip (0 = liberi); -1 per le note aperte."""
+        partner = {}
+        open_notes = {}
+        for idx, ev in enumerate(events):
+            data = ev[1]
+            kind = data[0] & 0xF0
+            if kind == 0x90 and len(data) > 2 and data[2] > 0:
+                open_notes.setdefault((ids[idx], data[1]), []).append(idx)
+                partner[idx] = -1
+            elif len(data) > 2 and (kind == 0x80 or kind == 0x90):
+                pending = open_notes.get((ids[idx], data[1]))
+                if pending:
+                    partner[pending.pop(0)] = idx
+        return partner
+
+    @staticmethod
+    def _owned_by_id(events, ids, start, end):
+        """Regola 6.3 "intervalli" con D3 (ui-studio): il note-off che viaggia con
+        un note-on e' il suo partner FIFO DENTRO lo stesso ID clip (0 = liberi).
+        Coincide con project_store.owned_indices quando il partner FIFO globale
+        ha lo stesso ID (caso normale). Con note della stessa altezza sovrapposte
+        in clip diversi il partner globale puo' avere un altro ID: rimuoverlo
+        sbilancerebbe entrambi i clip e una successiva eliminazione di clip
+        lascerebbe una nota sospesa. Cosi' ogni ID resta sempre bilanciato."""
+        owned = set()
+        open_notes = {}
+        for idx, ev in enumerate(events):
+            beat, data = ev[0], ev[1]
+            kind = data[0] & 0xF0
+            if kind == 0x90 and len(data) > 2 and data[2] > 0:
+                open_notes.setdefault((ids[idx], data[1]), []).append(idx)
+                if start <= beat < end:
+                    owned.add(idx)
+            elif len(data) > 2 and (kind == 0x80 or kind == 0x90):
+                pending = open_notes.get((ids[idx], data[1]))
+                if pending and pending.pop(0) in owned:
+                    owned.add(idx)
+            elif start <= beat < end:
+                owned.add(idx)
+        return owned
 
     def transpose_notes(self, channel, semitones, start_beat=None, end_beat=None, expected_revision=None):
         """Transpose note events on a channel by semitones.
@@ -1186,6 +1562,8 @@ class MultiTrackDAW:
         semitones = int(semitones)
 
         with self._edit():
+            if self.is_recording or self.is_playing:
+                return None
             if not self.check_revision(expected_revision):
                 return False
             events = self.tracks.get(channel)
@@ -1235,214 +1613,328 @@ class MultiTrackDAW:
         with self._edit_lock:
             return self.get_clips(channel), self.revision
 
-    # Operazioni clip: semantica di ui-studio (D3/A18). Qui solo lock +
-    # invariante tracks/event_clips (sort permutato, nessun ID pendente).
+    # Operazioni clip per ID (D3, sez. 6.3/6.4, A18): agiscono SOLO sugli
+    # eventi con event_clips == ID, anche con altri clip sovrapposti. Ogni ID
+    # e' bilanciato (stessi note-on/off per altezza, on prima di off): unire
+    # o spostare in blocco sequenze bilanciate non crea mai note-off orfani.
 
-    def move_clip(self, channel, clip_id, target_start_beat):
-        """Move a clip and all its note-pair-aware events to a target start beat.
-
-        Uses note_on position to determine clip ownership: if note_on is inside
-        the clip range, both note_on AND note_off are moved together.
-        """
-        if self.is_recording or self.is_playing:
+    def _clip_op_start(self, channel, clip_id, expected_revision):
+        """Prologo comune (sotto _edit): trasporto, revisione, clip esistente."""
+        if self._refuse_transport() or not self.check_revision(expected_revision):
             return None
-        if channel < 0 or channel > 15:
-            return False
+        return self._get_clip(channel, clip_id)
 
+    def move_clip(self, channel, clip_id, target_start_beat, expected_revision=None):
+        """Sposta (6.4): delta su tutti gli eventi con l'ID del clip; ID e durata
+        invariati; eventi liberi o di altri clip nella zona di arrivo NON
+        cambiano proprietario. start < 0 o oltre MAX_BEAT -> BAD_REQUEST."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        target = self._num_ok(target_start_beat, 'target_start_beat', 0.0, project_store.MAX_BEAT)
+        if target is None:
+            return None
         with self._edit():
-            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-            if not clip:
-                return False
-
-            old_start = float(clip['start_beat'])
-            old_end = float(clip['end_beat'])
-            target_start = max(0.0, float(target_start_beat))
-            delta = target_start - old_start
-            if abs(delta) < 1e-9:
-                return True
-
-            indices_to_move = self._get_note_pair_indices_in_range(channel, old_start, old_end)
-
+            clip = self._clip_op_start(channel, clip_id, expected_revision)
+            if clip is None:
+                return None
+            cid = int(clip['id'])
+            old_start, old_end = float(clip['start_beat']), float(clip['end_beat'])
+            delta = target - old_start
+            if delta == 0.0:
+                return {'moved': 0}
+            events, ids = self.tracks[channel], self._ids(channel)
+            mine = [i for i, c in enumerate(ids) if c == cid]
+            last = max((events[i][0] for i in mine), default=old_end)
+            if max(last, old_end) + delta > project_store.MAX_BEAT:
+                return self._nope('BAD_REQUEST', f'Spostamento oltre il beat {project_store.MAX_BEAT}',
+                                  {'field': 'target_start_beat'})
             self._push_undo()
-            moved = []
-            for idx, (beat, msg_bytes) in enumerate(self.tracks[channel]):
-                if idx in indices_to_move:
-                    moved.append((max(0.0, beat + delta), msg_bytes))
-                else:
-                    moved.append((beat, msg_bytes))
-            self._set_sorted(channel, moved, self._ids(channel))
-
-            clip['start_beat'] = max(0.0, old_start + delta)
-            clip['end_beat'] = max(clip['start_beat'] + 0.01, old_end + delta)
+            if mine:
+                mine_set = set(mine)
+                rest = [i for i in range(len(events)) if i not in mine_set]
+                # Due sequenze gia' ordinate concatenate: il sort (timsort) le
+                # fonde in ~O(n). A parita' di beat gli eventi fermi vengono prima.
+                new_events = [events[i] for i in rest] + \
+                             [(max(0.0, events[i][0] + delta), events[i][1]) for i in mine]
+                new_ids = array('H', [ids[i] for i in rest]) + array('H', [cid]) * len(mine)
+                self._set_sorted(channel, new_events, new_ids)
+            clip['start_beat'] = target
+            clip['end_beat'] = old_end + delta
             self._density_dirty = True
             self._emit_state_change()
-        return True
+        return {'moved': len(mine)}
 
-    def delete_clip(self, channel, clip_id):
-        """Delete a clip and remove all its note-pair-aware events.
+    def _delete_clip_locked(self, channel, clip, indices=None):
+        cid = int(clip['id'])
+        if indices is None:
+            indices = self._clip_indices(channel, cid)
+        self._push_undo()
+        if indices:
+            self._drop_indices(channel, set(indices))
+        self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) != cid]
+        self._density_dirty = True
+        self._emit_state_change()
+        return {'removed': len(indices), 'clips_removed': [cid]}
 
-        Uses note_on position to determine clip ownership: if note_on is inside
-        the clip range, both note_on AND note_off are removed.
-        """
-        if self.is_recording or self.is_playing:
+    def delete_clip(self, channel, clip_id, expected_revision=None):
+        """Elimina (6.4): il clip e gli eventi con il suo ID (coppie complete:
+        ogni ID e' bilanciato). Gli eventi di clip sovrapposti restano."""
+        self.last_error = None
+        if not self._channel_ok(channel):
             return None
-        if channel < 0 or channel > 15:
-            return False
-
         with self._edit():
-            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-            if not clip:
-                return False
+            clip = self._clip_op_start(channel, clip_id, expected_revision)
+            if clip is None:
+                return None
+            return self._delete_clip_locked(channel, clip)
 
-            start_beat = float(clip['start_beat'])
-            end_beat = float(clip['end_beat'])
-            indices_to_delete = self._get_note_pair_indices_in_range(channel, start_beat, end_beat)
-
-            self._push_undo()
-            self._drop_indices(channel, indices_to_delete)
-            self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) != int(clip_id)]
-            self._free_orphan_ids(channel)
-            self._density_dirty = True
-            self._emit_state_change()
-        return True
-
-    def transpose_clip(self, channel, clip_id, semitones):
-        """Transpose note events inside one clip range."""
-        if channel < 0 or channel > 15:
-            return 0
-        with self._edit():
-            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-            if not clip:
-                return 0
-            return self.transpose_notes(channel, semitones, clip['start_beat'], clip['end_beat'])
-
-    def resize_clip(self, channel, clip_id, new_end_beat):
-        """Non-destructive clip resize: only changes end_beat, does NOT delete events.
-
-        Notes beyond new_end_beat remain in the track; they just won't be
-        visible inside the clip boundary. Extending the clip later will
-        reveal them again.
-        """
-        if self.is_recording or self.is_playing:
+    def transpose_clip(self, channel, clip_id, semitones, expected_revision=None):
+        """Trasponi clip (6.4): note (on e off) con l'ID del clip, limitate a
+        0..127. Nessun cambio di ordine: event_clips invariato."""
+        self.last_error = None
+        if not self._channel_ok(channel):
             return None
-        if channel < 0 or channel > 15:
-            return False
-
         try:
-            new_end_val = float(new_end_beat)
+            semitones = int(semitones)
         except (TypeError, ValueError):
-            return False
-
+            return self._nope('BAD_REQUEST', 'semitones: intero atteso', {'field': 'semitones'})
         with self._edit():
-            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-            if not clip:
-                return False
-            new_end = max(float(clip['start_beat']) + 0.125, new_end_val)
-            if abs(new_end - float(clip['end_beat'])) < 1e-9:
-                return True
+            clip = self._clip_op_start(channel, clip_id, expected_revision)
+            if clip is None:
+                return None
+            cid = int(clip['id'])
+            events, ids = self.tracks[channel], self._ids(channel)
+            updated = None
+            modified = 0
+            for i, c in enumerate(ids):
+                if c != cid:
+                    continue
+                beat, d = events[i]
+                if (d[0] & 0xF0) in (0x80, 0x90) and len(d) > 2:
+                    n = max(0, min(127, d[1] + semitones))
+                    if n != d[1]:
+                        if updated is None:
+                            updated = list(events)
+                        updated[i] = (beat, [d[0], n, d[2]])
+                        modified += 1
+            if modified:
+                self._push_undo()
+                self._set_track(channel, updated, ids)
+                self._density_dirty = True
+                self._emit_state_change()
+        return {'modified': modified}
 
+    def resize_clip(self, channel, clip_id, new_end_beat, expected_revision=None):
+        """Ridimensiona la fine (6.4, D4). Estensione sempre consentita (nessun
+        evento cambia proprietario). Riduzione solo se new_end > beat dell'ultimo
+        evento posseduto (note-on o non-nota; i note-off possono uscire),
+        altrimenti CLIP_RESIZE_WOULD_EXCLUDE con details.min_end_beat (estremo
+        ESCLUSO). Minimo start + 0.125. Non cambia mai il playback."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        new_end = self._num_ok(new_end_beat, 'new_end_beat', 0.0, project_store.MAX_BEAT)
+        if new_end is None:
+            return None
+        with self._edit():
+            clip = self._clip_op_start(channel, clip_id, expected_revision)
+            if clip is None:
+                return None
+            cid = int(clip['id'])
+            new_end = max(float(clip['start_beat']) + 0.125, new_end)
+            if new_end > project_store.MAX_BEAT:
+                return self._nope('BAD_REQUEST', f'Fine oltre il beat {project_store.MAX_BEAT}',
+                                  {'field': 'new_end_beat'})
+            if new_end == float(clip['end_beat']):
+                return {'end_beat': new_end}
+            if new_end < float(clip['end_beat']):
+                events, ids = self.tracks[channel], self._ids(channel)
+                last = None
+                for i, c in enumerate(ids):
+                    if c == cid and not project_store._is_note_off(events[i][1]):
+                        last = events[i][0]            # traccia ordinata: l'ultimo vince
+                if last is not None and new_end <= last:
+                    return self._nope('CLIP_RESIZE_WOULD_EXCLUDE',
+                                      'La riduzione lascerebbe fuori eventi del clip',
+                                      {'clip_id': cid, 'min_end_beat': last, 'exclusive': True})
             self._push_undo()
             clip['end_beat'] = new_end
             self._density_dirty = True
             self._emit_state_change()
         print(f"[DAW] resize_clip ch={channel} id={clip_id} new_end={new_end:.3f}")
-        return True
+        return {'end_beat': new_end}
 
-    def split_clip(self, channel, clip_id, split_beat):
-        """Split a clip at split_beat into two clips.
-
-        Original clip becomes [start_beat, split_beat).
-        New clip becomes [split_beat, end_beat).
-        Events are NOT moved — they stay in place. Each clip just marks a range.
-        (Riassegnazione degli ID per evento alla meta' destra: ui-studio.)
-        """
-        if self.is_recording or self.is_playing:
+    def split_clip(self, channel, clip_id, split_beat, expected_revision=None):
+        """Dividi (6.4): originale [start, split) stesso ID, nuovo [split, end)
+        nuovo ID, nome "<nome> (split)"; margine 0.01 dai bordi. Passano al
+        nuovo ID gli eventi del clip con note-on (o beat, se non-nota) >= split,
+        con il loro note-off (coppie FIFO DENTRO il clip); una nota a cavallo
+        resta a sinistra. Nessun evento spostato: playback invariato."""
+        self.last_error = None
+        if not self._channel_ok(channel):
             return None
-        if channel < 0 or channel > 15:
-            return False
-
-        try:
-            split_at = float(split_beat)
-        except (TypeError, ValueError):
-            return False
-
+        split_at = self._num_ok(split_beat, 'split_beat', 0.0, project_store.MAX_BEAT)
+        if split_at is None:
+            return None
         with self._edit():
-            clip = next((c for c in self.clips[channel] if int(c['id']) == int(clip_id)), None)
-            if not clip:
-                return False
-            old_start = float(clip['start_beat'])
-            old_end = float(clip['end_beat'])
-
-            # split_beat must be strictly inside the clip
+            clip = self._clip_op_start(channel, clip_id, expected_revision)
+            if clip is None:
+                return None
+            old_start, old_end = float(clip['start_beat']), float(clip['end_beat'])
             if split_at <= old_start + 0.01 or split_at >= old_end - 0.01:
-                return False
-
+                # Override legacy 8.1: stesso 404 di "clip non trovato", codice BAD_REQUEST.
+                return self._nope('BAD_REQUEST', 'Punto di divisione fuori dal clip',
+                                  {'field': 'split_beat'}, http=404)
+            cid = int(clip['id'])
+            events, ids = self.tracks[channel], self._ids(channel)
+            mine = [i for i, c in enumerate(ids) if c == cid]
+            sub = [events[i] for i in mine]
+            right = set()
+            paired_off = set()
+            for _n, _v, on_b, _fb, on_l, off_l in project_store.pair_notes(sub):
+                if off_l >= 0:
+                    paired_off.add(off_l)
+                if on_b >= split_at:
+                    right.add(on_l)
+                    if off_l >= 0:
+                        right.add(off_l)
+            for l, (beat, d) in enumerate(sub):
+                if l in paired_off or project_store._is_note_on(d):
+                    continue
+                if beat >= split_at:                    # non-nota (o note-off spaiato)
+                    right.add(l)
+            new_id = self._alloc_clip_id()              # PRIMA dell'undo
             self._push_undo()
-
-            # Shrink original clip to [start, split)
+            if right:
+                new_ids = array('H', ids)
+                for l in right:
+                    new_ids[mine[l]] = new_id
+                self._set_track(channel, events, new_ids)
             clip['end_beat'] = split_at
-
-            # Create new clip for [split, end)
-            new_id = self._alloc_clip_id()
             self.clips[channel].append({
-                'id': new_id,
-                'start_beat': split_at,
-                'end_beat': old_end,
-                'name': f'{clip.get("name", "Clip")} (split)',
-                'created_at': time.time()
-            })
+                'id': new_id, 'start_beat': split_at, 'end_beat': old_end,
+                'name': self._clip_name(clip.get('name'), ' (split)'), 'created_at': time.time()})
             self._density_dirty = True
             self._emit_state_change()
         print(f"[DAW] split_clip ch={channel} id={clip_id} at={split_at:.3f} -> new_id={new_id}")
-        return new_id
+        return {'new_clip_id': new_id, 'moved_events': len(right)}
 
-    def merge_clips(self, channel, clip_ids):
-        """Merge multiple clips into one spanning their combined range.
-
-        Events are NOT moved. The resulting clip covers min(start_beat)..max(end_beat).
-        Original clips are removed and replaced by one new clip; gli eventi dei
-        clip uniti passano al nuovo ID (altrimenti resterebbero ID pendenti).
-        """
-        if self.is_recording or self.is_playing:
+    def merge_clips(self, channel, clip_ids, expected_revision=None):
+        """Unisci (6.4): stessa traccia, >= 2 ID distinti; risultato [min start,
+        max end) con NUOVO ID, nome "Merged <id>"; gli eventi dei clip uniti
+        passano al nuovo ID, quelli di altri clip no. Un ID assente -> NOT_FOUND
+        (nessuna unione parziale silenziosa)."""
+        self.last_error = None
+        if not self._channel_ok(channel):
             return None
-        if channel < 0 or channel > 15:
-            return False
-
         try:
-            id_set = set(int(cid) for cid in clip_ids)
+            wanted = sorted(set(int(c) for c in clip_ids))
         except (TypeError, ValueError):
-            return False
-
+            return self._nope('BAD_REQUEST', 'clip_ids: lista di interi attesa', {'field': 'clip_ids'})
+        if len(wanted) < 2:
+            return self._nope('BAD_REQUEST', 'Servono almeno 2 clip distinti', {'field': 'clip_ids'})
         with self._edit():
-            matching = [c for c in self.clips[channel] if int(c['id']) in id_set]
-            if len(matching) < 2:
-                return False
-
+            if self._refuse_transport() or not self.check_revision(expected_revision):
+                return None
+            present = {int(c['id']): c for c in self.clips[channel]}
+            missing = [c for c in wanted if c not in present]
+            if missing:
+                return self._nope('NOT_FOUND', 'Clip non trovati sulla traccia',
+                                  {'kind': 'clip', 'channel': channel, 'clip_ids': missing})
+            matching = [present[c] for c in wanted]
             min_start = min(float(c['start_beat']) for c in matching)
             max_end = max(float(c['end_beat']) for c in matching)
-
+            new_id = self._alloc_clip_id()              # PRIMA dell'undo
             self._push_undo()
-
-            # Remove old clips
+            id_set = set(wanted)
             self.clips[channel] = [c for c in self.clips[channel] if int(c['id']) not in id_set]
-
-            # Create merged clip
-            new_id = self._alloc_clip_id()
             self.clips[channel].append({
-                'id': new_id,
-                'start_beat': min_start,
-                'end_beat': max_end,
-                'name': f'Merged {new_id}',
-                'created_at': time.time()
-            })
+                'id': new_id, 'start_beat': min_start, 'end_beat': max_end,
+                'name': f'Merged {new_id}', 'created_at': time.time()})
             ids = self._ids(channel)
-            for i, cid in enumerate(ids):
-                if cid in id_set:
-                    ids[i] = new_id
+            if any(c in id_set for c in ids):
+                new_ids = array('H', [new_id if c in id_set else c for c in ids])
+                self._set_track(channel, self.tracks[channel], new_ids)
             self._density_dirty = True
             self._emit_state_change()
-        print(f"[DAW] merge_clips ch={channel} ids={list(id_set)} -> new_id={new_id} range=[{min_start:.3f}, {max_end:.3f}]")
-        return new_id
+        print(f"[DAW] merge_clips ch={channel} ids={wanted} -> new_id={new_id} range=[{min_start:.3f}, {max_end:.3f}]")
+        return {'new_clip_id': new_id, 'start_beat': min_start, 'end_beat': max_end}
+
+    def create_clip(self, channel, start_beat, end_beat, expected_revision=None, name=None):
+        """Crea clip da intervallo (6.4, nuova): [start, end) qualsiasi; prende
+        gli eventi LIBERI dell'intervallo (regola 6.3), mai quelli di altri clip.
+        Una nota passa al clip solo come coppia (note-on e note-off entrambi
+        liberi, accoppiati FIFO tra gli eventi liberi). Ritorna {clip, events}."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        rng = self._range_ok(start_beat, end_beat)
+        if rng is None:
+            return None
+        start, end = rng
+        if end > project_store.MAX_BEAT:
+            return self._nope('BAD_REQUEST', f'end_beat oltre {project_store.MAX_BEAT}', {'field': 'end_beat'})
+        with self._edit():
+            if self._refuse_transport() or not self.check_revision(expected_revision):
+                return None
+            events, ids = self.tracks[channel], self._ids(channel)
+            free = [i for i, c in enumerate(ids) if c == 0]
+            sub = [events[i] for i in free]
+            take = set()
+            paired_off = set()
+            for _n, _v, on_b, _fb, on_l, off_l in project_store.pair_notes(sub):
+                if off_l >= 0:
+                    paired_off.add(off_l)
+                if start <= on_b < end:
+                    take.add(on_l)
+                    if off_l >= 0:
+                        take.add(off_l)
+            for l, (beat, d) in enumerate(sub):
+                if l in paired_off or project_store._is_note_on(d) or project_store._is_note_off(d):
+                    continue                           # note-off spaiati restano liberi
+                if start <= beat < end:
+                    take.add(l)
+            new_id = self._alloc_clip_id()              # PRIMA dell'undo
+            self._push_undo()
+            if take:
+                new_ids = array('H', ids)
+                for l in take:
+                    new_ids[free[l]] = new_id
+                self._set_track(channel, events, new_ids)
+            clip = {'id': new_id, 'start_beat': start, 'end_beat': end,
+                    'name': self._clip_name(name or f'Clip {new_id}'), 'created_at': time.time()}
+            self.clips[channel].append(clip)
+            self._density_dirty = True
+            self._emit_state_change()
+        return {'clip': dict(clip), 'events': len(take)}
+
+    def duplicate_clip(self, channel, clip_id, expected_revision=None):
+        """Duplica clip (6.4, nuova): copia degli eventi del clip incollata a
+        end_beat dello stesso clip sulla stessa traccia, nuovo ID, nome +
+        " (copia)"; stessa regola sustain della copia. NON tocca gli appunti.
+        Un solo undo. Ritorna {new_clip_id, clip}."""
+        self.last_error = None
+        if not self._channel_ok(channel):
+            return None
+        with self._edit():
+            clip = self._clip_op_start(channel, clip_id, expected_revision)
+            if clip is None:
+                return None
+            _idx, payload, meta = self._copy_locked(channel, clip=clip)
+            target = float(clip['end_beat'])
+            frame, span = self._clip_span(payload, meta['length_beats'], meta['sustain_release'])
+            if target + span > project_store.MAX_BEAT:
+                return self._nope('BAD_REQUEST', f'Duplicato oltre il beat {project_store.MAX_BEAT}',
+                                  {'field': 'clip_id'})
+            new_id = self._alloc_clip_id()              # PRIMA dell'undo
+            self._push_undo()
+            new_clip = {'id': new_id, 'start_beat': target, 'end_beat': target + frame,
+                        'name': self._clip_name(meta['name'], ' (copia)'), 'created_at': time.time()}
+            self.clips[channel].append(new_clip)
+            self._insert_locked(channel, payload, target, [new_id] * len(payload))
+            self._emit_state_change()
+        return {'new_clip_id': new_id, 'clip': dict(new_clip)}
 
     def set_bpm(self, bpm):
         """
@@ -1518,6 +2010,10 @@ class MultiTrackDAW:
             'track_colors': self.track_colors.copy(),
             'clips': {ch: self.get_clips(ch) for ch in range(16)},
             'revision': self.revision,
+            # ui-studio: D6 (diagnostica, null fuori dal Record) e stato appunti
+            # (Incolla abilitato solo con appunti non vuoti).
+            'record_start_beat': self.record_start_beat,
+            'clipboard': self.clipboard_info(),
         }
 
     # --- MIDI note name helper ---
@@ -1616,6 +2112,8 @@ class MultiTrackDAW:
         if self.is_recording:
             return self._refuse_recording()
         with self._edit():
+            if self.is_recording:              # ricontrollo sotto lock (review L3)
+                return self._refuse_recording()
             if not self.check_revision(expected_revision):
                 return False
             events = self.tracks.get(channel)
@@ -1661,6 +2159,8 @@ class MultiTrackDAW:
         if self.is_recording:
             return self._refuse_recording()
         with self._edit():
+            if self.is_recording:              # ricontrollo sotto lock (review L3)
+                return self._refuse_recording()
             if not self.check_revision(expected_revision):
                 return False
             events = self.tracks.get(channel)
@@ -1694,6 +2194,8 @@ class MultiTrackDAW:
             return self._fail('BAD_REQUEST', f'Valore non valido: {e}', {'field': 'start_beat'}, http=400)
 
         with self._edit():
+            if self.is_recording:              # ricontrollo sotto lock (review L3)
+                return self._refuse_recording()
             if not self.check_revision(expected_revision):
                 return False
             self._push_undo()
@@ -1720,6 +2222,8 @@ class MultiTrackDAW:
         if self.is_recording:
             return self._refuse_recording()
         with self._edit():
+            if self.is_recording:              # ricontrollo sotto lock (review L3)
+                return self._refuse_recording()
             if not self.check_revision(expected_revision):
                 return False
             events = self.tracks.get(channel)
@@ -1775,6 +2279,8 @@ class MultiTrackDAW:
         if self.is_recording:
             return self._refuse_recording()
         with self._edit():
+            if self.is_recording:              # ricontrollo sotto lock (review L3)
+                return self._refuse_recording()
             if not self.check_revision(expected_revision):
                 return False
             events = self.tracks.get(channel)
@@ -1789,97 +2295,194 @@ class MultiTrackDAW:
             self._emit_state_change()
         return True
 
-    def edit_notes_batch(self, channel, edits):
-        """
-        Atomically edit multiple note pairs in a single operation.
-        edits: list of dicts, each with on_idx, off_idx, and optional on_beat, off_beat, note, velocity.
-        All changes are applied before sorting once.
-        (Validazione 422 / expected_revision obbligatoria: ui-studio, A28.)
-        """
+    # ── Editing batch di note (ui-studio, A28; usato da ui-editor) ─────
+    # Tutto-o-niente: validazione COMPLETA prima dell'undo; un solo sort, un
+    # solo livello, una sola revisione. Errori: 400 BAD_REQUEST (tipo/valore),
+    # 422 VALIDATION_FAILED (indici che non sono la coppia FIFO attesa).
+
+    _BATCH_EDIT_KEYS = frozenset(('on_idx', 'off_idx', 'on_beat', 'off_beat', 'note', 'velocity'))
+
+    def _batch_int(self, entry, key, path, lo, hi, default=None):
+        v = entry.get(key, default)
+        if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+            self._fail('BAD_REQUEST', f'{path}.{key}: intero {lo}..{hi} atteso', {'field': f'{path}.{key}'})
+            return None
+        return v
+
+    def _batch_pairs(self, channel, entries, list_name, allowed):
+        """Validazione comune di edits/pairs. Ritorna (events, [(entry, on, off)]) o None."""
+        if not isinstance(entries, list) or not entries:
+            return self._nope('BAD_REQUEST', f'{list_name}: lista non vuota attesa', {'field': list_name})
+        parsed = []
+        for k, entry in enumerate(entries):
+            path = f'{list_name}[{k}]'
+            if not isinstance(entry, dict):
+                return self._nope('BAD_REQUEST', f'{path}: oggetto atteso', {'field': path})
+            extra = sorted(set(entry) - allowed)
+            if extra:
+                return self._nope('BAD_REQUEST', f'{path}: campo sconosciuto {extra[0]}',
+                                  {'field': f'{path}.{extra[0]}'})
+            on = self._batch_int(entry, 'on_idx', path, 0, 10 ** 9)
+            if on is None:
+                return None
+            off = self._batch_int(entry, 'off_idx', path, -1, 10 ** 9, default=-1)
+            if off is None:
+                return None
+            parsed.append((entry, on, off))
+        return parsed
+
+    def _batch_check_pairs(self, events, ids, parsed, list_name):
+        """Sotto lock: ogni (on_idx, off_idx) DEVE essere una coppia della regola
+        FIFO unica (6.2) sugli eventi correnti; nessun indice ripetuto; on e off
+        con lo stesso ID clip (D3: altrimenti modificarla/eliminarla
+        sbilancerebbe due clip sovrapposti, vedi _owned_by_id)."""
+        partner = {on: off for _n, _v, _ob, _fb, on, off in project_store.pair_notes(events)}
+        group = self._group_partners(events, ids)
+        seen = set()
+        n = len(events)
+        for k, (_entry, on, off) in enumerate(parsed):
+            path = f'{list_name}[{k}]'
+            if on >= n or not project_store._is_note_on(events[on][1]):
+                return self._nope('VALIDATION_FAILED', 'on_idx non punta a un note-on',
+                                  {'path': f'{path}.on_idx', 'reason': 'non e\' un note-on'})
+            if partner.get(on, -1) != off:
+                return self._nope('VALIDATION_FAILED', 'off_idx non e\' il note-off di questa nota',
+                                  {'path': f'{path}.off_idx',
+                                   'reason': f'note-off atteso {partner.get(on, -1)}'})
+            if group.get(on, -1) != off:
+                # Coppia FIFO globale diversa da quella dentro il clip: note della
+                # stessa altezza sovrapposte in clip diversi. Modificarla
+                # sbilancerebbe i clip (nota sospesa a una futura eliminazione).
+                return self._nope('VALIDATION_FAILED',
+                                  'Nota sovrapposta a una della stessa altezza in un altro clip: '
+                                  'usa le operazioni sul clip',
+                                  {'path': path, 'reason': f'clip {ids[on]} / {ids[off] if off >= 0 else None}'})
+            for idx in (on, off):
+                if idx >= 0 and idx in seen:
+                    return self._nope('VALIDATION_FAILED', 'Indice ripetuto nel batch',
+                                      {'path': path, 'reason': f'indice {idx} ripetuto'})
+                seen.add(idx)
+        return True
+
+    def edit_notes_batch(self, channel, edits, expected_revision=None):
+        """Modifica atomica di piu' coppie (contratto 8.2 `notes/batch` PUT).
+        edits: [{on_idx, off_idx, on_beat?, off_beat?, note?, velocity?}] sugli
+        indici della revisione attesa. Voci invalide -> errore e NESSUNA
+        modifica (A28: prima venivano saltate in silenzio). Ammesso in Play,
+        vietato in Record. Ritorna {modified} o None."""
+        self.last_error = None
         if self.is_recording:
-            return False
+            return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                              {'is_recording': True})
+        if not self._channel_ok(channel):
+            return None
+        parsed = self._batch_pairs(channel, edits, 'edits', self._BATCH_EDIT_KEYS)
+        if parsed is None:
+            return None
+        values = []
+        for k, (entry, _on, _off) in enumerate(parsed):
+            path = f'edits[{k}]'
+            v = {}
+            for key in ('on_beat', 'off_beat'):
+                if key in entry:
+                    b = self._num_ok(entry[key], f'{path}.{key}', 0.0, project_store.MAX_BEAT)
+                    if b is None:
+                        return None
+                    v[key] = b
+            if 'note' in entry:
+                v['note'] = self._batch_int(entry, 'note', path, 0, 127)
+                if v['note'] is None:
+                    return None
+            if 'velocity' in entry:
+                # 0 trasformerebbe il note-on in un note-off: nota orfana.
+                v['velocity'] = self._batch_int(entry, 'velocity', path, 1, 127)
+                if v['velocity'] is None:
+                    return None
+            values.append(v)
         with self._edit():
-            events = self.tracks.get(channel)
-            if not events:
-                return False
-            n_events = len(events)
-            new_events = list(events)
+            if self.is_recording:
+                return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                                  {'is_recording': True})
+            if not self.check_revision(expected_revision):
+                return None
+            events = self.tracks[channel]
+            if self._batch_check_pairs(events, self._ids(channel), parsed, 'edits') is None:
+                return None
+            new_events = None
             need_sort = False
+            modified = 0
+            for k, ((_entry, on, off), v) in enumerate(zip(parsed, values)):
+                on_beat, on_d = events[on]
+                nb_on = v.get('on_beat', on_beat)
+                if off >= 0:
+                    off_beat, off_d = events[off]
+                    nb_off = v.get('off_beat', off_beat)
+                    if ('on_beat' in v or 'off_beat' in v) and not nb_off > nb_on:
+                        # Un note-off prima (o insieme) del suo note-on verrebbe
+                        # riaccoppiato FIFO con un'altra nota: nota sospesa.
+                        return self._nope('VALIDATION_FAILED', 'off_beat deve essere > on_beat',
+                                          {'path': f'edits[{k}].off_beat', 'reason': 'off_beat <= on_beat'})
+                elif 'off_beat' in v:
+                    return self._nope('VALIDATION_FAILED', 'Nota senza note-off: off_beat non applicabile',
+                                      {'path': f'edits[{k}].off_beat', 'reason': 'off_idx = -1'})
+                note = v.get('note', on_d[1])
+                vel = v.get('velocity', on_d[2])
+                new_on = (nb_on, on_d if (note, vel) == (on_d[1], on_d[2]) else [on_d[0], note, vel])
+                changes = [(on, new_on)]
+                if off >= 0:
+                    new_off = (nb_off, off_d if note == off_d[1] else [off_d[0], note, off_d[2]])
+                    changes.append((off, new_off))
+                touched = False
+                for idx, ev in changes:
+                    if ev != events[idx]:
+                        if new_events is None:
+                            new_events = list(events)
+                        new_events[idx] = ev
+                        touched = True
+                if touched:
+                    modified += 1
+                    need_sort = need_sort or 'on_beat' in v or 'off_beat' in v
+            if new_events is not None:
+                self._push_undo()
+                if need_sort:
+                    self._set_sorted(channel, new_events, self._ids(channel))
+                else:
+                    self._set_track(channel, new_events, self._ids(channel))
+                self._density_dirty = True
+                self._emit_state_change()
+        return {'modified': modified}
 
-            for edit in edits:
-                on_idx = int(edit.get('on_idx', -1))
-                off_idx = int(edit.get('off_idx', -1))
-
-                # Edit note_on event
-                if 0 <= on_idx < n_events:
-                    beat_pos, msg_bytes = new_events[on_idx]
-                    try:
-                        msg = mido.Message.from_bytes(msg_bytes)
-                    except Exception:
-                        continue
-                    if 'on_beat' in edit:
-                        beat_pos = float(edit['on_beat'])
-                        need_sort = True
-                    if 'note' in edit and hasattr(msg, 'note'):
-                        msg = msg.copy(note=max(0, min(127, int(edit['note']))))
-                    if 'velocity' in edit and hasattr(msg, 'velocity'):
-                        msg = msg.copy(velocity=max(0, min(127, int(edit['velocity']))))
-                    new_events[on_idx] = (beat_pos, msg.bytes())
-
-                # Edit note_off event
-                if 0 <= off_idx < n_events:
-                    beat_pos, msg_bytes = new_events[off_idx]
-                    try:
-                        msg = mido.Message.from_bytes(msg_bytes)
-                    except Exception:
-                        continue
-                    if 'off_beat' in edit:
-                        beat_pos = float(edit['off_beat'])
-                        need_sort = True
-                    if 'note' in edit and hasattr(msg, 'note'):
-                        msg = msg.copy(note=max(0, min(127, int(edit['note']))))
-                    new_events[off_idx] = (beat_pos, msg.bytes())
-
-            self._push_undo()
-            if need_sort:
-                self._set_sorted(channel, new_events, self._ids(channel))
-            else:
-                self._set_track(channel, new_events, self._ids(channel))
-            self._density_dirty = True
-            self._emit_state_change()
-        return True
-
-    def delete_notes_batch(self, channel, pairs):
-        """
-        Atomically delete multiple note pairs in a single operation.
-        pairs: list of dicts with on_idx and off_idx.
-        All indices collected, sorted descending, deleted from end.
-        """
+    def delete_notes_batch(self, channel, pairs, expected_revision=None):
+        """Eliminazione atomica di piu' coppie (8.2 `notes/batch` DELETE): stessa
+        validazione di edit_notes_batch (coppie FIFO esatte), un solo undo.
+        Ritorna {removed} (eventi rimossi) o None."""
+        self.last_error = None
         if self.is_recording:
-            return False
+            return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                              {'is_recording': True})
+        if not self._channel_ok(channel):
+            return None
+        parsed = self._batch_pairs(channel, pairs, 'pairs', frozenset(('on_idx', 'off_idx')))
+        if parsed is None:
+            return None
         with self._edit():
-            events = self.tracks.get(channel)
-            if not events:
-                return False
-            n_events = len(events)
-
-            indices = set()
-            for pair in pairs:
-                on_idx = int(pair.get('on_idx', -1))
-                off_idx = int(pair.get('off_idx', -1))
-                if 0 <= on_idx < n_events:
-                    indices.add(on_idx)
-                if 0 <= off_idx < n_events:
-                    indices.add(off_idx)
-
-            if not indices:
-                return False
-
+            if self.is_recording:
+                return self._nope('RECORDING_ACTIVE', 'Modifica non consentita durante la registrazione',
+                                  {'is_recording': True})
+            if not self.check_revision(expected_revision):
+                return None
+            if self._batch_check_pairs(self.tracks[channel], self._ids(channel), parsed, 'pairs') is None:
+                return None
+            drop = set()
+            for _e, on, off in parsed:
+                drop.add(on)
+                if off >= 0:
+                    drop.add(off)
             self._push_undo()
-            self._drop_indices(channel, indices)
+            self._drop_indices(channel, drop)
             self._density_dirty = True
             self._emit_state_change()
-        return True
+        return {'removed': len(drop)}
 
     def get_track_activity(self, channel, start_beat=0.0, end_beat=9999.0):
         """Restituisce intervalli uniti di attività note per una traccia nel range richiesto.
@@ -2485,10 +3088,28 @@ class MultiTrackDAW:
             if evs:
                 new_by_ch[ch] = evs
 
+        # Review M1: limiti del formato verificati PRIMA di mutare (un import
+        # oltre i limiti produrrebbe un progetto non salvabile).
+        last_beat = max((evs[-1][0] for evs in new_by_ch.values()), default=0.0)
+        if last_beat + project_store.CLIP_TAIL_BEATS > project_store.MAX_BEAT:
+            raise DawError('VALIDATION_FAILED', f'Il file supera la durata massima ({project_store.MAX_BEAT} beat)',
+                           {'path': 'tracks', 'reason': 'max_beat', 'max_beat': project_store.MAX_BEAT})
+        n_new = sum(len(evs) for evs in new_by_ch.values())
+
         clips_created = {}
         with self._edit():
             if self.is_recording or self.is_playing:
                 raise RuntimeError('Cannot import while recording or playing')
+            kept = 0 if not merge else sum(len(self.tracks[ch]) for ch in range(16))
+            if kept + n_new > project_store.MAX_EVENTS_TOTAL:
+                raise DawError('VALIDATION_FAILED',
+                               f'Oltre {project_store.MAX_EVENTS_TOTAL} eventi totali',
+                               {'path': 'tracks', 'reason': 'max_events',
+                                'max_events': project_store.MAX_EVENTS_TOTAL, 'events': kept + n_new})
+            # Review L2: ID verificati prima di qualunque mutazione.
+            if new_by_ch and self._next_clip_id + len(new_by_ch) - 1 > project_store.MAX_CLIP_ID:
+                raise DawError('VALIDATION_FAILED', 'Limite ID clip raggiunto',
+                               {'path': 'clips', 'reason': 'max_clip_id'})
             self._push_undo(transport=True)        # UN livello per l'intero import (A13)
             if not merge:
                 for ch in range(16):

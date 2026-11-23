@@ -955,6 +955,60 @@ def _daw_edit_result(success, fallback_msg, **payload):
 api_common_codes_new = frozenset(('REVISION_CONFLICT',))
 
 
+# ── Montaggio Studio (ui-studio, contracts 6.4, 8.1, 8.2) ─────────────
+# Esito dalla DAW: HTTP dalla tabella 2.3 salvo l'override legacy che la DAW
+# stessa dichiara in last_error['http'] (8.1). I dict di risultato vanno al
+# primo livello (compatibilita' legacy_daw.js: new_clip_id, dest_channel...).
+
+def _studio_json():
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
+def _studio_int(data, key, lo, hi):
+    """Intero richiesto in `data[key]` (tollera "3" e 3.0 dei client legacy)."""
+    v = data.get(key)
+    try:
+        if isinstance(v, bool) or v is None:
+            raise ValueError
+        f = float(v)
+        if not f.is_integer():
+            raise ValueError
+        v = int(f)
+    except (TypeError, ValueError):
+        return None, err('BAD_REQUEST', f'{key}: intero {lo}..{hi} atteso', {'field': key})
+    if not lo <= v <= hi:
+        return None, err('BAD_REQUEST', f'{key}: intero {lo}..{hi} atteso', {'field': key})
+    return v, None
+
+
+def _studio_result(res, fallback_msg, http_ok=200, revision=None, **payload):
+    if res is None or res is False:
+        e = daw.last_error or {}
+        return _respond(err(e.get('code', 'BAD_REQUEST'), e.get('message', fallback_msg),
+                            e.get('details'), http=e.get('http')))
+    body = ok(revision=daw.last_revision if revision is None else revision, **payload)
+    if isinstance(res, dict):
+        body.update(res)
+    return jsonify(body), http_ok
+
+
+def _studio_common(data, need_clip=True):
+    """channel (+ clip_id) + expected_revision. Ritorna (channel, clip_id, rev, errore)."""
+    channel, bad = _studio_int(data, 'channel', 0, 15)
+    if bad:
+        return None, None, None, bad
+    clip_id = None
+    if need_clip:
+        clip_id, bad = _studio_int(data, 'clip_id', 0, ps.MAX_CLIP_ID)
+        if bad:
+            return None, None, None, bad
+    rev, bad = _expected_revision(data)
+    if bad:
+        return None, None, None, bad
+    return channel, clip_id, rev, None
+
+
 @app.route('/api/daw/state', methods=['GET'])
 def daw_get_state():
     """Ottiene lo stato completo del DAW"""
@@ -972,8 +1026,13 @@ def _daw_refusal(code, message, http=None):
                http=e.get('http') or http)
 
 
-def _transport_start_record(channel):
-    """Logica comune HTTP/socket per Record. Ritorna (body, http)."""
+def _transport_start_record(channel, return_to_start=None):
+    """Logica comune HTTP/socket per Record. Ritorna (body, http).
+    `return_to_start` (D6): bool, assente = true."""
+    if return_to_start is None:
+        return_to_start = True
+    elif not isinstance(return_to_start, bool):
+        return err('BAD_REQUEST', 'return_to_start: booleano atteso', {'field': 'return_to_start'})
     armed_channels = [ch for ch in range(16) if daw.armed.get(ch)]
     if not armed_channels:
         return err('NO_ARMED_TRACK', "Nessun canale armato. Attiva ARM su almeno un canale.")
@@ -982,10 +1041,10 @@ def _transport_start_record(channel):
             return err('BAD_REQUEST', 'channel deve essere 0-15', {'field': 'channel'})
         if not daw.armed.get(channel):
             return err('NO_ARMED_TRACK', f"Canale {channel} non è armato. Attiva ARM prima di registrare.")
-        success = daw.start_recording(channel)
+        success = daw.start_recording(channel, return_to_start=return_to_start)
         armed_channels = [channel]
     else:
-        success = daw.start_recording()
+        success = daw.start_recording(return_to_start=return_to_start)
     if success:
         return ok(f"Registrazione avviata su canali {armed_channels}"), 200
     # M2: HTTP dalla tabella 2.3 (503 PORT_UNAVAILABLE, 409 TRANSPORT_ACTIVE);
@@ -1004,7 +1063,7 @@ def daw_start_recording():
     """Avvia la registrazione su tutti i canali armati"""
     try:
         data = request.get_json(silent=True) or {}
-        body, http = _transport_start_record(data.get('channel', None))
+        body, http = _transport_start_record(data.get('channel', None), data.get('return_to_start'))
         return jsonify(body), http
     except Exception as e:
         print(f"[DAW API] ECCEZIONE in start_recording: {e}")
@@ -1144,37 +1203,37 @@ def daw_solo_track(channel):
 def daw_clear_track(channel):
     """Cancella una traccia specifica"""
     if not 0 <= channel <= 15:
-        return jsonify({"status": "error", "message": "Channel must be 0-15"}), 400
+        return _respond(err('BAD_REQUEST', 'Traccia non valida (0-15)', {'field': 'channel'}))
     try:
-        daw.clear_track(channel)
-        return jsonify({"status": "ok", "message": f"Traccia {channel} cancellata"})
+        return _studio_result(daw.clear_track(channel), 'Svuota traccia fallito',
+                              message=f"Traccia {channel} cancellata")
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/clear_all', methods=['POST'])
 def daw_clear_all():
     """Cancella tutte le tracce"""
     try:
-        daw.clear_all_tracks()
-        return jsonify({"status": "ok", "message": "Tutte le tracce cancellate"})
+        return _studio_result(daw.clear_all_tracks(), 'Svuota tutto fallito',
+                              message="Tutte le tracce cancellate")
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/track/<int:channel>/clear_range', methods=['POST'])
 def daw_clear_range(channel):
-    """Cancella gli eventi di una traccia in un intervallo di beat"""
+    """Cancella gli eventi di una traccia in un intervallo di beat (6.4, A16)"""
     try:
-        data = request.get_json()
-        start_beat = float(data.get('start_beat', 0))
-        end_beat = float(data.get('end_beat', 0))
-        if end_beat <= start_beat:
-            return jsonify({"status": "error", "message": "end_beat deve essere > start_beat"}), 400
-        daw.clear_range(channel, start_beat, end_beat)
-        return jsonify({"status": "ok", "message": f"Range [{start_beat:.2f}, {end_beat:.2f}) cancellato su ch {channel}"})
+        data = _studio_json()
+        rev, bad = _expected_revision(data)
+        if bad:
+            return _respond(bad)
+        res = daw.clear_range(channel, data.get('start_beat'), data.get('end_beat'),
+                              expected_revision=rev)
+        return _studio_result(res, 'Cancella intervallo fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/bpm', methods=['POST'])
@@ -1390,29 +1449,54 @@ def daw_preview_note():
 
 @app.route('/api/daw/copy', methods=['POST'])
 def daw_copy():
-    """Copy events from a selection range on a channel to the clipboard."""
+    """Copia (6.4): {channel, start_beat, end_beat} oppure {channel, clip_id}.
+    Pair-aware + sustain; consentita in Play/Record; non cambia la revisione."""
     try:
-        data = request.json or {}
-        channel = int(data.get('channel', 0))
-        start_beat = float(data.get('start_beat', 0))
-        end_beat = float(data.get('end_beat', 0))
-        count = daw.copy_selection(channel, start_beat, end_beat)
-        return jsonify({"status": "ok", "copied": count})
+        data = _studio_json()
+        channel, bad = _studio_int(data, 'channel', 0, 15)
+        if bad:
+            return _respond(bad)
+        if data.get('clip_id') is not None:
+            count = daw.copy_selection(channel, clip_id=data.get('clip_id'))
+        else:
+            count = daw.copy_selection(channel, data.get('start_beat'), data.get('end_beat'))
+        if count is None:
+            return _studio_result(None, 'Copia fallita')
+        return _studio_result({'copied': count, 'clipboard': daw.clipboard_info()}, '',
+                              revision=daw.revision)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/cut', methods=['POST'])
+def daw_cut():
+    """Taglia (6.4, route nuova): intervallo o clip; atomica, un undo."""
+    try:
+        data = _studio_json()
+        channel, _c, rev, bad = _studio_common(data, need_clip=False)
+        if bad:
+            return _respond(bad)
+        if data.get('clip_id') is not None:
+            res = daw.cut(channel, clip_id=data.get('clip_id'), expected_revision=rev)
+        else:
+            res = daw.cut(channel, data.get('start_beat'), data.get('end_beat'), expected_revision=rev)
+        return _studio_result(res, 'Taglia fallito')
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/paste', methods=['POST'])
 def daw_paste():
-    """Paste clipboard events at a target beat on a channel."""
+    """Incolla (6.4) a traccia + beat; 409 EMPTY_CLIPBOARD con appunti vuoti."""
     try:
-        data = request.json or {}
-        channel = int(data.get('channel', 0))
-        target_beat = float(data.get('beat', 0))
-        count = daw.paste_at(channel, target_beat)
-        return jsonify({"status": "ok", "pasted": count})
+        data = _studio_json()
+        channel, _c, rev, bad = _studio_common(data, need_clip=False)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.paste_at(channel, data.get('beat', 0), expected_revision=rev),
+                              'Incolla fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/track/<int:channel>/clips', methods=['GET'])
@@ -1429,205 +1513,226 @@ def daw_track_clips(channel):
 
 @app.route('/api/daw/clip/move', methods=['POST'])
 def daw_move_clip():
-    """Move one clip to a new start beat."""
+    """Sposta clip (6.4): delta sugli eventi con il suo ID."""
     try:
-        data = request.json or {}
-        channel = int(data.get('channel', -1))
-        clip_id = int(data.get('clip_id', -1))
-        target_start_beat = float(data.get('target_start_beat', 0.0))
-
-        if channel < 0 or channel > 15 or clip_id < 0:
-            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
-
-        result = daw.move_clip(channel, clip_id, target_start_beat)
-        if result is None:
-            return jsonify({"status": "error", "message": "Cannot move clip during recording/playback"}), 409
-        if not result:
-            return jsonify({"status": "error", "message": "Clip not found"}), 404
-        return jsonify({"status": "ok"})
+        data = _studio_json()
+        channel, clip_id, rev, bad = _studio_common(data)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.move_clip(channel, clip_id, data.get('target_start_beat'),
+                                            expected_revision=rev), 'Sposta clip fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/clip/delete', methods=['POST'])
 def daw_delete_clip():
-    """Delete one clip and its events."""
+    """Elimina clip (6.4): il clip e gli eventi con il suo ID."""
     try:
-        data = request.json or {}
-        channel = int(data.get('channel', -1))
-        clip_id = int(data.get('clip_id', -1))
-
-        if channel < 0 or channel > 15 or clip_id < 0:
-            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
-
-        result = daw.delete_clip(channel, clip_id)
-        if result is None:
-            return jsonify({"status": "error", "message": "Cannot delete clip during recording/playback"}), 409
-        if not result:
-            return jsonify({"status": "error", "message": "Clip not found"}), 404
-        return jsonify({"status": "ok"})
+        data = _studio_json()
+        channel, clip_id, rev, bad = _studio_common(data)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.delete_clip(channel, clip_id, expected_revision=rev),
+                              'Elimina clip fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/clip/transpose', methods=['POST'])
 def daw_transpose_clip():
-    """Transpose note events inside one clip range."""
+    """Trasponi clip (6.4): note con l'ID del clip, -24..24 semitoni."""
     try:
-        data = request.json or {}
-        channel = int(data.get('channel', -1))
-        clip_id = int(data.get('clip_id', -1))
-        semitones = int(data.get('semitones', 0))
-
-        if channel < 0 or channel > 15 or clip_id < 0:
-            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
-        if semitones < -24 or semitones > 24:
-            return jsonify({"status": "error", "message": "semitones must be between -24 and 24"}), 400
-
-        modified = daw.transpose_clip(channel, clip_id, semitones)
-        if modified is None:
-            return jsonify({"status": "error", "message": "Cannot transpose during recording/playback"}), 409
-        return jsonify({"status": "ok", "modified": modified})
+        data = _studio_json()
+        channel, clip_id, rev, bad = _studio_common(data)
+        if bad:
+            return _respond(bad)
+        semitones, bad = _studio_int(data, 'semitones', -24, 24)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.transpose_clip(channel, clip_id, semitones, expected_revision=rev),
+                              'Trasponi clip fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/clip/resize', methods=['POST'])
 def daw_resize_clip():
-    """Non-destructive clip resize: change end_beat without deleting events."""
+    """Ridimensiona la fine del clip (6.4, D4): 409 CLIP_RESIZE_WOULD_EXCLUDE."""
     try:
-        data = request.json if isinstance(request.json, dict) else {}
-
-        raw_channel = data.get('channel', None)
-        raw_clip_id = data.get('clip_id', None)
-        raw_new_end_beat = data.get('new_end_beat', None)
-
-        try:
-            channel = int(raw_channel)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid channel: must be an integer between 0 and 15"}), 400
-
-        try:
-            clip_id = int(raw_clip_id)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid clip_id: must be a non-negative integer"}), 400
-
-        try:
-            new_end_beat = float(raw_new_end_beat)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid new_end_beat: must be a number"}), 400
-
-        if channel < 0 or channel > 15 or clip_id < 0:
-            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
-        if new_end_beat < 0:
-            return jsonify({"status": "error", "message": "Invalid new_end_beat: must be >= 0"}), 400
-
-        result = daw.resize_clip(channel, clip_id, new_end_beat)
-        if result is None:
-            return jsonify({"status": "error", "message": "Cannot resize clip during recording/playback"}), 409
-        if not result:
-            return jsonify({"status": "error", "message": "Clip not found"}), 404
-        return jsonify({"status": "ok"})
+        data = _studio_json()
+        channel, clip_id, rev, bad = _studio_common(data)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.resize_clip(channel, clip_id, data.get('new_end_beat'),
+                                              expected_revision=rev), 'Ridimensiona clip fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/clip/split', methods=['POST'])
 def daw_split_clip():
-    """Split a clip at a given beat into two clips."""
+    """Dividi clip (6.4): punto fuori dal clip -> BAD_REQUEST con HTTP 404 (override 8.1)."""
     try:
-        data = request.json if isinstance(request.json, dict) else {}
-
-        raw_channel = data.get('channel', None)
-        raw_clip_id = data.get('clip_id', None)
-        raw_split_beat = data.get('split_beat', None)
-
-        try:
-            channel = int(raw_channel)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid channel: must be an integer between 0 and 15"}), 400
-
-        try:
-            clip_id = int(raw_clip_id)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid clip_id: must be a non-negative integer"}), 400
-
-        try:
-            split_beat = float(raw_split_beat)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid split_beat: must be a number"}), 400
-
-        if channel < 0 or channel > 15 or clip_id < 0:
-            return jsonify({"status": "error", "message": "Invalid channel or clip_id"}), 400
-        if split_beat < 0:
-            return jsonify({"status": "error", "message": "Invalid split_beat: must be >= 0"}), 400
-
-        result = daw.split_clip(channel, clip_id, split_beat)
-        if result is None:
-            return jsonify({"status": "error", "message": "Cannot split clip during recording/playback"}), 409
-        if result is False:
-            return jsonify({"status": "error", "message": "Clip not found or split point outside clip"}), 404
-        return jsonify({"status": "ok", "new_clip_id": result})
+        data = _studio_json()
+        channel, clip_id, rev, bad = _studio_common(data)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.split_clip(channel, clip_id, data.get('split_beat'),
+                                             expected_revision=rev), 'Dividi clip fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/clip/merge', methods=['POST'])
 def daw_merge_clips():
-    """Merge multiple clips on the same channel into one."""
+    """Unisci clip (6.4): >= 2 ID della stessa traccia."""
     try:
-        data = request.json if isinstance(request.json, dict) else {}
-
-        raw_channel = data.get('channel', None)
-        try:
-            channel = int(raw_channel)
-        except (TypeError, ValueError):
-            return jsonify({"status": "error", "message": "Invalid channel: must be an integer between 0 and 15"}), 400
-
-        clip_ids = data.get('clip_ids', [])
-
-        if channel < 0 or channel > 15:
-            return jsonify({"status": "error", "message": "Invalid channel"}), 400
+        data = _studio_json()
+        channel, _c, rev, bad = _studio_common(data, need_clip=False)
+        if bad:
+            return _respond(bad)
+        clip_ids = data.get('clip_ids')
         if not isinstance(clip_ids, list) or len(clip_ids) < 2:
-            return jsonify({"status": "error", "message": "Need at least 2 clip_ids"}), 400
-
-        parsed_clip_ids = []
-        for idx, cid in enumerate(clip_ids):
-            try:
-                parsed_clip_ids.append(int(cid))
-            except (TypeError, ValueError):
-                return jsonify({"status": "error", "message": f"Invalid clip_ids[{idx}]: must be an integer"}), 400
-
-        result = daw.merge_clips(channel, parsed_clip_ids)
-        if result is None:
-            return jsonify({"status": "error", "message": "Cannot merge clips during recording/playback"}), 409
-        if result is False:
-            return jsonify({"status": "error", "message": "Not enough matching clips found"}), 404
-        return jsonify({"status": "ok", "new_clip_id": result})
+            return _respond(err('BAD_REQUEST', 'Servono almeno 2 clip_ids', {'field': 'clip_ids'}))
+        parsed = []
+        for k in range(len(clip_ids)):
+            cid, bad = _studio_int({'v': clip_ids[k]}, 'v', 0, ps.MAX_CLIP_ID)
+            if bad:
+                return _respond(err('BAD_REQUEST', f'clip_ids[{k}]: intero atteso',
+                                    {'field': f'clip_ids[{k}]'}))
+            parsed.append(cid)
+        return _studio_result(daw.merge_clips(channel, parsed, expected_revision=rev),
+                              'Unisci clip fallito')
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/clip/create', methods=['POST'])
+def daw_create_clip():
+    """Crea clip da intervallo (8.2): 201 {clip, revision}."""
+    try:
+        data = _studio_json()
+        channel, _c, rev, bad = _studio_common(data, need_clip=False)
+        if bad:
+            return _respond(bad)
+        name = data.get('name')
+        if name is not None and not isinstance(name, str):
+            return _respond(err('BAD_REQUEST', 'name: stringa attesa', {'field': 'name'}))
+        return _studio_result(daw.create_clip(channel, data.get('start_beat'), data.get('end_beat'),
+                                              expected_revision=rev, name=name),
+                              'Crea clip fallito', http_ok=201)
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/clip/duplicate', methods=['POST'])
+def daw_duplicate_clip():
+    """Duplica clip (8.2): copia a end_beat dello stesso clip, 201 {new_clip_id, revision}."""
+    try:
+        data = _studio_json()
+        channel, clip_id, rev, bad = _studio_common(data)
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.duplicate_clip(channel, clip_id, expected_revision=rev),
+                              'Duplica clip fallito', http_ok=201)
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
+
+
+def _copy_part_config(src, dest):
+    """Duplica traccia con include_config (6.4): destinazione, suono, CC e
+    monitor della parte sorgente sulla parte destinazione. L'ingresso della
+    destinazione resta il suo (due parti sullo stesso ingresso suonerebbero
+    doppie). Fuori dal lock DAW. Ritorna None o un warning."""
+    part = copy.deepcopy(router.get_part(src))
+    new = copy.deepcopy(router.get_part(dest))
+    new['destination'] = part['destination']
+    if new['destination']['kind'] == 'internal':
+        new['destination']['channel'] = dest   # canale FluidSynth della parte
+    new['sound'] = part['sound']
+    new['cc'] = part['cc']
+    new['monitor'] = part['monitor']
+    try:
+        router.apply_part(new, send='all')
+    except midi_router.RouterError as e:
+        return {'code': 'PART_UNAVAILABLE', 'message': f'Configurazione non copiata: {e.message}',
+                'details': {'part_id': dest}}
+    _persist_sound(parts=[new])
+    notify_parts_changed([dest])
+    return None
 
 
 @app.route('/api/daw/track/<int:channel>/duplicate', methods=['POST'])
 def daw_duplicate_track(channel):
-    """Duplicate track events to a user-chosen channel. Instrument and CC stay unchanged on dest."""
+    """Duplica traccia (6.4, A17). Senza include_config ne' confirm_overwrite:
+    variante legacy (solo eventi, sostituzione, D13)."""
     try:
-        data = request.json or {}
-        dest_channel = data.get('dest_channel')
-        if dest_channel is None:
-            return jsonify({"status": "error", "message": "dest_channel required"}), 400
-        dest_channel = int(dest_channel)
-        if dest_channel < 0 or dest_channel > 15:
-            return jsonify({"status": "error", "message": "dest_channel out of range"}), 400
-        if dest_channel == channel:
-            return jsonify({"status": "error", "message": "Cannot duplicate onto same channel"}), 400
-
-        result = daw.duplicate_track(channel, dest_channel)
-        if result == -1:
-            return jsonify({"status": "error", "message": "Cannot duplicate (source empty or transport active)"}), 400
-        return jsonify({"status": "ok", "dest_channel": result})
+        data = _studio_json()
+        dest_channel, bad = _studio_int(data, 'dest_channel', 0, 15)
+        if bad:
+            return _respond(bad)
+        include_config = data.get('include_config')
+        confirm = data.get('confirm_overwrite')
+        for key, v in (('include_config', include_config), ('confirm_overwrite', confirm)):
+            if v is not None and not isinstance(v, bool):
+                return _respond(err('BAD_REQUEST', f'{key}: booleano atteso', {'field': key}))
+        rev, bad = _expected_revision(data)
+        if bad:
+            return _respond(bad)
+        res = daw.duplicate_track(channel, dest_channel, include_config=include_config,
+                                  confirm_overwrite=confirm, expected_revision=rev)
+        if res is None:
+            return _studio_result(None, 'Duplica traccia fallito')
+        revision = daw.last_revision
+        warnings = []
+        if include_config:
+            w = _copy_part_config(channel, dest_channel)
+            if w:
+                warnings.append(w)
+        return _studio_result(res, '', revision=revision, warnings=warnings or None,
+                              config_copied=bool(include_config) and not warnings)
     except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return _respond(err('INTERNAL', str(e)))
+
+
+# ── Editing batch di note (8.2; client: ui-editor) ────────────────────
+
+def _batch_request(channel, list_key):
+    data = _studio_json()
+    if not 0 <= channel <= 15:
+        return None, None, err('BAD_REQUEST', 'Traccia non valida (0-15)', {'field': 'channel'})
+    if data.get('expected_revision') is None:
+        return None, None, err('BAD_REQUEST', 'expected_revision obbligatoria',
+                               {'field': 'expected_revision'})
+    rev, bad = _expected_revision(data)
+    if bad:
+        return None, None, bad
+    return data.get(list_key), rev, None
+
+
+@app.route('/api/daw/track/<int:channel>/notes/batch', methods=['PUT'])
+def daw_edit_notes_batch(channel):
+    try:
+        edits, rev, bad = _batch_request(channel, 'edits')
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.edit_notes_batch(channel, edits, expected_revision=rev),
+                              'Modifica note fallita')
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
+
+
+@app.route('/api/daw/track/<int:channel>/notes/batch', methods=['DELETE'])
+def daw_delete_notes_batch(channel):
+    try:
+        pairs, rev, bad = _batch_request(channel, 'pairs')
+        if bad:
+            return _respond(bad)
+        return _studio_result(daw.delete_notes_batch(channel, pairs, expected_revision=rev),
+                              'Eliminazione note fallita')
+    except Exception as e:
+        return _respond(err('INTERNAL', str(e)))
 
 
 @app.route('/api/daw/track/<int:channel>/rename', methods=['POST'])
@@ -2981,7 +3086,7 @@ def handle_transport_cmd(data):
         if cmd == 'play_start':
             return _transport_start_play()[0]
         if cmd == 'record_start':
-            return _transport_start_record(data.get('channel'))[0]
+            return _transport_start_record(data.get('channel'), data.get('return_to_start'))[0]
         if cmd == 'play_stop':
             return ack_ok() if daw.stop_playback() else ack_err('BAD_REQUEST', 'Nessuna riproduzione in corso')
         if cmd == 'record_stop':

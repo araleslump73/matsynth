@@ -623,7 +623,7 @@ Operazioni. Ogni operazione che modifica dati: un solo livello di undo, un solo 
 | Incolla (`paste`) | Dichiara traccia e beat. Appunti da intervallo: eventi inseriti (beat relativi + destinazione), nessun clip creato, nessun controllo sovrapposizione. Appunti da clip: crea un clip nuovo (nuovo ID, stessa durata e nome + " (copia)") in `[beat, beat+durata)`, proprietario degli eventi incollati; sovrapposizioni consentite (D3). Appunti vuoti -> `409 EMPTY_CLIPBOARD`. Nibble canale normalizzato alla traccia di destinazione. | inserisce solo eventi, mai clip. |
 | Duplica clip (nuova, `clip/duplicate`) | Copia del clip (eventi con il suo ID) incollata a `end_beat` dello stesso clip sulla stessa traccia, nuovo ID; un solo undo. | non esiste. |
 | Duplica traccia (`track/<t>/duplicate`) | Campo `include_config` (`false` = variante legacy "solo MIDI"; `true` = anche la parte: routing/suono/CC copiati sulla parte destinazione). Copia eventi **e clip** (nuovi ID). Destinazione con eventi -> `409 DEST_NOT_EMPTY` salvo `confirm_overwrite: true`. Compatibilita': se il client NON invia ne' `include_config` ne' `confirm_overwrite` (index.html attuale), comportamento legacy (sostituzione senza clip) finche' `ui-studio` non rimuove la vecchia UI. | copia solo eventi, sostituisce in silenzio, nessun clip (anomalia A17). |
-| Svuota traccia / tutto | Come oggi (`clear_track`, `clear_all_tracks`), con conferma esplicita lato UI. | invariato. |
+| Svuota traccia / tutto | Come oggi (`clear_track`, `clear_all_tracks`), con conferma esplicita lato UI; vietato in Record (`409 RECORDING_ACTIVE`, D22). | invariato. |
 | Quantizza, Trasponi intervallo | Come oggi, accoppiamento FIFO (6.2). | quantize accoppia diversamente. |
 
 ### 6.5 Undo / redo
@@ -1173,6 +1173,8 @@ Ogni voce: scelta adottata in questo contratto (le fasi la implementano) e racco
 | D19 | Ingresso "di default". | `input.device_alias: null` = nessun ingresso; il default migrato usa l'alias esplicito `keyboard-main` creato dal bootstrap. |
 | D20 | Destinazione dei comandi sonori interni (console 9800 o porta MIDI interna). | Lasciata a `ui-routing` purche' sia una sola via per tipo di comando e documentata; esito sempre "inviato", non "confermato". |
 | D21 | Misure RAM. | Fatte su PC 64 bit (5.7); le soglie (`MAX_PROJECT_BYTES`, `MAX_EVENTS_TOTAL`) vanno confermate con la misura sul Pi (`docs/pi-measurement.md`), non ancora eseguita. |
+| D22 | Svuota traccia/tutto durante il Record (`ui-studio`, review M2). | 6.4 diceva "come oggi"; ora `409 RECORDING_ACTIVE` in Record (svuotare rompeva gli indici del take e l'ownership dei clip). In Play resta consentito. |
+| D23 | Duplica traccia con `include_config: true` (`ui-studio`). | Copiati destinazione, suono, CC e monitor; l'ingresso della parte destinazione NON viene copiato (evita due parti sullo stesso ingresso); per destinazione interna il canale resta quello della parte destinazione. Da confermare con l'utente. |
 
 Nessuna contraddizione bloccante trovata nel piano. Le tensioni principali (D1/D2 default espliciti vs compatibilita' legacy, D6 rewind dopo Record: deciso dall'utente di mantenerlo come opzione, D16 suffissi legacy) sono risolte dando priorita' al piano per la UI nuova e conservando il comportamento legacy solo sulle route legacy.
 
